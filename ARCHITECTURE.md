@@ -258,6 +258,14 @@ the same pipeline at thumbnail size).
 - **Surfaces, tabs, splits.** A window holds a tree of split panes, each pane a
   surface (view + session + renderer sharing the window's atlas). Native tabs via
   `NSWindow.tabbingMode`.
+- **Titlebar controls** (per the GlassTerm design handoff): a trailing control
+  cluster with a theme switcher — one chip showing a phosphor-colored dot plus the
+  active preset name, opening a dropdown where each row is styled in its own
+  preset's look with a live-pipeline thumbnail — and the degauss button, drawn as a
+  skeuomorphic graphite front-panel button (engraved label, pressed-in state) that
+  only appears while the active preset has effects enabled. The design's vertical
+  tab sidebar / hover cards / ⌘K palette were deliberately not adopted: they would
+  replace native tabbing, which this architecture commits to.
 - **Settings** — profiles (font, palette, preset, shell, scrollback), live-preview
   preset gallery, written as declarative SwiftUI hosted in a settings window; settings
   persist via `UserDefaults`-backed codable models.

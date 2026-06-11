@@ -11,6 +11,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private var sharedRenderer: TerminalRenderer?
     private let paneContainer = NSView()
     private var searchBar: SearchBar?
+    private var titlebarControls: TitlebarControlCluster?
 
     /// Set by the AppDelegate so closed windows are released.
     var onClose: ((TerminalWindowController) -> Void)?
@@ -31,7 +32,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         paneContainer.autoresizingMask = [.width, .height]
         window.contentView = paneContainer
 
-        addDegaussButton(to: window)
+        addTitlebarControls(to: window)
 
         guard let firstPane = makePane() else { return }
         install(firstPane, in: paneContainer)
@@ -276,6 +277,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         for pane in panes {
             pane.preset = preset
         }
+        titlebarControls?.update(preset: preset)
     }
 
     func apply(preset: CRTPreset) {
@@ -283,6 +285,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         for pane in panes {
             pane.preset = preset
         }
+        titlebarControls?.update(preset: preset)
     }
 
     var currentPresetName: String {
@@ -291,20 +294,24 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Window plumbing
 
-    private func addDegaussButton(to window: NSWindow) {
-        let button = NSButton(
-            title: "Degauss", target: nil, action: #selector(TerminalView.degauss(_:)))
-        button.bezelStyle = .accessoryBarAction
-        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        let size = button.fittingSize
-        button.frame = NSRect(x: 0, y: 2, width: size.width, height: size.height)
-        let container = NSView(
-            frame: NSRect(x: 0, y: 0, width: size.width + 8, height: size.height + 4))
-        container.addSubview(button)
+    /// The GlassTerm-design control cluster: theme switcher + a degauss
+    /// button that only exists while the active preset is a CRT.
+    private func addTitlebarControls(to window: NSWindow) {
+        let cluster = TitlebarControlCluster(
+            presets: PresetCatalog.all, currentPreset: currentPreset())
+        cluster.onSelectPreset = { [weak self] preset in
+            self?.apply(preset: preset)
+            // Remember the choice in the default profile; the store change
+            // fans out to every other open window.
+            var profile = ProfileStore.shared.defaultProfile
+            profile.presetName = preset.name
+            ProfileStore.shared.update(profile)
+        }
         let accessory = NSTitlebarAccessoryViewController()
-        accessory.view = container
+        accessory.view = cluster
         accessory.layoutAttribute = .trailing
         window.addTitlebarAccessoryViewController(accessory)
+        titlebarControls = cluster
     }
 
     func windowWillClose(_ notification: Notification) {
