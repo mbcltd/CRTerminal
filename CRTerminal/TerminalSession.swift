@@ -1,0 +1,80 @@
+import Foundation
+import TerminalCore
+import os
+
+/// Glues a PTY to a Terminal: PTY bytes are parsed on the IO queue under the
+/// state lock; the view pulls value snapshots. See ARCHITECTURE.md
+/// "Concurrency model".
+/// All mutable state lives behind OSAllocatedUnfairLocks.
+nonisolated final class TerminalSession: @unchecked Sendable {
+    private let terminal: OSAllocatedUnfairLock<Terminal>
+    private let pty: PTYSession
+    private let updatePending = OSAllocatedUnfairLock(initialState: false)
+
+    /// Called on the main queue, coalesced across PTY chunks.
+    var onUpdate: (@MainActor () -> Void)?
+    /// Called on the main queue when the shell exits.
+    var onExit: (@MainActor (Int32) -> Void)?
+
+    init(columns: Int, rows: Int) throws {
+        terminal = OSAllocatedUnfairLock(initialState: Terminal(columns: columns, rows: rows))
+        pty = try PTYSession(columns: columns, rows: rows)
+        pty.onData = { [weak self] data in
+            self?.ingest(data)
+        }
+        pty.onExit = { [weak self] status in
+            DispatchQueue.main.async {
+                self?.onExit?(status)
+            }
+        }
+    }
+
+    var snapshot: TerminalState {
+        terminal.withLock { $0.state }
+    }
+
+    func send(_ bytes: [UInt8]) {
+        pty.send(bytes)
+    }
+
+    func resize(columns: Int, rows: Int) {
+        let changed = terminal.withLock { terminal in
+            let before = (terminal.state.columns, terminal.state.rows)
+            terminal.resize(columns: columns, rows: rows)
+            return before != (columns, rows)
+        }
+        if changed {
+            pty.resize(columns: columns, rows: rows)
+            scheduleUpdate()
+        }
+    }
+
+    func terminate() {
+        pty.terminate()
+    }
+
+    private func ingest(_ data: Data) {
+        let responses = terminal.withLock { terminal in
+            data.withUnsafeBytes { raw in
+                terminal.feed(raw.bindMemory(to: UInt8.self))
+            }
+            return terminal.drainResponses()
+        }
+        if !responses.isEmpty {
+            pty.send(responses)
+        }
+        scheduleUpdate()
+    }
+
+    private func scheduleUpdate() {
+        let alreadyPending = updatePending.withLock { pending in
+            defer { pending = true }
+            return pending
+        }
+        guard !alreadyPending else { return }
+        DispatchQueue.main.async {
+            self.updatePending.withLock { $0 = false }
+            self.onUpdate?()
+        }
+    }
+}

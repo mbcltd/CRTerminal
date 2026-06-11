@@ -30,7 +30,13 @@ xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal -destination 'platfo
 # Fuzz the terminal core (libFuzzer; needs a swift.org toolchain — Xcode's Swift
 # lacks the fuzzer runtime. Pass libFuzzer args like -max_total_time=60.)
 Scripts/fuzz.sh
+
+# End-to-end probe: types a command into the live shell, dumps the grid,
+# measures input→render latency, writes /tmp/crterminal-probe.{txt,png}
+open -W --env CRT_TYPIST=1 <DerivedData>/Build/Products/Debug/CRTerminal.app
 ```
+
+Record performance numbers in PERF.md when they change materially.
 
 CI (`.github/workflows/ci.yml`) runs package tests plus the app build and unit tests.
 
@@ -44,3 +50,8 @@ CI (`.github/workflows/ci.yml`) runs package tests plus the app build and unit t
 - `CRTerminalUITests/` — UI tests using XCTest/XCUIApplication.
 
 Bundle identifier prefix is `mbcltd.`. The app target picks up new source files automatically (`project.pbxproj` uses file-system-synchronized groups, objectVersion 77) — no pbxproj edit needed. Don't name a file `Main.swift`: the case-insensitive filesystem makes the compiler treat it as top-level code, which conflicts with `@main`.
+
+Gotchas learned the hard way:
+- App Sandbox is deliberately OFF (a terminal must exec the user's shell unrestricted) — don't re-enable it.
+- The Metal surface renders directly via `TerminalView.renderFrame()` driven by session updates, NOT via `updateLayer`/`needsDisplay` (AppKit never invoked `updateLayer` for the custom CAMetalLayer; CAMetalLayer doesn't need AppKit's display cycle anyway).
+- `setVertexBytes` caps at 4 KiB — per-cell instance arrays must use `makeBuffer`.
