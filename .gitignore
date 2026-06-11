@@ -4,6 +4,15 @@ xcuserdata/
 DerivedData/
 build/
 
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Fuzzing
+.fuzz-corpus/
+crash-*
+
+
 # macOS
 .DS_Store
 

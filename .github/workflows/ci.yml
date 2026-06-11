@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  package-tests:
+    name: Package tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: TerminalCore tests
+        run: swift test --package-path Packages/TerminalCore
+      - name: CRTRendering tests
+        run: swift test --package-path Packages/CRTRendering
+
+  app:
+    name: App build + tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: >
+          xcodebuild build
+          -project CRTerminal.xcodeproj
+          -scheme CRTerminal
+          -destination 'platform=macOS'
+          CODE_SIGNING_ALLOWED=NO
+      - name: Unit tests
+        run: >
+          xcodebuild test
+          -project CRTerminal.xcodeproj
+          -scheme CRTerminal
+          -destination 'platform=macOS'
+          -skip-testing:CRTerminalUITests
+          CODE_SIGNING_ALLOWED=NO

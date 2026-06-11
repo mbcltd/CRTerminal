@@ -10,28 +10,37 @@ See ARCHITECTURE.md for the detailed design (module layout, concurrency model, r
 
 ## Commands
 
-Build and test from the command line with `xcodebuild` (scheme: `CRTerminal`):
+Most code lives in local Swift packages — prefer `swift test` there (fast, no app host):
 
 ```sh
-# Build
-xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal build
+# Package tests (the usual dev loop)
+swift test --package-path Packages/TerminalCore
+swift test --package-path Packages/CRTRendering
 
-# Run all tests
-xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal test
+# Run a single package test
+swift test --package-path Packages/TerminalCore --filter CellTests/rgbColorRoundTrips
 
-# Run a single unit test (Swift Testing)
-xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal test \
-  -only-testing:CRTerminalTests/CRTerminalTests/example
+# Build the app
+xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal -destination 'platform=macOS' build
 
-# Skip the slow UI tests
-xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal test \
-  -skip-testing:CRTerminalUITests
+# App-target tests (skipping slow UI tests, as CI does)
+xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal -destination 'platform=macOS' \
+  -skip-testing:CRTerminalUITests test
+
+# Fuzz the terminal core (libFuzzer; needs a swift.org toolchain — Xcode's Swift
+# lacks the fuzzer runtime. Pass libFuzzer args like -max_total_time=60.)
+Scripts/fuzz.sh
 ```
+
+CI (`.github/workflows/ci.yml`) runs package tests plus the app build and unit tests.
 
 ## Structure
 
-- `CRTerminal/` — app target. AppKit lifecycle (`AppDelegate`, `MainMenu.xib`), not SwiftUI.
-- `CRTerminalTests/` — unit tests using the Swift Testing framework (`import Testing`, `@Test`, `#expect(...)`), not XCTest.
+- `Packages/TerminalCore/` — platform-independent emulation engine (parser, grid, cells, encoders). No AppKit/Metal imports allowed. Swift 6 language mode.
+- `Packages/CRTRendering/` — Metal/CoreText rendering; depends on TerminalCore.
+- `Packages/TerminalCoreFuzz/` — libFuzzer harness, built only via `Scripts/fuzz.sh` (it links libFuzzer's main, so it is deliberately not in the normal build or CI).
+- `CRTerminal/` — app target: AppKit lifecycle, window, view, input plumbing. Fully programmatic UI (no XIBs; `Entry.swift` has the `@main` entry point). The target uses `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`.
+- `CRTerminalTests/` — app-target unit tests using the Swift Testing framework (`import Testing`, `@Test`, `#expect(...)`), not XCTest.
 - `CRTerminalUITests/` — UI tests using XCTest/XCUIApplication.
 
-Bundle identifier prefix is `mbcltd.`. New source files must be added via the Xcode project (`project.pbxproj` uses the modern file-system-synchronized groups, objectVersion 77, so files placed in the target folders are picked up automatically).
+Bundle identifier prefix is `mbcltd.`. The app target picks up new source files automatically (`project.pbxproj` uses file-system-synchronized groups, objectVersion 77) — no pbxproj edit needed. Don't name a file `Main.swift`: the case-insensitive filesystem makes the compiler treat it as top-level code, which conflicts with `@main`.
