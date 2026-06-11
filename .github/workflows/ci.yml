@@ -10,7 +10,7 @@ jobs:
     name: Package tests
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: TerminalCore tests
         run: swift test --package-path Packages/TerminalCore
       - name: CRTRendering tests
@@ -20,7 +20,7 @@ jobs:
     name: App build + tests
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build
         run: >
           xcodebuild build
