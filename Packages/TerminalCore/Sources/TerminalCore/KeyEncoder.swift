@@ -22,6 +22,20 @@ public struct KeyModifiers: OptionSet, Sendable {
     }
 }
 
+/// Kitty keyboard protocol progressive-enhancement flags (CSI > flags u).
+public struct KittyKeyboardFlags: OptionSet, Sendable, Equatable {
+    public var rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue & 0b11111
+    }
+
+    /// Flag 1: escape and modified keys get unambiguous CSI u encodings.
+    public static let disambiguate = KittyKeyboardFlags(rawValue: 1 << 0)
+    // Flags 2–16 (event types, alternate keys, all-keys-as-escapes,
+    // associated text) are accepted on the wire but not yet honored.
+}
+
 /// Pure (key, modifiers, modes) → bytes. The view translates NSEvents into
 /// `TerminalKey`s; everything mode-dependent is decided here so the entire
 /// matrix is unit-testable.
@@ -29,8 +43,28 @@ public enum KeyEncoder {
     public static func encode(
         _ key: TerminalKey,
         modifiers: KeyModifiers = [],
-        applicationCursorKeys: Bool = false
+        applicationCursorKeys: Bool = false,
+        kittyFlags: KittyKeyboardFlags = []
     ) -> [UInt8] {
+        if kittyFlags.contains(.disambiguate) {
+            // Escape is the headline ambiguity CSI u resolves; Enter, Tab
+            // and Backspace keep their legacy encodings at this level
+            // unless modified.
+            switch key {
+            case .escape:
+                return csiU(27, modifiers)
+            case .enter where !modifiers.isEmpty:
+                return csiU(13, modifiers)
+            case .tab where modifiers == [.shift]:
+                return bytes("\u{1B}[Z") // back-tab predates kitty; keep it
+            case .tab where !modifiers.isEmpty:
+                return csiU(9, modifiers)
+            case .backspace where !modifiers.isEmpty:
+                return csiU(127, modifiers)
+            default:
+                break
+            }
+        }
         switch key {
         case .up: return cursorKey("A", modifiers, applicationCursorKeys)
         case .down: return cursorKey("B", modifiers, applicationCursorKeys)
@@ -47,6 +81,20 @@ public enum KeyEncoder {
         case .escape: return [0x1B]
         case .function(let n): return functionKey(n, modifiers)
         }
+    }
+
+    /// Character keys with modifiers under the kitty protocol: returns the
+    /// CSI u encoding when disambiguation calls for one, nil when the
+    /// caller should fall back to legacy bytes (plain text, ^C, ESC-prefix).
+    public static func encodeCharacter(
+        _ scalar: Unicode.Scalar,
+        modifiers: KeyModifiers,
+        kittyFlags: KittyKeyboardFlags
+    ) -> [UInt8]? {
+        guard kittyFlags.contains(.disambiguate),
+              modifiers.contains(.control) || modifiers.contains(.option)
+        else { return nil }
+        return csiU(Int(scalar.value), modifiers)
     }
 
     /// Control-key combination, e.g. ^C. Returns nil if the character has no
@@ -86,6 +134,13 @@ public enum KeyEncoder {
 
     private static func bytes(_ s: String) -> [UInt8] {
         Array(s.utf8)
+    }
+
+    /// Kitty CSI u: `ESC [ code ; modifiers u` (modifier param omitted when 1).
+    private static func csiU(_ code: Int, _ modifiers: KeyModifiers) -> [UInt8] {
+        modifiers.isEmpty
+            ? bytes("\u{1B}[\(code)u")
+            : bytes("\u{1B}[\(code);\(modifiers.xtermParam)u")
     }
 
     private static func cursorKey(

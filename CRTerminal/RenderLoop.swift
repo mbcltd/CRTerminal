@@ -1,4 +1,5 @@
 import CRTRendering
+import IOKit.ps
 import QuartzCore
 import TerminalCore
 import os
@@ -10,6 +11,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
     private struct ViewState: Equatable {
         var scrollOffset = 0
         var selection: Selection?
+        var markedText: String?
     }
 
     private struct Shared {
@@ -18,6 +20,9 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         /// (geometry or backing-scale changes).
         var poked = true
         var drawCount = 0
+        /// After invalidate(), the link is dead — every entry point no-ops
+        /// (removeFromSuperview re-enters via viewDidMoveToWindow → poke).
+        var invalidated = false
     }
 
     private let link: CAMetalDisplayLink
@@ -25,11 +30,17 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
     private let renderer: TerminalRenderer
     private weak var session: TerminalSession?
     private let shared = OSAllocatedUnfairLock(initialState: Shared())
+    /// Per-pane effect surfaces + phosphor clocks (renderer is shared
+    /// across the window's panes); render-thread only.
+    private let context = SurfaceContext()
 
     // Render-thread-only state.
     private var lastGeneration: UInt64?
     private var lastViewState = ViewState()
     private var idleFrames = 0
+    private var lastPowerCheck: CFTimeInterval = 0
+    private var onBattery = false
+    private var throttled = false
 
     /// Frames the link may idle through before pausing (lets brief bursts
     /// settle without pause/unpause churn).
@@ -66,32 +77,61 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     /// Something may have changed; make sure frames are being produced.
     func poke(force: Bool = false) {
-        if force {
-            shared.withLock { $0.poked = true }
+        let invalidated = shared.withLock { shared in
+            if force { shared.poked = true }
+            return shared.invalidated
         }
+        guard !invalidated else { return }
         link.isPaused = false
     }
 
-    func setViewState(scrollOffset: Int, selection: Selection?) {
-        shared.withLock {
-            $0.viewState = ViewState(scrollOffset: scrollOffset, selection: selection)
+    func setViewState(scrollOffset: Int, selection: Selection?, markedText: String? = nil) {
+        let invalidated = shared.withLock { shared in
+            shared.viewState = ViewState(
+                scrollOffset: scrollOffset, selection: selection, markedText: markedText)
+            return shared.invalidated
         }
+        guard !invalidated else { return }
         link.isPaused = false
     }
 
+    /// Tear down on the link's own thread: invalidating from another
+    /// thread races an in-flight callback against the layer's dealloc
+    /// (observed as a use-after-free crash when closing split panes).
     func invalidate() {
+        let alreadyInvalidated = shared.withLock { shared in
+            defer { shared.invalidated = true }
+            return shared.invalidated
+        }
+        guard !alreadyInvalidated else { return }
+        link.isPaused = true
+        perform(
+            #selector(invalidateOnRenderThread), on: thread, with: nil,
+            waitUntilDone: false)
+    }
+
+    @objc private func invalidateOnRenderThread() {
         link.invalidate()
-        thread.cancel()
+        Thread.current.cancel() // the runloop spin in `thread` checks this
     }
 
     func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
         guard let session else { return }
-        let (viewState, poked) = shared.withLock { shared in
+        let (viewState, poked, invalidated) = shared.withLock { shared in
             defer { shared.poked = false }
-            return (shared.viewState, shared.poked)
+            return (shared.viewState, shared.poked, shared.invalidated)
         }
+        guard !invalidated else { return }
         let state = session.snapshot
-        if !poked, state.generation == lastGeneration, viewState == lastViewState {
+        let now = CACurrentMediaTime()
+        let contentChanged = poked
+            || state.generation != lastGeneration
+            || viewState != lastViewState
+        // Animated effects (persistence decay, noise, degauss) opt into
+        // frames; the link still pauses once everything is quiescent, so
+        // the idle-power contract holds with effects enabled.
+        let animating = renderer.wantsContinuousFrames(at: now, context: context)
+        if !contentChanged && !animating {
             idleFrames += 1
             if idleFrames >= Self.pauseAfterIdleFrames {
                 link.isPaused = true
@@ -101,11 +141,33 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         idleFrames = 0
         lastGeneration = state.generation
         lastViewState = viewState
+        updateThrottle(animatingOnly: animating && !contentChanged, now: now)
         renderer.draw(
             state,
             scrollOffset: viewState.scrollOffset,
             selection: viewState.selection,
+            markedText: viewState.markedText,
+            contentChanged: contentChanged,
+            at: now,
+            context: context,
             into: update.drawable)
         shared.withLock { $0.drawCount += 1 }
+    }
+
+    /// Effects must not show up in Activity Monitor: when frames are being
+    /// produced *only* for an effect animation and the machine is on
+    /// battery (or Low Power Mode), drop to 30 Hz.
+    private func updateThrottle(animatingOnly: Bool, now: CFTimeInterval) {
+        if now - lastPowerCheck > 5 {
+            lastPowerCheck = now
+            onBattery = ProcessInfo.processInfo.isLowPowerModeEnabled
+                || IOPSGetTimeRemainingEstimate() != kIOPSTimeRemainingUnlimited
+        }
+        let shouldThrottle = animatingOnly && onBattery
+        guard shouldThrottle != throttled else { return }
+        throttled = shouldThrottle
+        link.preferredFrameRateRange = shouldThrottle
+            ? CAFrameRateRange(minimum: 24, maximum: 30, preferred: 30)
+            : CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
     }
 }

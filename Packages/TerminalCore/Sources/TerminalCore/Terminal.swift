@@ -7,6 +7,11 @@ public struct Terminal: Sendable {
         state = TerminalState(columns: columns, rows: rows)
     }
 
+    public var scrollbackLimit: Int {
+        get { state.scrollbackLimit }
+        set { state.scrollbackLimit = newValue }
+    }
+
     public mutating func feed(_ bytes: UnsafeBufferPointer<UInt8>) {
         parser.feed(bytes, handler: &state)
     }
@@ -29,5 +34,11 @@ public struct Terminal: Sendable {
     public mutating func drainClipboard() -> String? {
         defer { state.pendingClipboard = nil }
         return state.pendingClipboard
+    }
+
+    /// Desktop notifications (OSC 9 / OSC 777;notify) awaiting delivery.
+    public mutating func drainNotifications() -> [TerminalNotification] {
+        defer { state.pendingNotifications.removeAll(keepingCapacity: true) }
+        return state.pendingNotifications
     }
 }

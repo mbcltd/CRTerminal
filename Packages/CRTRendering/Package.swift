@@ -13,7 +13,8 @@ let package = Package(
     targets: [
         .target(
             name: "CRTRendering",
-            dependencies: [.product(name: "TerminalCore", package: "TerminalCore")]
+            dependencies: [.product(name: "TerminalCore", package: "TerminalCore")],
+            resources: [.copy("Presets")]
         ),
         .testTarget(name: "CRTRenderingTests", dependencies: ["CRTRendering"]),
     ],

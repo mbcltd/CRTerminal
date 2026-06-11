@@ -74,17 +74,22 @@ public struct Cell: Hashable, Sendable {
     public var foreground: PackedColor
     public var background: PackedColor
     public var attributes: CellAttributes
+    /// OSC 8 hyperlink: 1-based index into `TerminalState.linkTable`,
+    /// 0 = no link. Fills the cell's two spare bytes.
+    public var link: UInt16
 
     public init(
         glyph: UInt32,
         foreground: PackedColor = .default,
         background: PackedColor = .default,
-        attributes: CellAttributes = []
+        attributes: CellAttributes = [],
+        link: UInt16 = 0
     ) {
         self.glyph = glyph
         self.foreground = foreground
         self.background = background
         self.attributes = attributes
+        self.link = link
     }
 
     public static let blank = Cell(glyph: UInt32(UnicodeScalar(" ").value))

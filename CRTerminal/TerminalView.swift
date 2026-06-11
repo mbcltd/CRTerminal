@@ -9,14 +9,52 @@ import TerminalCore
 final class TerminalView: NSView, NSTextInputClient {
     private(set) var renderer: TerminalRenderer?
     private(set) var renderLoop: RenderLoop?
+    /// Supplies the window's shared renderer (one atlas per window, panes
+    /// share it); set by the window controller before the view lands in
+    /// the window.
+    var rendererProvider: (() -> TerminalRenderer?)?
     var session: TerminalSession? {
         didSet { wireSession() }
     }
+
+    /// Search state (⌘F bar drives this).
+    private var searchQuery: String?
+    private(set) var currentMatch: Selection?
 
     private var lastBellCount: UInt64 = 0
     private var markedText: String?
     /// Frames actually drawn (on the render thread); probe-reported.
     var drawCount: Int { renderLoop?.drawCount ?? 0 }
+
+    private let degaussSound = DegaussSound()
+
+    /// The CRT preset; the renderer applies it on the next frame. Presets
+    /// with a bezel shrink the cell grid (the bezel is part of the view).
+    var preset: CRTPreset = .museumOff {
+        didSet {
+            renderer?.preset = preset
+            updateGridSize()
+            renderLoop?.poke(force: true)
+        }
+    }
+
+    /// Points reserved around the grid for the preset's bezel.
+    private var contentInset: CGFloat {
+        preset.effects ? CGFloat(preset.bezel.widthPt) : 0
+    }
+
+    /// Menu/titlebar-button entry point (nil-target action).
+    @objc func degauss(_ sender: Any?) {
+        degauss()
+    }
+
+    /// The degauss button does what it says on the tin.
+    func degauss() {
+        guard preset.effects else { return }
+        renderer?.degauss()
+        degaussSound.play()
+        renderLoop?.poke(force: true)
+    }
 
     /// Lines scrolled back from live (0 = following output).
     private var scrollOffset = 0
@@ -64,7 +102,9 @@ final class TerminalView: NSView, NSTextInputClient {
             lastBellCount = state.bellCount
             NSSound.beep()
         }
-        if let title = state.title, window?.title != title {
+        // Only the focused pane drives the window/tab title.
+        if let title = state.title, window?.title != title,
+           window?.firstResponder === self {
             window?.title = title
         }
         let clamped = min(scrollOffset, state.scrollback.count)
@@ -99,16 +139,33 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     private func setUpRendererIfNeeded() {
-        guard renderer == nil, window != nil, let metalLayer, let session else { return }
-        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        guard let renderer = TerminalRenderer(
-            font: font, scale: window?.backingScaleFactor ?? 2) else { return }
+        guard renderer == nil, window != nil, let metalLayer, let session,
+              let renderer = rendererProvider?() ?? Self.makeFallbackRenderer(for: window)
+        else { return }
+        renderer.preset = preset
         self.renderer = renderer
         metalLayer.device = renderer.device
         metalLayer.pixelFormat = .bgra8Unorm
         updateGridSize()
         updateLayerGeometry()
         renderLoop = RenderLoop(layer: metalLayer, renderer: renderer, session: session)
+    }
+
+    /// Standalone views (no controller) still render.
+    private static func makeFallbackRenderer(for window: NSWindow?) -> TerminalRenderer? {
+        TerminalRenderer(
+            font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+            scale: window?.backingScaleFactor ?? 2)
+    }
+
+    /// Profile font changed: drop the renderer and pick up the new shared
+    /// one from the provider.
+    func resetRenderer() {
+        renderLoop?.invalidate()
+        renderLoop = nil
+        renderer = nil
+        setUpRendererIfNeeded()
+        renderLoop?.poke(force: true)
     }
 
     /// Geometry is owned by the main thread; the render thread just consumes
@@ -124,7 +181,8 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     private func pushViewStateToRenderLoop() {
-        renderLoop?.setViewState(scrollOffset: scrollOffset, selection: selection)
+        renderLoop?.setViewState(
+            scrollOffset: scrollOffset, selection: selection, markedText: markedText)
     }
 
     private func wireSession() {
@@ -136,17 +194,19 @@ final class TerminalView: NSView, NSTextInputClient {
 
     private func updateGridSize() {
         guard let renderer, let session else { return }
-        let columns = max(2, Int(bounds.width / renderer.cellSize.width))
-        let rows = max(2, Int(bounds.height / renderer.cellSize.height))
+        let inset = contentInset * 2
+        let columns = max(2, Int((bounds.width - inset) / renderer.cellSize.width))
+        let rows = max(2, Int((bounds.height - inset) / renderer.cellSize.height))
         session.resize(columns: columns, rows: rows)
     }
 
-    /// Points for a cols×rows grid; the window sizes itself with this.
+    /// Points for a cols×rows grid (plus bezel); the window sizes itself
+    /// with this.
     func sizeForGrid(columns: Int, rows: Int) -> NSSize {
         guard let renderer else { return NSSize(width: 800, height: 540) }
         return NSSize(
-            width: CGFloat(columns) * renderer.cellSize.width,
-            height: CGFloat(rows) * renderer.cellSize.height)
+            width: CGFloat(columns) * renderer.cellSize.width + contentInset * 2,
+            height: CGFloat(rows) * renderer.cellSize.height + contentInset * 2)
     }
 
     private func observeKeyWindow() {
@@ -202,6 +262,15 @@ final class TerminalView: NSView, NSTextInputClient {
         if event.modifierFlags.contains(.control),
            let characters = event.characters, !characters.isEmpty,
            let scalar = characters.unicodeScalars.first, scalar.value < 0x20 {
+            // Under the kitty protocol, modified keys get CSI u encodings
+            // so applications can tell ^I from Tab, ^[ from Esc, etc.
+            let kittyFlags = session?.snapshot.modes.kittyKeyboardFlags ?? []
+            if let plain = event.charactersIgnoringModifiers?.unicodeScalars.first,
+               let encoded = KeyEncoder.encodeCharacter(
+                plain, modifiers: keyModifiers(of: event), kittyFlags: kittyFlags) {
+                sendKeyboard(encoded)
+                return
+            }
             sendKeyboard([UInt8(scalar.value)])
             return
         }
@@ -211,10 +280,12 @@ final class TerminalView: NSView, NSTextInputClient {
     override func doCommand(by selector: Selector) {
         let modes = session?.snapshot.modes
         let application = modes?.applicationCursorKeys ?? false
+        let kittyFlags = modes?.kittyKeyboardFlags ?? []
 
         func key(_ key: TerminalKey, _ modifiers: KeyModifiers = []) {
             sendKeyboard(KeyEncoder.encode(
-                key, modifiers: modifiers, applicationCursorKeys: application))
+                key, modifiers: modifiers, applicationCursorKeys: application,
+                kittyFlags: kittyFlags))
         }
 
         switch selector {
@@ -284,9 +355,10 @@ final class TerminalView: NSView, NSTextInputClient {
     private func cellPosition(of event: NSEvent) -> (x: Int, y: Int) {
         guard let renderer else { return (0, 0) }
         let point = convert(event.locationInWindow, from: nil)
-        let x = min(max(0, Int(point.x / renderer.cellSize.width)),
+        let inset = contentInset
+        let x = min(max(0, Int((point.x - inset) / renderer.cellSize.width)),
                     (session?.snapshot.columns ?? 1) - 1)
-        let y = min(max(0, Int(point.y / renderer.cellSize.height)),
+        let y = min(max(0, Int((point.y - inset) / renderer.cellSize.height)),
                     (session?.snapshot.rows ?? 1) - 1)
         return (x, y)
     }
@@ -346,6 +418,11 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // ⌘-click opens hyperlinks (OSC 8) or detected URLs/paths.
+        if event.modifierFlags.contains(.command) {
+            openLink(at: event)
+            return
+        }
         if reportMouse(.press, button: .left, event: event) { return }
         let point = absolutePoint(of: event)
         switch event.clickCount {
@@ -440,22 +517,123 @@ final class TerminalView: NSView, NSTextInputClient {
         pushViewStateToRenderLoop()
     }
 
+    // MARK: Links
+
+    private func openLink(at event: NSEvent) {
+        guard let state = session?.snapshot else { return }
+        let point = absolutePoint(of: event)
+        guard let line = state.absoluteLine(point.row),
+              point.column < line.count else { return }
+        // OSC 8 hyperlink on the cell wins; otherwise scan the row's text.
+        if line[point.column].link != 0,
+           let target = state.linkURL(line[point.column].link),
+           let url = URLDetection.url(from: target) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        if let url = URLDetection.detect(in: line, atColumn: point.column) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: Prompt jumping (OSC 133 shell integration)
+
+    @objc func jumpToPreviousPrompt(_ sender: Any?) {
+        guard let state = session?.snapshot else { return }
+        let currentTop = state.absoluteScreenTop - scrollOffset
+        guard let mark = state.promptMarks.last(where: { $0.row < currentTop })
+        else { return }
+        scrollTo(absoluteRow: mark.row, in: state)
+    }
+
+    @objc func jumpToNextPrompt(_ sender: Any?) {
+        guard let state = session?.snapshot else { return }
+        let currentTop = state.absoluteScreenTop - scrollOffset
+        if let mark = state.promptMarks.first(where: { $0.row > currentTop }) {
+            scrollTo(absoluteRow: mark.row, in: state)
+        } else {
+            scrollOffset = 0 // past the last prompt: back to live
+            pushViewStateToRenderLoop()
+        }
+    }
+
+    private func scrollTo(absoluteRow row: Int, in state: TerminalState) {
+        scrollOffset = min(max(0, state.absoluteScreenTop - row), state.scrollback.count)
+        pushViewStateToRenderLoop()
+    }
+
+    // MARK: Search (the window's ⌘F bar drives this)
+
+    /// Finds and reveals the next match; returns false when there is none.
+    @discardableResult
+    func find(_ query: String, backward: Bool = true) -> Bool {
+        guard let state = session?.snapshot, !query.isEmpty else { return false }
+        let from = query == searchQuery ? currentMatch?.anchor : nil
+        searchQuery = query
+        var match = state.search(for: query, from: from, backward: backward)
+        if match == nil, from != nil { // wrap around
+            match = state.search(for: query, from: nil, backward: backward)
+        }
+        guard let match else {
+            NSSound.beep()
+            return false
+        }
+        currentMatch = match
+        selection = match
+        let top = state.absoluteScreenTop - scrollOffset
+        if match.anchor.row < top || match.anchor.row >= top + state.rows {
+            scrollTo(absoluteRow: match.anchor.row, in: state)
+        } else {
+            pushViewStateToRenderLoop()
+        }
+        return true
+    }
+
+    func endSearch() {
+        searchQuery = nil
+        currentMatch = nil
+    }
+
+    // MARK: Accessibility
+
+    override func isAccessibilityElement() -> Bool { true }
+
+    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+
+    override func accessibilityLabel() -> String? { "Terminal" }
+
+    override func accessibilityValue() -> Any? {
+        guard let state = session?.snapshot else { return "" }
+        return (0..<state.rows).map { state.lineText($0) }
+            .joined(separator: "\n")
+    }
+
+    override func accessibilityVisibleCharacterRange() -> NSRange {
+        let value = (accessibilityValue() as? String) ?? ""
+        return NSRange(location: 0, length: value.utf16.count)
+    }
+
     // MARK: NSTextInputClient
 
     func insertText(_ string: Any, replacementRange: NSRange) {
-        markedText = nil
+        if markedText != nil {
+            markedText = nil
+            pushViewStateToRenderLoop()
+        }
         let text = (string as? NSAttributedString)?.string ?? (string as? String ?? "")
         sendKeyboard(Array(text.utf8))
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        // Stored but not yet drawn in-grid; composed text arrives via
-        // insertText. Visual marked-text rendering lands in Phase 5.
+        // Composition in progress: drawn at the cursor by the renderer's
+        // decorations pass; the composed text arrives via insertText.
         markedText = (string as? NSAttributedString)?.string ?? (string as? String)
+        pushViewStateToRenderLoop()
     }
 
     func unmarkText() {
         markedText = nil
+        pushViewStateToRenderLoop()
     }
 
     func selectedRange() -> NSRange {
@@ -487,8 +665,8 @@ final class TerminalView: NSView, NSTextInputClient {
         let cursor = session.snapshot.cursor
         let cell = renderer.cellSize
         let local = NSRect(
-            x: CGFloat(cursor.x) * cell.width,
-            y: CGFloat(cursor.y) * cell.height,
+            x: CGFloat(cursor.x) * cell.width + contentInset,
+            y: CGFloat(cursor.y) * cell.height + contentInset,
             width: cell.width,
             height: cell.height)
         return window.convertToScreen(convert(local, to: nil))

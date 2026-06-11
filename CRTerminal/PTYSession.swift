@@ -32,7 +32,7 @@ nonisolated final class PTYSession: @unchecked Sendable {
         case spawn(Int32)
     }
 
-    init(columns: Int, rows: Int) throws {
+    init(columns: Int, rows: Int, shell: String? = nil) throws {
         // Master/slave pair via plain POSIX (no libutil dependency).
         let master = posix_openpt(O_RDWR | O_NOCTTY)
         guard master >= 0 else { throw Failure.openpt(errno) }
@@ -72,7 +72,8 @@ nonisolated final class PTYSession: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, 0, 1)
         posix_spawn_file_actions_adddup2(&actions, 0, 2)
 
-        let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let shellPath = shell
+            ?? ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let loginArg0 = "-" + (shellPath as NSString).lastPathComponent
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "xterm-256color"

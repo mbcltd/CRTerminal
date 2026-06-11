@@ -308,15 +308,19 @@ struct RobustnessTests {
         #expect(t.state.lines[0][0].foreground == .palette(1))
     }
 
-    @Test func resizeClipsAndPads() {
+    @Test func resizeReflowsInsteadOfClipping() {
         var t = makeTerminal(columns: 6, rows: 3)
         t.feed("abcdef\r\nghi")
         t.resize(columns: 4, rows: 2)
         #expect(t.state.columns == 4)
         #expect(t.state.rows == 2)
-        #expect(t.screen == ["abcd", "ghi"])
+        // "abcdef" rewraps; the part that doesn't fit moves to scrollback.
+        #expect(t.screen == ["ef", "ghi"])
+        #expect(t.state.scrollback.map(TerminalState.text(of:)) == ["abcd"])
+        // Growing rejoins the soft-wrapped halves: nothing was lost.
         t.resize(columns: 8, rows: 3)
-        #expect(t.screen == ["abcd", "ghi", ""])
+        #expect(t.screen == ["abcdef", "ghi", ""])
+        #expect(t.state.scrollback.isEmpty)
     }
 
     @Test func garbageDoesNotTrap() {

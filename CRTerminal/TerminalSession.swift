@@ -17,10 +17,16 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     var onExit: (@MainActor (Int32) -> Void)?
     /// Called on the main queue with a decoded OSC 52 clipboard payload.
     var onClipboard: (@MainActor (String) -> Void)?
+    /// Called on the main queue with OSC 9/777 desktop notifications.
+    var onNotification: (@MainActor (TerminalNotification) -> Void)?
 
-    init(columns: Int, rows: Int) throws {
-        terminal = OSAllocatedUnfairLock(initialState: Terminal(columns: columns, rows: rows))
-        pty = try PTYSession(columns: columns, rows: rows)
+    init(columns: Int, rows: Int, shell: String? = nil, scrollbackLines: Int = 10_000) throws {
+        terminal = OSAllocatedUnfairLock(initialState: {
+            var t = Terminal(columns: columns, rows: rows)
+            t.scrollbackLimit = max(0, scrollbackLines)
+            return t
+        }())
+        pty = try PTYSession(columns: columns, rows: rows, shell: shell)
         pty.onData = { [weak self] data in
             self?.ingest(data)
         }
@@ -71,11 +77,12 @@ nonisolated final class TerminalSession: @unchecked Sendable {
             handle.write(Data(data))
             try? handle.close()
         }
-        let (responses, clipboard) = terminal.withLock { terminal in
+        let (responses, clipboard, notifications) = terminal.withLock { terminal in
             data.withUnsafeBufferPointer { raw in
                 terminal.feed(raw)
             }
-            return (terminal.drainResponses(), terminal.drainClipboard())
+            return (terminal.drainResponses(), terminal.drainClipboard(),
+                    terminal.drainNotifications())
         }
         if !responses.isEmpty {
             pty.send(responses)
@@ -85,6 +92,13 @@ nonisolated final class TerminalSession: @unchecked Sendable {
            let text = String(data: decoded, encoding: .utf8) {
             DispatchQueue.main.async {
                 self.onClipboard?(text)
+            }
+        }
+        if !notifications.isEmpty {
+            DispatchQueue.main.async {
+                for notification in notifications {
+                    self.onNotification?(notification)
+                }
             }
         }
         scheduleUpdate()

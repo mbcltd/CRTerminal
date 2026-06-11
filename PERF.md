@@ -29,6 +29,67 @@ GPU completion.
 Not yet measured (Phase 3): vtebench throughput, idle-power assertion,
 sustained-firehose behavior.
 
+## Phase 5 — feature depth (2026-06-11)
+
+Release build, Apple M3 Max, macOS 26.4.1. Phase 5 added wrap tracking +
+link ids to the print hot path, resize reflow, and a shared-per-window
+renderer (glyph atlas serialized with a lock across pane render threads).
+
+Core throughput (`Scripts/bench.sh`) held within noise of Phase 3:
+
+| Workload | Phase 3 | Phase 5 |
+|---|---|---|
+| scrolling-plain-ascii | 225 MB/s | 219 MB/s |
+| wrapped-long-line | 355 MB/s | 345 MB/s |
+| colored-text | 97 MB/s | 94 MB/s |
+| alt-screen-cursor-addressing | 154 MB/s | 166 MB/s |
+| utf8-mixed-wide | 67 MB/s | 70 MB/s |
+| scroll-region | 212 MB/s | 199 MB/s |
+
+End-to-end (typist probe, Release, VT220 preset): vim and a full tmux
+attach/echo/detach round-trip behave; input→present median 5.49 ms
+(single pane; the encode lock is uncontended with one pane and the pass
+is sub-ms with several); idle assertion still passes (0 draws in 2 s
+quiet, link paused); 88 MB footprint after the session.
+
+Crashes found and fixed by the split-pane UI test, all in teardown or
+sharing: CAMetalDisplayLink must be invalidated on its own thread (and
+every RenderLoop entry point gated after invalidate), and the glyph
+atlas needed the encode lock once two pane threads shared one renderer.
+
+## Phase 4 — CRT effects (2026-06-11)
+
+Release build, Apple M3 Max, macOS 26.4.1. Default preset DEC VT220 unless
+noted; "Commodore 1702" is the heaviest preset (persistence + bloom + slot
+mask + every composite artifact enabled).
+
+| Metric | Value | Budget |
+|---|---|---|
+| Full CRT pipeline GPU time, 4K, Commodore 1702 | **best 1.20 ms, median 1.84 ms** | < 2 ms ✓ |
+| Input→render latency, median (VT220 effects on) | 5.74 ms | ≤ Phase 3's 6.58 ms ✓ |
+| Idle after output stops, effects on | 0 draws in 2 s, link paused | 0 CPU / 0 GPU ✓ |
+| `time cat 100MB` in-terminal, effects on | 1.21 s ≈ 83 MB/s | no regression vs Phase 3 (1.26 s) ✓ |
+| Memory after 100 MB cat (10k scrollback, 1440×768 px window) | 100 MB | < 100 MB — at the line |
+
+Notes:
+- GPU time measured by `EffectPipelineTests/fullPipelineFitsGPUBudgetAt4K`
+  (sustained 30-frame loop; one-off submissions at idle GPU clocks read
+  3–4× higher). Reusing the offscreen effect surfaces was the big win:
+  freshly allocated multi-MB private textures cost ~5 ms of first-touch
+  time on the GPU timeline per frame.
+- Presets with long-persistence phosphor (IBM 5151, τ = 350 ms) keep the
+  render loop alive ~2 s after output stops while trails decay, then the
+  link pauses (verified: 58 decay frames in the quiet window, then paused).
+  Presets with animated artifacts (1702: noise/hum/jitter) draw
+  continuously while visible by design, throttled to 30 Hz on battery or
+  in Low Power Mode.
+- Honest gap: the persistence ping-pong pair is full-resolution rgba16F
+  (8-bit storage would quantize faint trails into frozen ghosts), ~27 MB
+  at 1440×768 — which puts the memory budget exactly at the line at this
+  window size and over it for 4K windows on persistence presets. Lever if
+  it matters: accumulate trails at half resolution as a separate additive
+  layer instead of using the persistence output as the composite source.
+
 ## Phase 3 — performance (2026-06-11)
 
 All numbers from a **Release** build (debug builds parse ~20× slower —

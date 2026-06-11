@@ -98,10 +98,13 @@ progressive enhancement.
 
 - **Cell** — a fixed-size 16-byte struct: glyph reference (scalar, or index into a
   per-screen grapheme side table for multi-scalar clusters), packed fg/bg/underline
-  color (palette index or RGB, tagged), and attribute flags. Wide characters occupy a
-  head cell plus a spacer tail cell.
-- **Row** — contiguous `[Cell]` with a per-row dirty flag and wrap bit (the wrap bit
-  enables reflow and rectangular-correct copy).
+  color (palette index or RGB, tagged), attribute flags, and the OSC 8 hyperlink id
+  (16 bits indexing a capped per-state URL table). Wide characters occupy a head
+  cell plus a spacer tail cell.
+- **Row** — contiguous `[Cell]`. The wrap bit lives in parallel `[Bool]` arrays
+  alongside the screen and scrollback (rows stayed plain arrays for the CoW
+  fast path); it is set when autowrap fires and drives reflow and
+  rectangular-correct copy. Damage is generation-based, not per-row.
 - **Grid** — active screen (primary + alternate) as CoW arrays of rows. Swift
   copy-on-write is load-bearing here: the renderer snapshots the grid by copying the
   array of row references (O(rows), microseconds); the parser's next mutation of a row
@@ -112,10 +115,11 @@ progressive enhancement.
   (full scroll = texture shift, cursor-only change). The renderer draws nothing when
   damage is empty and no effect animation is running.
 
-Resize performs reflow (rewrap soft-wrapped lines) on the primary screen and simple
+Resize performs reflow (rewrap soft-wrapped lines, exchanging rows with scrollback
+and remapping the cursor and prompt marks) on the primary screen and simple
 clip/extend on the alternate screen, matching user expectations from iTerm2/Ghostty.
-Reflow is the hairiest part of the model and is scheduled late (Phase 5) behind a
-non-reflow resize that ships early.
+Height-only changes pull rows back out of scrollback when growing and evict to
+scrollback when shrinking.
 
 ### Input encoding
 
@@ -151,8 +155,13 @@ Three execution contexts, chosen for predictable latency over actor convenience:
 | Context | Runs | Owns |
 |---|---|---|
 | IO queue (serial, per session) | PTY read, parser, state mutation | `TerminalState` writes |
-| Render thread (per window) | `CAMetalDisplayLink` callback, snapshot, encode, present | GPU resources, atlas |
+| Render thread (per pane) | `CAMetalDisplayLink` callback, snapshot, encode, present | that pane's `SurfaceContext` (effect textures + phosphor clocks) |
 | Main thread | AppKit events, IME, menus, settings | windows, sessions table |
+
+The `TerminalRenderer` (pipelines + glyph atlas) is shared by every pane in a
+window; cell-pass encoding is serialized with a lock because the atlas caches
+mutate during rasterization. Per-pane state lives in each render loop's
+`SurfaceContext`.
 
 `TerminalState` is guarded by an unfair lock held only for mutation and for the CoW
 snapshot — both microsecond-scale. The renderer is *pull-based*: each display-link

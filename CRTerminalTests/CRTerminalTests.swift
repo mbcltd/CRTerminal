@@ -1,19 +1,60 @@
-//
-//  CRTerminalTests.swift
-//  CRTerminalTests
-//
-//  Created by David Morgan-Brown on 11/06/2026.
-//
-
+import AppKit
+import Foundation
 import Testing
+import TerminalCore
 @testable import CRTerminal
 
-struct CRTerminalTests {
-
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+struct URLDetectionTests {
+    private func row(_ text: String) -> [Cell] {
+        text.unicodeScalars.map { Cell(glyph: $0.value) }
     }
 
+    @Test func detectsHTTPSURLs() {
+        let line = row("see https://example.com/a?b=1 for details")
+        let url = URLDetection.detect(in: line, atColumn: 10)
+        #expect(url?.absoluteString == "https://example.com/a?b=1")
+        // Clicking outside the URL finds nothing.
+        #expect(URLDetection.detect(in: line, atColumn: 1) == nil)
+    }
+
+    @Test func stripsTrailingPunctuation() {
+        let line = row("read https://example.com/doc.")
+        let url = URLDetection.detect(in: line, atColumn: 12)
+        #expect(url?.absoluteString == "https://example.com/doc")
+    }
+
+    @Test func detectsExistingPaths() {
+        let line = row("config at /tmp lives here")
+        let url = URLDetection.detect(in: line, atColumn: 11)
+        #expect(url?.path == "/tmp")
+        let missing = row("ghost /no/such/path/xyz here")
+        #expect(URLDetection.detect(in: missing, atColumn: 8) == nil)
+    }
+
+    @Test func osc8TargetParses() {
+        #expect(URLDetection.url(from: "https://example.com") != nil)
+        #expect(URLDetection.url(from: "not a url") == nil)
+    }
+}
+
+struct ProfileTests {
+    @Test func profileRoundTripsThroughJSON() throws {
+        var profile = Profile()
+        profile.name = "Retro"
+        profile.fontName = "Menlo"
+        profile.fontSize = 15
+        profile.presetName = "IBM 5151"
+        profile.scrollbackLines = 5000
+        let data = try JSONEncoder().encode(profile)
+        let decoded = try JSONDecoder().decode(Profile.self, from: data)
+        #expect(decoded == profile)
+    }
+
+    @Test func fontFallsBackToSystemMono() {
+        var profile = Profile()
+        profile.fontName = "NoSuchFont-Bogus"
+        #expect(profile.font.isFixedPitch)
+        profile.fontSize = 500 // clamped
+        #expect(profile.font.pointSize <= 72)
+    }
 }

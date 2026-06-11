@@ -21,10 +21,30 @@ public final class TerminalRenderer {
     private let colorGlyphPipeline: MTLRenderPipelineState
     private let atlas: GlyphAtlas
     private let ascent: CGFloat
+    private let effectPipeline: EffectPipeline
+    /// Reused across renderImage calls (gallery previews render at 10 Hz);
+    /// fresh multi-MB private textures cost real GPU time on first touch.
+    /// Guarded by `offscreenLock` (textures aren't Sendable, so this can't
+    /// live in an OSAllocatedUnfairLock).
+    private let offscreenLock = NSLock()
+    private var offscreenCache: EffectSurfaces?
 
     /// Keypress→photon latency probe; samples recorded around presents.
     private let latency = OSAllocatedUnfairLock<(pendingInput: CFTimeInterval?, samples: [Double])>(
         initialState: (nil, []))
+
+    /// CRT effect state shared between the main thread (preset changes,
+    /// degauss button) and render threads (per-frame reads). One renderer
+    /// serves every pane in a window, so this is per-window state; the
+    /// per-surface pieces live in each pane's `SurfaceContext`.
+    private struct EffectsState {
+        var preset: CRTPreset = .museumOff
+        var presetGeneration: UInt64 = 0
+        var degaussStart: CFTimeInterval?
+    }
+    private let effectsState = OSAllocatedUnfairLock(initialState: EffectsState())
+
+    public static let degaussDuration: CFTimeInterval = 1.5
 
     private struct Uniforms {
         var viewport: SIMD2<Float>
@@ -47,11 +67,13 @@ public final class TerminalRenderer {
     public init?(font: CTFont, scale: CGFloat, scheme: ColorScheme = .default) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue(),
-              let atlas = GlyphAtlas(device: device, font: font, scale: scale)
+              let atlas = GlyphAtlas(device: device, font: font, scale: scale),
+              let effectPipeline = EffectPipeline(device: device)
         else { return nil }
         self.device = device
         self.commandQueue = queue
         self.atlas = atlas
+        self.effectPipeline = effectPipeline
         self.scale = scale
         self.scheme = scheme
 
@@ -109,34 +131,141 @@ public final class TerminalRenderer {
 
     /// Render-thread entry: draws into a drawable provided by
     /// CAMetalDisplayLink (never calls nextDrawable).
+    /// `contentChanged` feeds the phosphor-persistence clock: pass false
+    /// when redrawing only because an effect is animating.
+    /// `context` is the pane's surface state — one per render loop, so a
+    /// single renderer (and its glyph atlas) serves every pane in a window.
     public func draw(
         _ state: TerminalState,
         scrollOffset: Int = 0,
         selection: Selection? = nil,
+        markedText: String? = nil,
+        contentChanged: Bool = true,
+        at time: CFTimeInterval = CACurrentMediaTime(),
+        context: SurfaceContext,
         into drawable: CAMetalDrawable
     ) {
         autoreleasepool {
-            guard let buffer = encode(
-                state, scrollOffset: scrollOffset, selection: selection,
-                to: drawable.texture) else { return }
+            let target = drawable.texture
+            let frame = beginFrame(at: time, contentChanged: contentChanged, context: context)
+            guard let buffer = commandQueue.makeCommandBuffer() else { return }
+            if frame.preset.effects {
+                let bezel = Int(frame.uniforms(width: target.width, height: target.height,
+                                               scale: scale).bezelPx.rounded())
+                let screenW = max(target.width - 2 * bezel, 1)
+                let screenH = max(target.height - 2 * bezel, 1)
+                if context.surfaces?.width != screenW || context.surfaces?.height != screenH {
+                    context.surfaces = EffectSurfaces(
+                        device: device, width: screenW, height: screenH)
+                }
+                guard var surfaces = context.surfaces else { return }
+                encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
+                               markedText: markedText, in: buffer, to: surfaces.terminal)
+                effectPipeline.encode(
+                    into: buffer, surfaces: &surfaces, output: target,
+                    uniforms: frame.uniforms(width: target.width, height: target.height, scale: scale),
+                    decayFactor: frame.decayFactor,
+                    bloomThreshold: Float(frame.preset.bloom.threshold),
+                    bloomSigmaPx: Float(frame.preset.bloom.radiusMM)
+                        * CRTUniforms.pixelsPerMM(scale: scale))
+                context.surfaces = surfaces
+            } else {
+                context.surfaces = nil // museum off: no offscreen chain at all
+                encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
+                               markedText: markedText, in: buffer, to: target)
+            }
             attachLatencySample(to: buffer)
             buffer.present(drawable)
             buffer.commit()
         }
     }
 
-    // MARK: Drawing
+    // MARK: CRT effects
 
-    public func draw(
-        _ state: TerminalState,
-        scrollOffset: Int = 0,
-        selection: Selection? = nil,
-        into layer: CAMetalLayer
-    ) {
-        autoreleasepool {
-            guard let drawable = layer.nextDrawable() else { return }
-            draw(state, scrollOffset: scrollOffset, selection: selection, into: drawable)
+    /// The active preset. Setting it bumps the preset generation, which
+    /// resets each pane's phosphor history on its next frame.
+    public var preset: CRTPreset {
+        get { effectsState.withLock { $0.preset } }
+        set {
+            effectsState.withLock { state in
+                guard state.preset != newValue else { return }
+                state.preset = newValue
+                state.presetGeneration &+= 1
+            }
         }
+    }
+
+    /// Fire the degauss animation (the *thunk* sound is app policy).
+    public func degauss(at time: CFTimeInterval = CACurrentMediaTime()) {
+        effectsState.withLock { $0.degaussStart = time }
+    }
+
+    /// True while an effect needs frames with no new terminal output:
+    /// degauss running, animated artifacts (noise/hum/jitter), or this
+    /// pane's phosphor persistence still visibly decaying. The render loop
+    /// keeps ticking while this holds and pauses once quiescent.
+    public func wantsContinuousFrames(
+        at time: CFTimeInterval = CACurrentMediaTime(),
+        context: SurfaceContext
+    ) -> Bool {
+        let (preset, degaussStart) = effectsState.withLock { ($0.preset, $0.degaussStart) }
+        guard preset.effects else { return false }
+        if let degaussStart, time - degaussStart < Self.degaussDuration + 0.1 { return true }
+        if preset.artifacts.isAnimated { return true }
+        let tau = preset.phosphor.decayMs / 1000
+        // exp(-6) < 1/255: the trail has fully left 8-bit range.
+        if tau > 0, time - context.lastContentChange < tau * 6 { return true }
+        return false
+    }
+
+    /// Per-frame effect parameters resolved under the lock.
+    struct FrameSetup {
+        var preset: CRTPreset
+        var degaussPhase: Float
+        var decayFactor: Float
+        var time: CFTimeInterval
+
+        func uniforms(width: Int, height: Int, scale: CGFloat) -> CRTUniforms {
+            CRTUniforms(preset: preset, width: width, height: height, scale: scale,
+                        time: time, degaussPhase: degaussPhase)
+        }
+    }
+
+    /// Internal for tests: the decay/degauss bookkeeping is asserted directly.
+    func beginFrame(
+        at time: CFTimeInterval, contentChanged: Bool, context: SurfaceContext
+    ) -> FrameSetup {
+        // Shared (per-window) state under the lock; per-pane clocks on the
+        // context, which belongs to a single render thread.
+        let (preset, presetGeneration, degaussStart):
+            (CRTPreset, UInt64, CFTimeInterval?) = effectsState.withLock { state in
+            if let start = state.degaussStart,
+               (time - start) / Self.degaussDuration >= 1 {
+                state.degaussStart = nil
+            }
+            return (state.preset, state.presetGeneration, state.degaussStart)
+        }
+
+        if contentChanged { context.lastContentChange = time }
+        // Long gaps (paused link) decay the phosphor fully; clamp so a
+        // suspend/resume doesn't compute exp() of half a day.
+        let dt = min(max(time - (context.lastDrawTime ?? time), 0), 1)
+        context.lastDrawTime = time
+
+        var degaussPhase: Float = 1
+        if let degaussStart {
+            degaussPhase = Float(max((time - degaussStart) / Self.degaussDuration, 0))
+        }
+
+        let tau = preset.phosphor.decayMs / 1000
+        var decayFactor: Float = tau > 0 ? Float(exp(-dt / tau)) : 0
+        if context.lastPresetGeneration != presetGeneration {
+            context.lastPresetGeneration = presetGeneration
+            decayFactor = 0
+        }
+        return FrameSetup(
+            preset: preset, degaussPhase: degaussPhase,
+            decayFactor: decayFactor, time: time)
     }
 
     private func attachLatencySample(to buffer: MTLCommandBuffer) {
@@ -155,25 +284,87 @@ public final class TerminalRenderer {
         }
     }
 
-    /// Offscreen render with CPU readback — drives render tests and the
-    /// debug probe, and seeds Phase 4's snapshot testing.
+    /// Offscreen render with CPU readback — drives render tests, the debug
+    /// probe, preset snapshot tests, and the gallery's live previews.
+    /// With a preset, the full effect chain runs (deterministically for the
+    /// given `time`/`degaussPhase`); persistence is single-frame, so trails
+    /// only appear in the live surface.
     public func renderImage(
         _ state: TerminalState,
         scrollOffset: Int = 0,
-        selection: Selection? = nil
+        selection: Selection? = nil,
+        markedText: String? = nil,
+        preset: CRTPreset? = nil,
+        time: CFTimeInterval = 0,
+        degaussPhase: Float = 1
     ) -> CGImage? {
-        let width = max(1, Int(CGFloat(state.columns) * cellSize.width * scale))
-        let height = max(1, Int(CGFloat(state.rows) * cellSize.height * scale))
+        renderImageMeasuringGPU(
+            state, scrollOffset: scrollOffset, selection: selection,
+            markedText: markedText, preset: preset, time: time,
+            degaussPhase: degaussPhase)?.image
+    }
+
+    /// renderImage plus the command buffer's GPU duration, for the
+    /// performance harness (PERF.md: full CRT pipeline < 2 ms at 4K).
+    public func renderImageMeasuringGPU(
+        _ state: TerminalState,
+        scrollOffset: Int = 0,
+        selection: Selection? = nil,
+        markedText: String? = nil,
+        preset: CRTPreset? = nil,
+        time: CFTimeInterval = 0,
+        degaussPhase: Float = 1
+    ) -> (image: CGImage, gpuSeconds: Double)? {
+        let gridWidth = max(1, Int(CGFloat(state.columns) * cellSize.width * scale))
+        let gridHeight = max(1, Int(CGFloat(state.rows) * cellSize.height * scale))
+        let effects = preset.map { $0.effects } ?? false
+        let bezelPx = effects
+            ? Int((Float(preset!.bezel.widthPt) * Float(scale)).rounded()) : 0
+        let width = gridWidth + 2 * bezelPx
+        let height = gridHeight + 2 * bezelPx
+
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = [.renderTarget]
         descriptor.storageMode = .shared
         guard let texture = device.makeTexture(descriptor: descriptor),
-              let buffer = encode(
-                state, scrollOffset: scrollOffset, selection: selection,
-                to: texture) else { return nil }
-        buffer.commit()
-        buffer.waitUntilCompleted()
+              let buffer = commandQueue.makeCommandBuffer() else { return nil }
+
+        if effects, let preset {
+            // The lock spans encode + commit: offscreen renders are
+            // occasional (previews, probes) and must not share textures.
+            offscreenLock.lock()
+            defer { offscreenLock.unlock() }
+            if offscreenCache?.width != gridWidth || offscreenCache?.height != gridHeight {
+                offscreenCache = EffectSurfaces(
+                    device: device, width: gridWidth, height: gridHeight)
+            }
+            guard var surfaces = offscreenCache else { return nil }
+            // Each offscreen render stands alone: never inherit trails
+            // from an earlier preview (the pass still runs, so GPU
+            // timing matches the live chain).
+            surfaces.persistenceValid = false
+            encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
+                           markedText: markedText, in: buffer, to: surfaces.terminal)
+            effectPipeline.encode(
+                into: buffer, surfaces: &surfaces, output: texture,
+                uniforms: CRTUniforms(
+                    preset: preset, width: width, height: height, scale: scale,
+                    time: time, degaussPhase: degaussPhase),
+                decayFactor: preset.phosphor.decayMs > 0 ? 1 : 0,
+                bloomThreshold: Float(preset.bloom.threshold),
+                bloomSigmaPx: Float(preset.bloom.radiusMM)
+                    * CRTUniforms.pixelsPerMM(scale: scale))
+            offscreenCache = surfaces
+            buffer.commit()
+            buffer.waitUntilCompleted()
+        } else {
+            encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
+                           markedText: markedText, in: buffer, to: texture)
+            buffer.commit()
+            buffer.waitUntilCompleted()
+        }
+        let gpuSeconds = max(buffer.gpuEndTime - buffer.gpuStartTime, 0)
 
         let bytesPerRow = width * 4
         var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
@@ -183,7 +374,7 @@ public final class TerminalRenderer {
                 from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         }
         guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-        return CGImage(
+        guard let image = CGImage(
             width: width, height: height,
             bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
             space: CGColorSpaceCreateDeviceRGB(),
@@ -191,7 +382,8 @@ public final class TerminalRenderer {
                 rawValue: CGBitmapInfo.byteOrder32Little.rawValue
                     | CGImageAlphaInfo.premultipliedFirst.rawValue),
             provider: provider, decode: nil, shouldInterpolate: false,
-            intent: .defaultIntent)
+            intent: .defaultIntent) else { return nil }
+        return (image, gpuSeconds)
     }
 
     // MARK: Latency probe
@@ -214,12 +406,20 @@ public final class TerminalRenderer {
 
     // MARK: Encoding
 
-    private func encode(
+    /// Serializes cell-pass encoding: panes share this renderer from their
+    /// own render threads, and the glyph atlas caches are not concurrent.
+    private let encodeLock = NSLock()
+
+    private func encodeCellPass(
         _ state: TerminalState,
         scrollOffset: Int,
         selection: Selection?,
+        markedText: String? = nil,
+        in buffer: MTLCommandBuffer,
         to texture: MTLTexture
-    ) -> MTLCommandBuffer? {
+    ) {
+        encodeLock.lock()
+        defer { encodeLock.unlock() }
         let cellW = Float(cellSize.width * scale)
         let cellH = Float(cellSize.height * scale)
         let baselineOffset = Float(ascent * scale)
@@ -237,12 +437,32 @@ public final class TerminalRenderer {
         bgInstances.reserveCapacity(64)
         glyphInstances.reserveCapacity(state.columns * state.rows / 2)
 
+        // IME marked text composes over the cursor cell onward; the cells
+        // underneath are masked out and the composition drawn in their place.
+        var markedColumns: Range<Int> = 0..<0
+        let markedScalars: [(scalar: Unicode.Scalar, width: Int)] =
+            (markedText?.unicodeScalars ?? "".unicodeScalars)
+                .map { ($0, CharacterWidth.width(of: $0)) }
+                .filter { $0.width > 0 }
+        if !markedScalars.isEmpty, offset == 0 {
+            let span = markedScalars.reduce(0) { $0 + $1.width }
+            markedColumns = state.cursor.x..<min(state.cursor.x + span, state.columns)
+        }
+
         for y in 0..<viewport.count {
             let row = viewport[y]
             for x in 0..<min(state.columns, row.count) {
+                if y == state.cursor.y, markedColumns.contains(x) {
+                    bgInstances.append(BgInstance(
+                        origin: SIMD2(Float(x) * cellW, Float(y) * cellH),
+                        size: SIMD2(cellW, cellH),
+                        color: scheme.selectionBackground))
+                    continue
+                }
                 let cell = row[x]
                 let isBlockCursor = cursorVisible && state.cursorStyle == .block
                     && state.cursor.x == x && state.cursor.y == y
+                    && markedColumns.isEmpty
                 let selected = selection?.contains(row: viewportTop + y, column: x) ?? false
                 var (fg, bg) = resolveColors(cell, isCursor: isBlockCursor)
                 if selected && !isBlockCursor {
@@ -287,8 +507,40 @@ public final class TerminalRenderer {
             }
         }
 
+        // The composition itself: glyphs plus a heavy underline.
+        if !markedColumns.isEmpty {
+            var x = markedColumns.lowerBound
+            let rowY = Float(state.cursor.y) * cellH
+            for (scalar, width) in markedScalars {
+                guard x < markedColumns.upperBound else { break }
+                if let entry = atlas.entry(forScalar: scalar.value), !entry.isEmpty {
+                    let instance = GlyphInstance(
+                        origin: SIMD2(
+                            Float(x) * cellW + entry.bearing.x,
+                            rowY + baselineOffset - entry.bearing.y),
+                        size: entry.size,
+                        uvOrigin: entry.uvOrigin,
+                        uvSize: entry.uvSize,
+                        color: scheme.foreground)
+                    if entry.isColor {
+                        colorGlyphInstances.append(instance)
+                    } else {
+                        glyphInstances.append(instance)
+                    }
+                }
+                x += width
+            }
+            overlayInstances.append(BgInstance(
+                origin: SIMD2(
+                    Float(markedColumns.lowerBound) * cellW,
+                    rowY + baselineOffset + lineThickness),
+                size: SIMD2(
+                    Float(markedColumns.count) * cellW, lineThickness * 2),
+                color: scheme.foreground))
+        }
+
         // Bar/underline cursor overlays (block is drawn via cell inversion).
-        if cursorVisible && state.cursorStyle != .block {
+        if cursorVisible && state.cursorStyle != .block && markedColumns.isEmpty {
             let origin = SIMD2(Float(state.cursor.x) * cellW, Float(state.cursor.y) * cellH)
             switch state.cursorStyle {
             case .bar:
@@ -312,9 +564,8 @@ public final class TerminalRenderer {
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = clearColor(scheme.background)
 
-        guard let buffer = commandQueue.makeCommandBuffer(),
-              let encoder = buffer.makeRenderCommandEncoder(descriptor: pass)
-        else { return nil }
+        guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass)
+        else { return }
 
         var uniforms = Uniforms(viewport: SIMD2(Float(texture.width), Float(texture.height)))
 
@@ -370,7 +621,6 @@ public final class TerminalRenderer {
                 instanceCount: overlayInstances.count)
         }
         encoder.endEncoding()
-        return buffer
     }
 
     private func resolveColors(_ cell: Cell, isCursor: Bool) -> (fg: UInt32, bg: UInt32) {

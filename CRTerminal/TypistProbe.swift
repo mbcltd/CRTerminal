@@ -105,7 +105,8 @@ final class TypistProbe {
         }
 
         if let renderer = view?.renderer,
-           let image = renderer.renderImage(state),
+           let image = renderer.renderImage(
+            state, preset: view?.preset, time: CACurrentMediaTime()),
            let destination = CGImageDestinationCreateWithURL(
             URL(fileURLWithPath: "/tmp/crterminal-probe.png") as CFURL,
             UTType.png.identifier as CFString, 1, nil) {

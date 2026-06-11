@@ -1,0 +1,12 @@
+{
+  "name": "Commodore 1702",
+  "year": 1984,
+  "blurb": "Composite color in all its smeary glory: slot mask, convergence fringes, hum bar, and a proper bezel.",
+  "phosphor": { "color": "#FFFFFF", "decayMs": 25, "monochrome": false },
+  "geometry": { "curvature": 0.09, "cornerRadius": 0.06, "vignette": 0.3 },
+  "mask": { "type": "slot", "pitchMM": 0.64, "strength": 0.55 },
+  "scanlines": { "lines": 242, "strength": 0.45, "beamWidth": 0.9 },
+  "bloom": { "threshold": 0.5, "strength": 0.7, "radiusMM": 0.6 },
+  "artifacts": { "noise": 0.04, "humBar": 0.02, "jitter": 0.15, "convergenceMM": 0.12, "aberration": 0.35 },
+  "bezel": { "widthPt": 18, "color": "#3A342C" }
+}
