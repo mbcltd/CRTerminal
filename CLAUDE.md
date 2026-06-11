@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CRTerminal is a macOS terminal emulator (AppKit, Swift) intended to be high-performance and GPU accelerated, with optional retro CRT screen appearance — including pre-configured presets matching historic monitors and a degauss button. The project is currently a fresh Xcode app template; the terminal functionality described in README.md is not yet implemented.
 
+See ARCHITECTURE.md for the detailed design (module layout, concurrency model, render pipeline, performance budgets) and the phased implementation plan. Follow it when implementing features, and update it when the design changes.
+
 ## Commands
 
 Build and test from the command line with `xcodebuild` (scheme: `CRTerminal`):

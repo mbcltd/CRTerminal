@@ -1,0 +1,354 @@
+# CRTerminal Architecture
+
+CRTerminal is a macOS terminal emulator with three design pillars, in priority order
+when they conflict:
+
+1. **Highly performant** — latency and throughput competitive with the best native
+   terminals (Ghostty, Alacritty, Kitty). Performance is a feature the other two
+   pillars sit on top of: the CRT effects are only fun if they never cost you a frame.
+2. **Feature rich** — a real daily-driver terminal: full xterm-class VT emulation,
+   truecolor, ligatures, emoji, IME, mouse protocols, scrollback search, tabs and
+   splits, shell integration.
+3. **Fun** — an authentic, configurable CRT simulation: phosphor glow and persistence,
+   scanlines, shadow masks, curvature, presets modelled on historic monitors, and a
+   degauss button that actually goes *thunk*.
+
+The architecture keeps these concerns in separate layers so that "fun" is a pure
+post-processing stage that can be toggled off, leaving a lean modern terminal.
+
+---
+
+## System overview
+
+```
+                ┌─────────────────────────── App target (AppKit) ───────────────────────────┐
+                │                                                                            │
+ keyboard/mouse │  NSWindow / TerminalView (NSView + NSTextInputClient)   Settings, Menus,  │
+ ──────────────▶│        │ abstract key/mouse events                      Degauss button    │
+                └────────┼───────────────────────────────────────────────────────┬──────────┘
+                         ▼                                                        │ uniforms/presets
+                  ┌─────────────┐  bytes   ┌──────────┐                           ▼
+                  │ KeyEncoder  │─────────▶│   PTY    │                   ┌──────────────────┐
+                  │ (core)      │  write   │ (fd+shell)│                  │  Renderer (Metal) │
+                  └─────────────┘          └────┬─────┘                   │  cells ▶ texture  │
+                                                │ read (IO queue)         │  ▶ CRT pipeline   │
+                                                ▼                         │  ▶ CAMetalLayer   │
+                                          ┌───────────┐   mutates        └────────▲─────────┘
+                                          │ VT Parser │──────────┐                │ snapshot
+                                          └───────────┘          ▼                │ (per frame)
+                                                          ┌──────────────┐        │
+                                                          │TerminalState │────────┘
+                                                          │ grid, modes, │
+                                                          │ scrollback   │
+                                                          └──────────────┘
+```
+
+Data flows one way: input events are encoded to bytes and written to the PTY; PTY
+output is parsed into mutations of `TerminalState`; the renderer reads immutable
+snapshots of that state. The renderer never feeds back into the model, and the model
+never knows it is being drawn on a fake CRT.
+
+## Module layout
+
+The repo hosts the Xcode app target plus local Swift packages. Everything that can be
+platform-independent is, so the core builds and tests with `swift test` in seconds,
+with no app host, and can be fuzzed from the command line.
+
+| Module | Depends on | Contents |
+|---|---|---|
+| `TerminalCore` (SPM, no AppKit/Metal) | Foundation only | VT parser, `TerminalState`, grid/cells, scrollback, selection, key/mouse encoders, damage tracking |
+| `CRTRendering` (SPM) | Metal, QuartzCore, CoreText, `TerminalCore` | glyph atlas, shaping cache, render passes, CRT effect pipeline, preset definitions |
+| `CRTerminal` (app) | AppKit, both packages | windows, `TerminalView`, input plumbing, PTY/process management, settings UI, sounds |
+
+Dependency direction is strict: `TerminalCore` ← `CRTRendering` ← app. The PTY lives
+in the app target because process spawning is app policy; the parser does not care
+where bytes come from (tests feed it byte arrays).
+
+`TerminalCore` adopts Swift 6 language mode. Shared mutable state is confined as
+described under Concurrency; everything else is value types.
+
+---
+
+## TerminalCore: emulation engine
+
+### Parser
+
+A table-driven state machine following Paul Williams' VT500-series parser
+(states: ground, escape, CSI entry/param/intermediate, OSC string, DCS, etc.), with
+UTF-8 decoding layered in front. Properties that matter:
+
+- **Pure and synchronous.** `parser.feed(bytes)` produces actions applied to
+  `TerminalState`. No I/O, no allocation on the hot path for plain text.
+- **Resumable.** Input arrives in arbitrary chunk boundaries; the state machine
+  carries partial sequences across chunks.
+- **Total.** Malformed input never traps; unknown sequences are consumed and logged
+  (a debug "unrecognised sequence" overlay aids conformance work). The parser is a
+  fuzz target from day one.
+
+Target emulation level: xterm-compatible VT220+ — the de-facto contract assumed by
+ncurses/terminfo `xterm-256color`, plus modern extensions:
+truecolor SGR, 256-color, underline styles and colors (SGR 4:x, 58), bracketed paste,
+focus reporting, alternate screen, scroll regions, rectangular ops where cheap,
+OSC 0/2 (title), OSC 4/10/11 (palette), OSC 8 (hyperlinks), OSC 52 (clipboard),
+OSC 9/777 (notifications), mouse modes (X10/normal/button/any, SGR encoding),
+`DECSCUSR` cursor shapes, XTGETTCAP/DA responses, and the kitty keyboard protocol as a
+progressive enhancement.
+
+### Screen model
+
+- **Cell** — a fixed-size 16-byte struct: glyph reference (scalar, or index into a
+  per-screen grapheme side table for multi-scalar clusters), packed fg/bg/underline
+  color (palette index or RGB, tagged), and attribute flags. Wide characters occupy a
+  head cell plus a spacer tail cell.
+- **Row** — contiguous `[Cell]` with a per-row dirty flag and wrap bit (the wrap bit
+  enables reflow and rectangular-correct copy).
+- **Grid** — active screen (primary + alternate) as CoW arrays of rows. Swift
+  copy-on-write is load-bearing here: the renderer snapshots the grid by copying the
+  array of row references (O(rows), microseconds); the parser's next mutation of a row
+  triggers an isolated row copy. No frame ever observes a half-applied escape sequence.
+- **Scrollback** — a ring buffer of evicted rows with a configurable cap (default
+  10k lines). Rows are trimmed of trailing blanks on eviction to keep memory honest.
+- **Damage tracking** — parser marks dirty rows plus a few cheap special cases
+  (full scroll = texture shift, cursor-only change). The renderer draws nothing when
+  damage is empty and no effect animation is running.
+
+Resize performs reflow (rewrap soft-wrapped lines) on the primary screen and simple
+clip/extend on the alternate screen, matching user expectations from iTerm2/Ghostty.
+Reflow is the hairiest part of the model and is scheduled late (Phase 5) behind a
+non-reflow resize that ships early.
+
+### Input encoding
+
+`KeyEncoder` and `MouseEncoder` are pure functions in `TerminalCore`:
+(abstract key event, terminal mode flags) → bytes. The app translates `NSEvent` into
+the abstract event; the encoder handles application cursor keys, modifyOtherKeys,
+kitty protocol levels, and paste bracketing. Pure functions make the entire
+key-encoding matrix unit-testable without a UI.
+
+---
+
+## PTY and process management
+
+One `PTYSession` per terminal surface: `posix_openpt`/`forkpty`, spawn the user's
+login shell (respecting `SHELL`, login-mode `argv[0]`, correct `TERM` and
+`COLORTERM=truecolor`), propagate resizes via `TIOCSWINSZ`, reap with a process
+lifetime monitor so exit status can be shown in-surface.
+
+Reads use a `DispatchSourceRead` on a dedicated serial IO queue (userInteractive QoS).
+**Flow control:** reads are bounded (e.g. 1 MiB per wakeup) and the parser runs with a
+per-frame time budget; if a process firehoses output (`cat 100MB.txt`), we keep
+consuming at full speed but only *render* coalesced snapshots at display rate, and we
+let the kernel TTY buffer apply backpressure rather than buffering unboundedly in the
+app. The UI thread is never involved in throughput.
+
+Writes (keystrokes, paste) go through a small outbound queue with non-blocking writes,
+so a stopped reader (`^S`) can't wedge the UI.
+
+## Concurrency model
+
+Three execution contexts, chosen for predictable latency over actor convenience:
+
+| Context | Runs | Owns |
+|---|---|---|
+| IO queue (serial, per session) | PTY read, parser, state mutation | `TerminalState` writes |
+| Render thread (per window) | `CAMetalDisplayLink` callback, snapshot, encode, present | GPU resources, atlas |
+| Main thread | AppKit events, IME, menus, settings | windows, sessions table |
+
+`TerminalState` is guarded by an unfair lock held only for mutation and for the CoW
+snapshot — both microsecond-scale. The renderer is *pull-based*: each display-link
+tick it takes a snapshot if damage exists (or an effect is animating) and draws;
+otherwise it returns immediately and the display link is paused after a grace period.
+Idle terminal = zero CPU, zero GPU.
+
+Keystroke fast path: `NSEvent` → encode → write to PTY happens synchronously on the
+main thread (writes are non-blocking), so added input latency is bounded by parse +
+one frame. Target: keypress-to-photon within one display refresh of the theoretical
+minimum.
+
+---
+
+## CRTRendering: drawing the terminal
+
+### Text rendering
+
+- **Glyph atlas.** Glyphs are rasterized with Core Text (`CTFontDrawGlyphs`) into
+  texture atlases: an alpha-only atlas for regular glyphs (grayscale AA), an RGBA
+  atlas for color emoji. Keyed by (font, glyph ID, style, subpixel-offset bucket),
+  LRU-evicted. Atlas pages are allocated on demand; a font-size change flushes.
+- **Shaping.** The fast path maps one cell → one glyph via the font's cmap, no shaping.
+  When ligatures are enabled, runs of cells are shaped with Core Text per run and the
+  result cached keyed by a hash of the run's content+attrs — `=>` costs shaping once,
+  then it's a cache hit. Font fallback (emoji, CJK, symbols) uses CTFontCreateForString
+  with a per-codepoint fallback cache.
+- **Draw.** Three instanced draws into an offscreen `terminalTexture`:
+  background quads, glyph quads, then decorations (cursor, selection, underlines,
+  IME marked-text). A full screen of cells is two-digit-thousands of instances —
+  trivial for any Apple GPU at 120 Hz.
+
+### CRT effect pipeline (the fun part)
+
+The terminal image is composited through an effect chain, every stage of which is
+skippable. With effects off, `terminalTexture` is drawn straight to the drawable and
+CRTerminal behaves like a lean modern terminal.
+
+```
+terminalTexture
+   │
+   ├─▶ 1. Persistence    blend with previous frame at phosphor decay rate
+   │                     (slow-decay phosphors like P39 leave real trails)
+   ├─▶ 2. Bloom          threshold ▶ downsample ▶ separable blur ▶ composite
+   │                     (phosphor glow / halation)
+   └─▶ 3. Composite      single fragment shader applying, in order:
+            barrel distortion + corner rounding (curvature)
+            shadow mask / aperture grille / slot mask pattern
+            scanlines (beam profile, not naive dark lines)
+            convergence error + chromatic aberration
+            noise, hum-bar flicker, interlace jitter (subtle, optional)
+            vignette + glass reflection
+   └─▶ 4. Bezel          optional monitor-bezel art composited around the screen
+```
+
+Design rules for the pipeline:
+
+- **Simulation-grounded parameters.** Presets specify physical-ish values — phosphor
+  chromaticity and decay time, mask pitch, beam width — not shader magic numbers, so
+  presets read like spec sheets of real monitors.
+- **Animated effects opt into frames.** Persistence, noise and flicker need continuous
+  redraw; the render loop runs only while such an effect is active and visible, drops
+  to damage-driven when the image has fully decayed, and degrades politely on battery
+  (reduced noise framerate) — fun must not show up in Activity Monitor.
+- **Degauss.** The titlebar/toolbar degauss button fires a ~1.5 s animation
+  (electromagnetic wobble, hue swirl collapsing from the edges) with the authentic
+  *thunk-hummmm* sample. Purely a uniform-driven effect in the composite pass.
+  Optionally (off by default), the screen accumulates subtle corner "magnetisation"
+  over long sessions, giving you a reason to press it.
+
+### Presets
+
+A preset is a declarative JSON document in the bundle (user presets in Application
+Support): identity (name, year, blurb), phosphor, geometry, mask, bloom, artifacts,
+bezel asset, suggested font and palette. Launch set, chosen to span the design space:
+
+- **IBM 5151** — green P39 phosphor, heavy persistence, no mask (monochrome)
+- **DEC VT220** — white or amber, fast phosphor, gentle curvature
+- **Amdek 310A** — amber classic
+- **Commodore 1702** — composite color, strong mask and bleed
+- **"Museum off"** — all effects disabled; the modern terminal
+
+The settings UI renders presets as a gallery with live previews (each preview is just
+the same pipeline at thumbnail size).
+
+---
+
+## App layer
+
+- **TerminalView** — an `NSView` hosting a `CAMetalLayer`, implementing
+  `NSTextInputClient` for full IME support (marked text drawn by the decorations
+  pass), first responder for keys, mouse handling (selection vs. reported mouse modes,
+  word/line/rectangular selection, click-through URL opening with ⌘).
+- **Surfaces, tabs, splits.** A window holds a tree of split panes, each pane a
+  surface (view + session + renderer sharing the window's atlas). Native tabs via
+  `NSWindow.tabbingMode`.
+- **Settings** — profiles (font, palette, preset, shell, scrollback), live-preview
+  preset gallery, written as declarative SwiftUI hosted in a settings window; settings
+  persist via `UserDefaults`-backed codable models.
+- **Accessibility** — the grid is exposed through `NSAccessibility` as static text
+  lines so VoiceOver can read the screen; effects never affect the accessibility tree.
+- **Shell integration** — optional shipped shell snippets emit prompt marks
+  (OSC 133), enabling jump-to-previous-prompt, command status ticks in the scrollbar
+  region, and smarter selection.
+
+## Testing strategy
+
+- **Parser/state golden tests** (Swift Testing, in `TerminalCore`): feed byte
+  sequences, assert grid contents/modes. Corpus seeded from esctest cases; vttest run
+  as a manual conformance checklist per release.
+- **Fuzzing**: libFuzzer target over `parser.feed` — must never crash or hang.
+- **Encoder matrix tests**: every (key, modifier, mode) combination.
+- **Render snapshot tests**: draw known grids through each preset offscreen, compare
+  to reference images with a perceptual diff threshold.
+- **Performance harness**: vtebench for throughput, a scripted keypress-to-present
+  latency probe, and an idle-power assertion (no frames without damage). Numbers are
+  recorded in-repo so regressions are diffable.
+
+## Performance budgets
+
+These are the contracts the design above exists to meet:
+
+| Metric | Target |
+|---|---|
+| Keypress → present | ≤ 1 added frame at 120 Hz (parse+encode < 2 ms) |
+| Throughput | vtebench within ~10% of Ghostty/Alacritty class |
+| Idle | 0% CPU, 0 GPU encodes with no damage and effects quiescent |
+| Full CRT pipeline | < 2 ms GPU per frame at 4K on Apple Silicon |
+| Memory | < 100 MB per surface at 10k-line scrollback |
+
+---
+
+# Phased implementation plan
+
+Each phase ends with something demonstrable and a hard exit criterion. Performance
+work is not a phase — budgets above are enforced from Phase 1 — but each phase has a
+primary focus.
+
+### Phase 0 — Foundations
+Restructure into the module layout above (`TerminalCore`, `CRTRendering` local
+packages), CI running `swift test` + `xcodebuild` on GitHub Actions, fuzz target
+scaffolding, replace the template XIB with a programmatic window.
+**Exit:** packages build and test in CI; app launches to an empty Metal-backed window.
+
+### Phase 1 — Walking skeleton: a live shell
+PTY session running the login shell; parser handling UTF-8, C0 controls, and the core
+CSI set (cursor movement, erase, basic SGR); fixed-size grid; Metal renderer with a
+working glyph atlas (no ligatures); basic key encoding.
+**Exit:** interactive zsh with colored `ls`, line editing, and scrolling output;
+keypress latency measured and recorded.
+
+### Phase 2 — A real terminal
+Full VT500 state machine and mode set, alternate screen, scroll regions, truecolor,
+wide chars + emoji (with fallback), non-reflow resize, scrollback + selection +
+clipboard, mouse reporting, bracketed paste, OSC title/8/52, cursor styles.
+**Exit:** vim, tmux, htop, fzf and midnight-commander all behave correctly; golden
+test corpus in place; targeted esctest subset passing.
+
+### Phase 3 — Performance and text quality
+Damage-driven rendering tightened, scroll-shift fast path, ligatures + shaping cache,
+color emoji atlas, ProMotion/120 Hz, flow-control hardening against firehose output,
+Instruments passes, vtebench + latency harness wired into the repo.
+**Exit:** all performance budgets met and recorded; `cat` of a 100 MB file stays
+responsive throughout.
+
+### Phase 4 — The CRT experience
+Offscreen pipeline, persistence, bloom, composite shader (curvature, masks, scanlines,
+aberration, noise), preset format + the launch preset set, preset gallery with live
+preview, degauss button with animation and sound, bezel rendering, battery-aware
+effect throttling.
+**Exit:** 5 presets shipping; effects toggle cleanly; full pipeline within GPU budget;
+idle-power assertion still passes with effects enabled but quiescent.
+
+### Phase 5 — Feature depth
+Tabs and split panes, profiles + full settings UI, scrollback search, URL/path
+detection + OSC 8 links, shell integration (OSC 133 marks, prompt jumping), IME
+polish, kitty keyboard protocol, resize reflow, notifications (OSC 9/777),
+accessibility pass.
+**Exit:** daily-drivable: a developer can replace their terminal with CRTerminal for a
+week without falling back.
+
+### Phase 6 — Ship
+App icon, hardened runtime + notarization, Sparkle auto-update, crash reporting,
+Homebrew cask, website/screenshots (the presets sell themselves), vttest/esctest
+regression checklist, README rewrite.
+**Exit:** signed, notarized 1.0 downloadable outside the App Store.
+
+## Risks and mitigations
+
+- **Resize reflow** is notoriously fiddly → ship non-reflow resize early (Phase 2),
+  build reflow on the wrap-bit data model later (Phase 5).
+- **IME edge cases** (marked text + alternate screen + scroll) → `NSTextInputClient`
+  from the first view implementation, not retrofitted.
+- **Effect power draw** → animated effects gated by visibility/battery from the first
+  shader, enforced by the idle-power test.
+- **Scope creep on protocols** (sixel, kitty graphics) → explicitly out of scope for
+  1.0; the offscreen-texture design leaves room to add image protocols later.
+- **Period fonts/bezel art licensing** → only bundle assets with clear licenses;
+  presets may *suggest* fonts without bundling them.
