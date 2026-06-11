@@ -108,6 +108,10 @@ public struct TerminalState: Sendable {
     private var shiftedOut = false // SO selects G1
     private var lastPrinted: Unicode.Scalar?
 
+    /// Shared blank row: appended rows CoW-share this storage until written,
+    /// which makes scrolling allocation-free for untouched cells.
+    private var blankRow: [Cell]
+
     private struct SavedCursor: Sendable {
         var cursor: Cursor
         var brush: Brush
@@ -125,9 +129,8 @@ public struct TerminalState: Sendable {
         self.columns = max(1, columns)
         self.rows = max(1, rows)
         marginBottom = self.rows - 1
-        lines = Array(
-            repeating: Array(repeating: .blank, count: self.columns),
-            count: self.rows)
+        blankRow = Array(repeating: .blank, count: self.columns)
+        lines = Array(repeating: blankRow, count: self.rows)
         tabStops = Self.defaultTabStops(columns: self.columns)
     }
 
@@ -169,6 +172,7 @@ public struct TerminalState: Sendable {
         }
         columns = newColumns
         rows = newRows
+        blankRow = Array(repeating: .blank, count: newColumns)
         marginTop = 0
         marginBottom = rows - 1
         cursor.x = min(cursor.x, columns - 1)
@@ -210,7 +214,7 @@ public struct TerminalState: Sendable {
     }
 
     private func blankLines(_ count: Int) -> [[Cell]] {
-        Array(repeating: Array(repeating: Cell.blank, count: columns), count: count)
+        Array(repeating: blankRow, count: count)
     }
 
     /// Scrolls the region up; evicts to scrollback only when the region's
@@ -397,6 +401,56 @@ extension TerminalState: TerminalHandler {
         guard width > 0 else { return } // combining marks: side table in Phase 3
         lastPrinted = scalar
         printResolved(scalar, width: width)
+    }
+
+    /// Chunked fast path for printable ASCII runs from the parser. Must match
+    /// per-character `printScalar` semantics exactly (deferred wrap, wide-pair
+    /// clobbering, REP bookkeeping); falls back when a mode complicates it.
+    public mutating func printASCIIRun(_ bytes: UnsafeBufferPointer<UInt8>) {
+        guard !bytes.isEmpty else { return }
+        if activeCharset != .ascii || modes.insertMode {
+            for byte in bytes {
+                printScalar(Unicode.Scalar(byte))
+            }
+            return
+        }
+        lastPrinted = Unicode.Scalar(bytes[bytes.count - 1])
+        let brush = brush
+        var index = 0
+        while index < bytes.count {
+            if pendingWrap {
+                pendingWrap = false
+                if modes.autowrap {
+                    cursor.x = 0
+                    self.index()
+                }
+            }
+            if !modes.autowrap && cursor.x == columns - 1 {
+                // Clamped at the right edge: only the final byte survives.
+                clearWidePair(at: cursor.x, row: cursor.y)
+                lines[cursor.y][cursor.x] = brush.cell(UInt32(bytes[bytes.count - 1]))
+                pendingWrap = true
+                break
+            }
+            let span = min(columns - cursor.x, bytes.count - index)
+            let x = cursor.x
+            let y = cursor.y
+            // Wide pairs straddling the chunk boundary lose their other half.
+            clearWidePair(at: x, row: y)
+            clearWidePair(at: x + span - 1, row: y)
+            lines[y].withUnsafeMutableBufferPointer { row in
+                for k in 0..<span {
+                    row[x + k] = brush.cell(UInt32(bytes[index + k]))
+                }
+            }
+            cursor.x += span
+            if cursor.x >= columns {
+                cursor.x = columns - 1
+                pendingWrap = true
+            }
+            index += span
+        }
+        touch()
     }
 
     private mutating func printResolved(_ scalar: Unicode.Scalar, width: Int) {

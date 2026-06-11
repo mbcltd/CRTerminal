@@ -2,10 +2,21 @@
 /// tests use recording handlers to verify syntax separately from semantics.
 public protocol TerminalHandler {
     mutating func printScalar(_ scalar: Unicode.Scalar)
+    /// Bulk fast path for runs of printable ASCII (0x20–0x7E). The default
+    /// forwards per scalar; `TerminalState` overrides with chunked writes.
+    mutating func printASCIIRun(_ bytes: UnsafeBufferPointer<UInt8>)
     mutating func executeControl(_ byte: UInt8)
     mutating func escapeDispatch(final: UInt8, intermediates: [UInt8])
     mutating func csiDispatch(_ sequence: CSISequence)
     mutating func oscDispatch(_ payload: [UInt8])
+}
+
+extension TerminalHandler {
+    public mutating func printASCIIRun(_ bytes: UnsafeBufferPointer<UInt8>) {
+        for byte in bytes {
+            printScalar(Unicode.Scalar(byte))
+        }
+    }
 }
 
 public struct CSISequence: Sendable, Equatable {
@@ -73,8 +84,23 @@ public struct VTParser: Sendable {
     public init() {}
 
     public mutating func feed(_ bytes: UnsafeBufferPointer<UInt8>, handler: inout some TerminalHandler) {
-        for byte in bytes {
-            consume(byte, &handler)
+        var i = 0
+        let count = bytes.count
+        while i < count {
+            let byte = bytes[i]
+            // Fast path: a run of printable ASCII in ground state goes to the
+            // handler in one call instead of per-byte dispatch.
+            if state == .ground, utf8Remaining == 0, byte &- 0x20 < 0x5F {
+                var j = i + 1
+                while j < count, bytes[j] &- 0x20 < 0x5F {
+                    j += 1
+                }
+                handler.printASCIIRun(UnsafeBufferPointer(rebasing: bytes[i..<j]))
+                i = j
+            } else {
+                consume(byte, &handler)
+                i += 1
+            }
         }
     }
 
@@ -151,7 +177,7 @@ public struct VTParser: Sendable {
     private mutating func enterEscape() {
         state = .escape
         utf8Remaining = 0
-        intermediates = []
+        intermediates.removeAll(keepingCapacity: true)
     }
 
     private mutating func escape(_ byte: UInt8, _ handler: inout some TerminalHandler) {
@@ -161,9 +187,9 @@ public struct VTParser: Sendable {
         case 0x5B: // '['
             state = .csiEntry
             prefix = nil
-            params = []
+            params.removeAll(keepingCapacity: true)
             currentParam = nil
-            intermediates = []
+            intermediates.removeAll(keepingCapacity: true)
         case 0x5D: // ']'
             state = .oscString
             oscBuffer = []

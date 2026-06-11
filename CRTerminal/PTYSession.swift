@@ -12,16 +12,19 @@ nonisolated final class PTYSession: @unchecked Sendable {
     let processID: pid_t
     private let masterFD: Int32
     /// Kept open for winsize ioctls: on macOS TIOCSWINSZ is ENOTTY on the
-    /// master fd and must target the slave.
+    /// master fd and must target the slave. Closed on child exit to unblock
+    /// the reader's poll with HUP.
     private let slaveFD: Int32
     private let ioQueue = DispatchQueue(label: "crterminal.pty.io", qos: .userInteractive)
-    private let readSource: DispatchSourceRead
+    /// Dedicated reader thread: blocking poll + drain beats a dispatch
+    /// source by ~100k queue wakeups on a 100 MB firehose.
+    private var readerThread: Thread?
     private let exitSource: DispatchSourceProcess
     private let exited = OSAllocatedUnfairLock(initialState: false)
 
-    /// Called on the IO queue with each chunk read from the PTY.
-    var onData: ((Data) -> Void)?
-    /// Called once, on the IO queue, when the child exits.
+    /// Called on the reader thread with each batch read from the PTY.
+    var onData: (([UInt8]) -> Void)?
+    /// Called once when the child exits (reader thread or IO queue).
     var onExit: ((Int32) -> Void)?
 
     enum Failure: Error {
@@ -95,29 +98,33 @@ nonisolated final class PTYSession: @unchecked Sendable {
         masterFD = master
         slaveFD = slave
 
-        // Non-blocking source-driven reads.
+        // Non-blocking reads (the reader thread blocks in poll instead).
         let flags = fcntl(master, F_GETFL)
         _ = fcntl(master, F_SETFL, flags | O_NONBLOCK)
 
-        readSource = DispatchSource.makeReadSource(fileDescriptor: master, queue: ioQueue)
         exitSource = DispatchSource.makeProcessSource(
             identifier: pid, eventMask: .exit, queue: ioQueue)
-
-        readSource.setEventHandler { [weak self] in
-            self?.readAvailable()
-        }
         exitSource.setEventHandler { [weak self] in
             self?.handleExit()
         }
-        readSource.resume()
         exitSource.resume()
+
+        let thread = Thread { [weak self] in
+            self?.readLoop()
+        }
+        thread.name = "crterminal.pty.read"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+        readerThread = thread
     }
 
     deinit {
-        readSource.cancel()
         exitSource.cancel()
         close(masterFD)
-        close(slaveFD)
+        let slaveAlreadyClosed = exited.withLock { $0 }
+        if !slaveAlreadyClosed {
+            close(slaveFD)
+        }
     }
 
     func send(_ bytes: [UInt8]) {
@@ -150,14 +157,43 @@ nonisolated final class PTYSession: @unchecked Sendable {
         kill(processID, SIGHUP)
     }
 
-    private func readAvailable() {
-        // Bounded per wakeup; the kernel TTY buffer provides backpressure.
-        var buffer = [UInt8](repeating: 0, count: 128 * 1024)
-        let count = read(masterFD, &buffer, buffer.count)
-        if count > 0 {
-            onData?(Data(buffer[0..<count]))
-        } else if count == 0 || (count < 0 && errno == EIO) {
-            handleExit() // EOF/EIO: slave side gone
+    /// The kernel hands PTY data out ~1 KiB at a time (≈100k reads for a
+    /// 100 MB cat). The reader thread blocks in poll, then drains to EAGAIN,
+    /// delivering ~256 KiB batches — syscall-bound, no queue wakeups, with
+    /// the kernel TTY buffer applying backpressure to the writer.
+    private func readLoop() {
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        var batch: [UInt8] = []
+        let batchLimit = 256 * 1024
+        while true {
+            var fds = pollfd(fd: masterFD, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&fds, 1, -1)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                break
+            }
+            batch.removeAll(keepingCapacity: true)
+            var sawEOF = false
+            while batch.count < batchLimit {
+                let count = read(masterFD, &buffer, buffer.count)
+                if count > 0 {
+                    batch.append(contentsOf: buffer[0..<count])
+                } else if count == 0 || (count < 0 && errno == EIO) {
+                    sawEOF = true
+                    break
+                } else {
+                    break // EAGAIN: drained for now
+                }
+            }
+            if !batch.isEmpty {
+                onData?(batch)
+            }
+            if sawEOF || fds.revents & Int16(POLLHUP | POLLNVAL | POLLERR) != 0 {
+                if batch.isEmpty || sawEOF {
+                    handleExit()
+                    return
+                }
+            }
         }
     }
 
@@ -167,8 +203,10 @@ nonisolated final class PTYSession: @unchecked Sendable {
             return state
         }
         guard !alreadyExited else { return }
-        readSource.cancel()
         exitSource.cancel()
+        // Last slave holder: closing flips the reader's poll to HUP/EOF so
+        // it drains any final buffered output and exits.
+        close(slaveFD)
         var status: Int32 = 0
         waitpid(processID, &status, WNOHANG)
         onExit?(status)

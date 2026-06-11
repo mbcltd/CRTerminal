@@ -64,16 +64,16 @@ nonisolated final class TerminalSession: @unchecked Sendable {
         return url
     }()
 
-    private func ingest(_ data: Data) {
+    private func ingest(_ data: [UInt8]) {
         if let url = Self.captureURL,
            let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()
-            handle.write(data)
+            handle.write(Data(data))
             try? handle.close()
         }
         let (responses, clipboard) = terminal.withLock { terminal in
-            data.withUnsafeBytes { raw in
-                terminal.feed(raw.bindMemory(to: UInt8.self))
+            data.withUnsafeBufferPointer { raw in
+                terminal.feed(raw)
             }
             return (terminal.drainResponses(), terminal.drainClipboard())
         }

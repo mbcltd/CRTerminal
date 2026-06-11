@@ -18,6 +18,7 @@ public final class TerminalRenderer {
     private let commandQueue: MTLCommandQueue
     private let bgPipeline: MTLRenderPipelineState
     private let glyphPipeline: MTLRenderPipelineState
+    private let colorGlyphPipeline: MTLRenderPipelineState
     private let atlas: GlyphAtlas
     private let ascent: CGFloat
 
@@ -86,8 +87,41 @@ public final class TerminalRenderer {
             attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
             attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
             glyphPipeline = try device.makeRenderPipelineState(descriptor: glyphDescriptor)
+
+            // Color glyphs arrive premultiplied; blend with (1, 1-srcAlpha).
+            let colorDescriptor = MTLRenderPipelineDescriptor()
+            colorDescriptor.vertexFunction = library.makeFunction(name: "glyph_vertex")
+            colorDescriptor.fragmentFunction = library.makeFunction(name: "color_glyph_fragment")
+            let colorAttachment = colorDescriptor.colorAttachments[0]!
+            colorAttachment.pixelFormat = .bgra8Unorm
+            colorAttachment.isBlendingEnabled = true
+            colorAttachment.rgbBlendOperation = .add
+            colorAttachment.alphaBlendOperation = .add
+            colorAttachment.sourceRGBBlendFactor = .one
+            colorAttachment.sourceAlphaBlendFactor = .one
+            colorAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            colorAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            colorGlyphPipeline = try device.makeRenderPipelineState(descriptor: colorDescriptor)
         } catch {
             return nil
+        }
+    }
+
+    /// Render-thread entry: draws into a drawable provided by
+    /// CAMetalDisplayLink (never calls nextDrawable).
+    public func draw(
+        _ state: TerminalState,
+        scrollOffset: Int = 0,
+        selection: Selection? = nil,
+        into drawable: CAMetalDrawable
+    ) {
+        autoreleasepool {
+            guard let buffer = encode(
+                state, scrollOffset: scrollOffset, selection: selection,
+                to: drawable.texture) else { return }
+            attachLatencySample(to: buffer)
+            buffer.present(drawable)
+            buffer.commit()
         }
     }
 
@@ -100,26 +134,24 @@ public final class TerminalRenderer {
         into layer: CAMetalLayer
     ) {
         autoreleasepool {
-            guard let drawable = layer.nextDrawable(),
-                  let buffer = encode(
-                    state, scrollOffset: scrollOffset, selection: selection,
-                    to: drawable.texture) else { return }
-            let pendingInput = latency.withLock { state in
-                defer { state.pendingInput = nil }
-                return state.pendingInput
+            guard let drawable = layer.nextDrawable() else { return }
+            draw(state, scrollOffset: scrollOffset, selection: selection, into: drawable)
+        }
+    }
+
+    private func attachLatencySample(to buffer: MTLCommandBuffer) {
+        let pendingInput = latency.withLock { state in
+            defer { state.pendingInput = nil }
+            return state.pendingInput
+        }
+        guard let pendingInput else { return }
+        // Completed ≈ presented for this workload, and unlike
+        // addPresentedHandler it also fires when launched headless.
+        buffer.addCompletedHandler { [latency] _ in
+            let now = CACurrentMediaTime()
+            latency.withLock {
+                $0.samples.append(now - pendingInput)
             }
-            if let pendingInput {
-                // Completed ≈ presented for this workload, and unlike
-                // addPresentedHandler it also fires when launched headless.
-                buffer.addCompletedHandler { [latency] _ in
-                    let now = CACurrentMediaTime()
-                    latency.withLock {
-                        $0.samples.append(now - pendingInput)
-                    }
-                }
-            }
-            buffer.present(drawable)
-            buffer.commit()
         }
     }
 
@@ -200,6 +232,7 @@ public final class TerminalRenderer {
 
         var bgInstances: [BgInstance] = []
         var glyphInstances: [GlyphInstance] = []
+        var colorGlyphInstances: [GlyphInstance] = []
         var overlayInstances: [BgInstance] = [] // decorations + thin cursors
         bgInstances.reserveCapacity(64)
         glyphInstances.reserveCapacity(state.columns * state.rows / 2)
@@ -224,14 +257,19 @@ public final class TerminalRenderer {
                 if cell.glyph != Cell.blank.glyph,
                    !cell.attributes.contains(.wideSpacer),
                    let entry = atlas.entry(forScalar: cell.glyph), !entry.isEmpty {
-                    glyphInstances.append(GlyphInstance(
+                    let instance = GlyphInstance(
                         origin: SIMD2(
                             origin.x + entry.bearing.x,
                             origin.y + baselineOffset - entry.bearing.y),
                         size: entry.size,
                         uvOrigin: entry.uvOrigin,
                         uvSize: entry.uvSize,
-                        color: fg))
+                        color: fg)
+                    if entry.isColor {
+                        colorGlyphInstances.append(instance)
+                    } else {
+                        glyphInstances.append(instance)
+                    }
                 }
                 let cellSpan = cell.attributes.contains(.wide) ? cellW * 2 : cellW
                 if cell.attributes.contains(.underlined) {
@@ -305,6 +343,19 @@ public final class TerminalRenderer {
             encoder.drawPrimitives(
                 type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                 instanceCount: glyphInstances.count)
+        }
+        if !colorGlyphInstances.isEmpty,
+           let instanceBuffer = device.makeBuffer(
+            bytes: colorGlyphInstances,
+            length: colorGlyphInstances.count * MemoryLayout<GlyphInstance>.stride,
+            options: .storageModeShared) {
+            encoder.setRenderPipelineState(colorGlyphPipeline)
+            encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.setFragmentTexture(atlas.colorTexture, index: 0)
+            encoder.drawPrimitives(
+                type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                instanceCount: colorGlyphInstances.count)
         }
         if !overlayInstances.isEmpty,
            let instanceBuffer = device.makeBuffer(

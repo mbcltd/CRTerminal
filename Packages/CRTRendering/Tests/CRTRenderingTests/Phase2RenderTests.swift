@@ -80,6 +80,25 @@ struct Phase2RenderTests {
         #expect(middle.r < 100) // not a block cursor
     }
 
+    @Test func colorEmojiRendersInColor() throws {
+        guard let renderer = makeRenderer() else { return }
+        var terminal = Terminal(columns: 4, rows: 1)
+        terminal.feed(Array("\u{1B}[?25l😀".utf8))
+        let image = try #require(renderer.renderImage(terminal.state))
+        let cellW = Int(renderer.cellSize.width)
+        let cellH = Int(renderer.cellSize.height)
+        // The grinning-face emoji is saturated yellow: look for a pixel where
+        // red and green clearly dominate blue (a tinted gray glyph can't).
+        var foundColor = false
+        for y in 0..<cellH {
+            for x in 0..<(cellW * 2) {
+                let p = pixel(image, x, y)
+                if p.r > 180 && p.g > 130 && p.b < 100 { foundColor = true }
+            }
+        }
+        #expect(foundColor)
+    }
+
     @Test func wideGlyphRendersAcrossTwoCells() throws {
         guard let renderer = makeRenderer() else { return }
         var terminal = Terminal(columns: 4, rows: 1)

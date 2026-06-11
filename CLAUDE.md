@@ -27,6 +27,9 @@ xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal -destination 'platfo
 xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal -destination 'platform=macOS' \
   -skip-testing:CRTerminalUITests test
 
+# Core throughput benchmarks (always Release; debug parses ~20× slower)
+Scripts/bench.sh
+
 # Fuzz the terminal core (libFuzzer; needs a swift.org toolchain — Xcode's Swift
 # lacks the fuzzer runtime. Pass libFuzzer args like -max_total_time=60.)
 Scripts/fuzz.sh

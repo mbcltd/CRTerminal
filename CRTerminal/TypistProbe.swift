@@ -58,7 +58,32 @@ final class TypistProbe {
     }
 
     private func finish() {
+        // Idle assertion: with no output arriving, the render loop must stop
+        // producing frames and pause its display link.
+        let drawsBeforeIdle = view?.drawCount ?? 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.report(drawsBeforeIdle: drawsBeforeIdle)
+        }
+    }
+
+    private func physicalFootprintMB() -> Int {
+        var info = rusage_info_current()
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(getpid(), RUSAGE_INFO_CURRENT, $0)
+            }
+        }
+        guard result == 0 else { return -1 }
+        return Int(info.ri_phys_footprint / 1_000_000)
+    }
+
+    private func report(drawsBeforeIdle: Int) {
         var report = ["=== CRT_TYPIST REPORT ==="]
+        let drawsNow = view?.drawCount ?? 0
+        let paused = view?.renderLoop?.isPaused ?? false
+        report.append(
+            "idle: \(drawsNow - drawsBeforeIdle) draws in 2s quiet, link paused: \(paused)")
+        report.append("memory: \(physicalFootprintMB()) MB physical footprint")
 
         let state = session.snapshot
         report.append("grid \(state.columns)x\(state.rows), generation \(state.generation), frames drawn \(view?.drawCount ?? -1)")

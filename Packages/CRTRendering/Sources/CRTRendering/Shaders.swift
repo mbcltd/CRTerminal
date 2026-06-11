@@ -71,4 +71,11 @@ fragment float4 glyph_fragment(VSOut in [[stage_in]],
     float a = atlas.sample(s, in.uv).r;
     return float4(in.color.rgb, in.color.a * a);
 }
+
+// Color (emoji) glyphs: premultiplied BGRA sampled directly, no tint.
+fragment float4 color_glyph_fragment(VSOut in [[stage_in]],
+                                     texture2d<float> atlas [[texture(0)]]) {
+    constexpr sampler s(coord::normalized, filter::linear);
+    return atlas.sample(s, in.uv);
+}
 """

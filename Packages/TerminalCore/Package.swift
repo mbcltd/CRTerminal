@@ -9,6 +9,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "TerminalCore"),
+        .executableTarget(name: "TerminalBench", dependencies: ["TerminalCore"]),
         .testTarget(name: "TerminalCoreTests", dependencies: ["TerminalCore"]),
     ],
     swiftLanguageModes: [.v6]

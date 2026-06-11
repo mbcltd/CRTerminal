@@ -8,15 +8,15 @@ import TerminalCore
 /// day one so IME isn't a retrofit (ARCHITECTURE.md risks).
 final class TerminalView: NSView, NSTextInputClient {
     private(set) var renderer: TerminalRenderer?
+    private(set) var renderLoop: RenderLoop?
     var session: TerminalSession? {
         didSet { wireSession() }
     }
 
-    private var lastDrawnGeneration: UInt64?
     private var lastBellCount: UInt64 = 0
     private var markedText: String?
-    /// Frames actually drawn; reported by the typist probe.
-    private(set) var drawCount = 0
+    /// Frames actually drawn (on the render thread); probe-reported.
+    var drawCount: Int { renderLoop?.drawCount ?? 0 }
 
     /// Lines scrolled back from live (0 = following output).
     private var scrollOffset = 0
@@ -54,15 +54,11 @@ final class TerminalView: NSView, NSTextInputClient {
         CAMetalLayer()
     }
 
-    /// Renders the current snapshot into the layer. Driven directly by
-    /// session updates and geometry changes — a CAMetalLayer presents its own
-    /// drawables, so AppKit's contents-update cycle is not involved. Phase 3
-    /// moves this onto a CAMetalDisplayLink render thread.
-    private func renderFrame() {
+    /// Main-thread reaction to session updates: side effects (bell, title,
+    /// offset clamping) plus waking the render thread. Drawing itself happens
+    /// on the RenderLoop's CAMetalDisplayLink thread.
+    private func sessionDidUpdate() {
         guard let session else { return }
-        setUpRendererIfNeeded()
-        guard let renderer, let metalLayer else { return }
-
         let state = session.snapshot
         if state.bellCount != lastBellCount {
             lastBellCount = state.bellCount
@@ -71,18 +67,12 @@ final class TerminalView: NSView, NSTextInputClient {
         if let title = state.title, window?.title != title {
             window?.title = title
         }
-        scrollOffset = min(scrollOffset, state.scrollback.count)
-        guard state.generation != lastDrawnGeneration else { return }
-        lastDrawnGeneration = state.generation
-
-        metalLayer.device = renderer.device
-        metalLayer.pixelFormat = .bgra8Unorm
-        metalLayer.contentsScale = window?.backingScaleFactor ?? 2
-        let size = convertToBacking(bounds).size
-        guard size.width > 0, size.height > 0 else { return }
-        metalLayer.drawableSize = size
-        renderer.draw(state, scrollOffset: scrollOffset, selection: selection, into: metalLayer)
-        drawCount += 1
+        let clamped = min(scrollOffset, state.scrollback.count)
+        if clamped != scrollOffset {
+            scrollOffset = clamped
+            pushViewStateToRenderLoop()
+        }
+        renderLoop?.poke()
     }
 
     override func viewDidMoveToWindow() {
@@ -90,39 +80,58 @@ final class TerminalView: NSView, NSTextInputClient {
         setUpRendererIfNeeded()
         window?.makeFirstResponder(self)
         observeKeyWindow()
-        forceRedraw()
+        updateLayerGeometry()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        selection = nil
+        if selection != nil {
+            selection = nil
+            pushViewStateToRenderLoop()
+        }
         updateGridSize()
-        forceRedraw()
+        updateLayerGeometry()
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        forceRedraw()
+        updateLayerGeometry()
     }
 
     private func setUpRendererIfNeeded() {
-        guard renderer == nil, window != nil else { return }
+        guard renderer == nil, window != nil, let metalLayer, let session else { return }
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        renderer = TerminalRenderer(
-            font: font, scale: window?.backingScaleFactor ?? 2)
+        guard let renderer = TerminalRenderer(
+            font: font, scale: window?.backingScaleFactor ?? 2) else { return }
+        self.renderer = renderer
+        metalLayer.device = renderer.device
+        metalLayer.pixelFormat = .bgra8Unorm
         updateGridSize()
+        updateLayerGeometry()
+        renderLoop = RenderLoop(layer: metalLayer, renderer: renderer, session: session)
     }
 
-    private func forceRedraw() {
-        lastDrawnGeneration = nil
-        renderFrame()
+    /// Geometry is owned by the main thread; the render thread just consumes
+    /// drawables at whatever size the layer currently has.
+    private func updateLayerGeometry() {
+        guard let metalLayer else { return }
+        metalLayer.contentsScale = window?.backingScaleFactor ?? 2
+        let size = convertToBacking(bounds).size
+        if size.width > 0, size.height > 0 {
+            metalLayer.drawableSize = size
+        }
+        renderLoop?.poke(force: true)
+    }
+
+    private func pushViewStateToRenderLoop() {
+        renderLoop?.setViewState(scrollOffset: scrollOffset, selection: selection)
     }
 
     private func wireSession() {
         session?.onUpdate = { [weak self] in
-            self?.renderFrame()
+            self?.sessionDidUpdate()
         }
-        forceRedraw()
+        setUpRendererIfNeeded()
     }
 
     private func updateGridSize() {
@@ -176,11 +185,11 @@ final class TerminalView: NSView, NSTextInputClient {
     private func sendKeyboard(_ bytes: [UInt8]) {
         if scrollOffset != 0 {
             scrollOffset = 0
-            forceRedraw()
+            pushViewStateToRenderLoop()
         }
         if selection != nil {
             selection = nil
-            forceRedraw()
+            pushViewStateToRenderLoop()
         }
         send(bytes)
     }
@@ -350,7 +359,7 @@ final class TerminalView: NSView, NSTextInputClient {
             selection = nil
             selectionAnchor = point
         }
-        forceRedraw()
+        pushViewStateToRenderLoop()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -362,7 +371,7 @@ final class TerminalView: NSView, NSTextInputClient {
         } else if let anchor = selectionAnchor {
             selection = Selection(anchor: anchor, head: point)
         }
-        forceRedraw()
+        pushViewStateToRenderLoop()
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -370,7 +379,7 @@ final class TerminalView: NSView, NSTextInputClient {
         if reportMouse(.release, button: .left, event: event) { return }
         if let selection, selection.isEmpty {
             self.selection = nil
-            forceRedraw()
+            pushViewStateToRenderLoop()
         }
     }
 
@@ -428,7 +437,7 @@ final class TerminalView: NSView, NSTextInputClient {
         // Otherwise scroll the viewport through scrollback.
         let target = scrollOffset + lines
         scrollOffset = min(max(0, target), state.scrollback.count)
-        forceRedraw()
+        pushViewStateToRenderLoop()
     }
 
     // MARK: NSTextInputClient
