@@ -55,7 +55,22 @@ nonisolated final class TerminalSession: @unchecked Sendable {
         pty.terminate()
     }
 
+    /// CRT_TYPIST_CAPTURE=1: append every ingested PTY byte to
+    /// /tmp/crterminal-bytes.bin for replay debugging and golden tests.
+    private static let captureURL: URL? = {
+        guard ProcessInfo.processInfo.environment["CRT_TYPIST_CAPTURE"] != nil else { return nil }
+        let url = URL(fileURLWithPath: "/tmp/crterminal-bytes.bin")
+        try? Data().write(to: url)
+        return url
+    }()
+
     private func ingest(_ data: Data) {
+        if let url = Self.captureURL,
+           let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        }
         let (responses, clipboard) = terminal.withLock { terminal in
             data.withUnsafeBytes { raw in
                 terminal.feed(raw.bindMemory(to: UInt8.self))

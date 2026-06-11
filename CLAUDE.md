@@ -34,7 +34,9 @@ Scripts/fuzz.sh
 # End-to-end probe: types a command into the live shell, dumps the grid,
 # measures input→render latency, writes /tmp/crterminal-probe.{txt,png}
 # CRT_TYPIST_SCRIPT overrides the typed bytes (real control chars, e.g.
-# $'vim /etc/hosts\r:q\r'); CRT_TYPIST_WAIT = settle seconds before report.
+# $'vim /etc/hosts\r:q\r'; 0x1F = pause 1s — NUL would truncate the env var);
+# CRT_TYPIST_WAIT = settle seconds; CRT_TYPIST_CAPTURE=1 dumps all PTY bytes
+# to /tmp/crterminal-bytes.bin for replay debugging.
 # Must launch via `open` — windows don't display when the binary runs bare.
 open -W --env CRT_TYPIST=1 <DerivedData>/Build/Products/Debug/CRTerminal.app
 ```
@@ -58,3 +60,4 @@ Gotchas learned the hard way:
 - App Sandbox is deliberately OFF (a terminal must exec the user's shell unrestricted) — don't re-enable it.
 - The Metal surface renders directly via `TerminalView.renderFrame()` driven by session updates, NOT via `updateLayer`/`needsDisplay` (AppKit never invoked `updateLayer` for the custom CAMetalLayer; CAMetalLayer doesn't need AppKit's display cycle anyway).
 - `setVertexBytes` caps at 4 KiB — per-cell instance arrays must use `makeBuffer`.
+- `TIOCSWINSZ` is ENOTTY on the posix_openpt *master* on macOS — winsize ioctls must target the slave fd (PTYSession keeps one open). When winsize is zeroed, ncurses silently falls back to 80×24, which can mask the bug.

@@ -41,9 +41,18 @@ final class TypistProbe {
             }
             return
         }
-        view?.send([script[position]])
+        let byte = script[position]
         position += 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        // 0x1F (unit separator) in the script = pause 1s (waiting for a TUI
+        // to start up). NUL can't be the marker: env values are NUL-terminated.
+        let delay: Double
+        if byte == 0x1F {
+            delay = 1.0
+        } else {
+            view?.send([byte])
+            delay = 0.05
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             self.typeNext()
         }
     }

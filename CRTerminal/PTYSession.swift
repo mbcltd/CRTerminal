@@ -11,6 +11,9 @@ nonisolated final class PTYSession: @unchecked Sendable {
 
     let processID: pid_t
     private let masterFD: Int32
+    /// Kept open for winsize ioctls: on macOS TIOCSWINSZ is ENOTTY on the
+    /// master fd and must target the slave.
+    private let slaveFD: Int32
     private let ioQueue = DispatchQueue(label: "crterminal.pty.io", qos: .userInteractive)
     private let readSource: DispatchSourceRead
     private let exitSource: DispatchSourceProcess
@@ -33,10 +36,15 @@ nonisolated final class PTYSession: @unchecked Sendable {
         grantpt(master)
         unlockpt(master)
         let slavePath = String(cString: ptsname(master))
+        let slave = open(slavePath, O_RDWR | O_NOCTTY)
+        guard slave >= 0 else {
+            close(master)
+            throw Failure.openpt(errno)
+        }
 
         var size = winsize(
             ws_row: UInt16(rows), ws_col: UInt16(columns), ws_xpixel: 0, ws_ypixel: 0)
-        _ = ioctl(master, Self.TIOCSWINSZ, &size)
+        _ = ioctl(slave, Self.TIOCSWINSZ, &size)
 
         // Spawn the login shell. POSIX_SPAWN_SETSID + opening the slave as fd
         // 0 makes it the controlling terminal (first tty open by the session
@@ -85,6 +93,7 @@ nonisolated final class PTYSession: @unchecked Sendable {
 
         processID = pid
         masterFD = master
+        slaveFD = slave
 
         // Non-blocking source-driven reads.
         let flags = fcntl(master, F_GETFL)
@@ -108,6 +117,7 @@ nonisolated final class PTYSession: @unchecked Sendable {
         readSource.cancel()
         exitSource.cancel()
         close(masterFD)
+        close(slaveFD)
     }
 
     func send(_ bytes: [UInt8]) {
@@ -133,7 +143,7 @@ nonisolated final class PTYSession: @unchecked Sendable {
         var size = winsize(
             ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: columns),
             ws_xpixel: 0, ws_ypixel: 0)
-        _ = ioctl(masterFD, Self.TIOCSWINSZ, &size)
+        _ = ioctl(slaveFD, Self.TIOCSWINSZ, &size)
     }
 
     func terminate() {
