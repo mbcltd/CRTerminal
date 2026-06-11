@@ -8,15 +8,23 @@ import UniformTypeIdentifiers
 /// real input path, measures input→present latency, dumps the grid as text,
 /// writes a PNG of the framebuffer, and exits. Seed of the Phase 3 latency
 /// harness; numbers are recorded in PERF.md.
+///
+/// CRT_TYPIST_SCRIPT overrides the typed bytes (pass real control chars,
+/// e.g. `$'htop\rq'` from a shell); CRT_TYPIST_WAIT sets the seconds to let
+/// the screen settle before the report (default 1).
 final class TypistProbe {
     private weak var view: TerminalView?
     private let session: TerminalSession
-    private let script = Array("echo Phase1_é_$((6*7))\r".utf8)
+    private let script: [UInt8]
+    private let settleSeconds: Double
     private var position = 0
 
     init(view: TerminalView, session: TerminalSession) {
         self.view = view
         self.session = session
+        let environment = ProcessInfo.processInfo.environment
+        script = Array((environment["CRT_TYPIST_SCRIPT"] ?? "echo Phase1_é_$((6*7))\r").utf8)
+        settleSeconds = Double(environment["CRT_TYPIST_WAIT"] ?? "") ?? 1.0
     }
 
     func start() {
@@ -28,7 +36,7 @@ final class TypistProbe {
 
     private func typeNext() {
         guard position < script.count else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + settleSeconds) {
                 self.finish()
             }
             return

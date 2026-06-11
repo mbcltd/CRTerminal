@@ -93,10 +93,17 @@ public final class TerminalRenderer {
 
     // MARK: Drawing
 
-    public func draw(_ state: TerminalState, into layer: CAMetalLayer) {
+    public func draw(
+        _ state: TerminalState,
+        scrollOffset: Int = 0,
+        selection: Selection? = nil,
+        into layer: CAMetalLayer
+    ) {
         autoreleasepool {
             guard let drawable = layer.nextDrawable(),
-                  let buffer = encode(state, to: drawable.texture) else { return }
+                  let buffer = encode(
+                    state, scrollOffset: scrollOffset, selection: selection,
+                    to: drawable.texture) else { return }
             let pendingInput = latency.withLock { state in
                 defer { state.pendingInput = nil }
                 return state.pendingInput
@@ -118,7 +125,11 @@ public final class TerminalRenderer {
 
     /// Offscreen render with CPU readback — drives render tests and the
     /// debug probe, and seeds Phase 4's snapshot testing.
-    public func renderImage(_ state: TerminalState) -> CGImage? {
+    public func renderImage(
+        _ state: TerminalState,
+        scrollOffset: Int = 0,
+        selection: Selection? = nil
+    ) -> CGImage? {
         let width = max(1, Int(CGFloat(state.columns) * cellSize.width * scale))
         let height = max(1, Int(CGFloat(state.rows) * cellSize.height * scale))
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -126,7 +137,9 @@ public final class TerminalRenderer {
         descriptor.usage = [.renderTarget]
         descriptor.storageMode = .shared
         guard let texture = device.makeTexture(descriptor: descriptor),
-              let buffer = encode(state, to: texture) else { return nil }
+              let buffer = encode(
+                state, scrollOffset: scrollOffset, selection: selection,
+                to: texture) else { return nil }
         buffer.commit()
         buffer.waitUntilCompleted()
 
@@ -169,23 +182,39 @@ public final class TerminalRenderer {
 
     // MARK: Encoding
 
-    private func encode(_ state: TerminalState, to texture: MTLTexture) -> MTLCommandBuffer? {
+    private func encode(
+        _ state: TerminalState,
+        scrollOffset: Int,
+        selection: Selection?,
+        to texture: MTLTexture
+    ) -> MTLCommandBuffer? {
         let cellW = Float(cellSize.width * scale)
         let cellH = Float(cellSize.height * scale)
         let baselineOffset = Float(ascent * scale)
+        let lineThickness = max(1, Float(scale))
+
+        let offset = min(max(0, scrollOffset), state.scrollback.count)
+        let viewport = state.viewportLines(scrollOffset: offset)
+        let viewportTop = state.absoluteScreenTop - offset
+        let cursorVisible = offset == 0 && state.modes.cursorVisible
 
         var bgInstances: [BgInstance] = []
         var glyphInstances: [GlyphInstance] = []
+        var overlayInstances: [BgInstance] = [] // decorations + thin cursors
         bgInstances.reserveCapacity(64)
         glyphInstances.reserveCapacity(state.columns * state.rows / 2)
 
-        for y in 0..<state.rows {
-            let row = state.lines[y]
+        for y in 0..<viewport.count {
+            let row = viewport[y]
             for x in 0..<min(state.columns, row.count) {
                 let cell = row[x]
-                let isCursor = state.modes.cursorVisible
+                let isBlockCursor = cursorVisible && state.cursorStyle == .block
                     && state.cursor.x == x && state.cursor.y == y
-                let (fg, bg) = resolveColors(cell, isCursor: isCursor)
+                let selected = selection?.contains(row: viewportTop + y, column: x) ?? false
+                var (fg, bg) = resolveColors(cell, isCursor: isBlockCursor)
+                if selected && !isBlockCursor {
+                    bg = scheme.selectionBackground
+                }
 
                 let origin = SIMD2(Float(x) * cellW, Float(y) * cellH)
                 if bg != scheme.background {
@@ -193,6 +222,7 @@ public final class TerminalRenderer {
                         origin: origin, size: SIMD2(cellW, cellH), color: bg))
                 }
                 if cell.glyph != Cell.blank.glyph,
+                   !cell.attributes.contains(.wideSpacer),
                    let entry = atlas.entry(forScalar: cell.glyph), !entry.isEmpty {
                     glyphInstances.append(GlyphInstance(
                         origin: SIMD2(
@@ -203,6 +233,38 @@ public final class TerminalRenderer {
                         uvSize: entry.uvSize,
                         color: fg))
                 }
+                let cellSpan = cell.attributes.contains(.wide) ? cellW * 2 : cellW
+                if cell.attributes.contains(.underlined) {
+                    overlayInstances.append(BgInstance(
+                        origin: SIMD2(origin.x, origin.y + baselineOffset + lineThickness),
+                        size: SIMD2(cellSpan, lineThickness),
+                        color: fg))
+                }
+                if cell.attributes.contains(.struckThrough) {
+                    overlayInstances.append(BgInstance(
+                        origin: SIMD2(origin.x, origin.y + cellH * 0.5),
+                        size: SIMD2(cellSpan, lineThickness),
+                        color: fg))
+                }
+            }
+        }
+
+        // Bar/underline cursor overlays (block is drawn via cell inversion).
+        if cursorVisible && state.cursorStyle != .block {
+            let origin = SIMD2(Float(state.cursor.x) * cellW, Float(state.cursor.y) * cellH)
+            switch state.cursorStyle {
+            case .bar:
+                overlayInstances.append(BgInstance(
+                    origin: origin,
+                    size: SIMD2(max(1, Float(scale)), cellH),
+                    color: scheme.foreground))
+            case .underline:
+                overlayInstances.append(BgInstance(
+                    origin: SIMD2(origin.x, origin.y + cellH - lineThickness * 2),
+                    size: SIMD2(cellW, lineThickness * 2),
+                    color: scheme.foreground))
+            case .block:
+                break
             }
         }
 
@@ -243,6 +305,18 @@ public final class TerminalRenderer {
             encoder.drawPrimitives(
                 type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                 instanceCount: glyphInstances.count)
+        }
+        if !overlayInstances.isEmpty,
+           let instanceBuffer = device.makeBuffer(
+            bytes: overlayInstances,
+            length: overlayInstances.count * MemoryLayout<BgInstance>.stride,
+            options: .storageModeShared) {
+            encoder.setRenderPipelineState(bgPipeline)
+            encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(
+                type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                instanceCount: overlayInstances.count)
         }
         encoder.endEncoding()
         return buffer

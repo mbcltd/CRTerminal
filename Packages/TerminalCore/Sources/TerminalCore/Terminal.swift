@@ -24,4 +24,10 @@ public struct Terminal: Sendable {
         defer { state.responses.removeAll(keepingCapacity: true) }
         return state.responses
     }
+
+    /// Raw OSC 52 payload (base64) awaiting clipboard write, if any.
+    public mutating func drainClipboard() -> String? {
+        defer { state.pendingClipboard = nil }
+        return state.pendingClipboard
+    }
 }

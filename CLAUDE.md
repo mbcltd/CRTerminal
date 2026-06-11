@@ -33,6 +33,9 @@ Scripts/fuzz.sh
 
 # End-to-end probe: types a command into the live shell, dumps the grid,
 # measures input→render latency, writes /tmp/crterminal-probe.{txt,png}
+# CRT_TYPIST_SCRIPT overrides the typed bytes (real control chars, e.g.
+# $'vim /etc/hosts\r:q\r'); CRT_TYPIST_WAIT = settle seconds before report.
+# Must launch via `open` — windows don't display when the binary runs bare.
 open -W --env CRT_TYPIST=1 <DerivedData>/Build/Products/Debug/CRTerminal.app
 ```
 

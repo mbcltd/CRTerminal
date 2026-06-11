@@ -80,7 +80,7 @@ struct UTF8Tests {
         var t = makeTerminal()
         t.feed("é中€")
         #expect(t.state.lineText(0) == "é中€")
-        #expect(t.state.cursor.x == 3)
+        #expect(t.state.cursor.x == 4) // 中 is double-width
     }
 
     @Test func multibyteSplitAcrossFeeds() {
@@ -274,7 +274,7 @@ struct ModeAndReportTests {
     @Test func primaryDeviceAttributes() {
         var t = makeTerminal()
         t.feed("\u{1B}[c")
-        #expect(t.drainResponses() == Array("\u{1B}[?6c".utf8))
+        #expect(t.drainResponses() == Array("\u{1B}[?62;22c".utf8))
     }
 
     @Test func titleViaBELAndST() {

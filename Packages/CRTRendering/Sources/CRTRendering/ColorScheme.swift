@@ -4,12 +4,17 @@ import TerminalCore
 public struct ColorScheme: Sendable {
     public var foreground: UInt32
     public var background: UInt32
+    public var selectionBackground: UInt32
     public var palette: [UInt32] // 256 entries
 
-    public init(foreground: UInt32, background: UInt32, palette: [UInt32]) {
+    public init(
+        foreground: UInt32, background: UInt32,
+        selectionBackground: UInt32, palette: [UInt32]
+    ) {
         precondition(palette.count == 256)
         self.foreground = foreground
         self.background = background
+        self.selectionBackground = selectionBackground
         self.palette = palette
     }
 
@@ -17,6 +22,7 @@ public struct ColorScheme: Sendable {
     public static let `default` = ColorScheme(
         foreground: pack(0xD8, 0xD8, 0xD8),
         background: pack(0x0D, 0x12, 0x0E),
+        selectionBackground: pack(0x33, 0x4E, 0x6E),
         palette: xterm256())
 
     public func resolve(_ color: PackedColor, isForeground: Bool, bold: Bool) -> UInt32 {

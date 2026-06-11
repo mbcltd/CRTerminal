@@ -15,6 +15,8 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     var onUpdate: (@MainActor () -> Void)?
     /// Called on the main queue when the shell exits.
     var onExit: (@MainActor (Int32) -> Void)?
+    /// Called on the main queue with a decoded OSC 52 clipboard payload.
+    var onClipboard: (@MainActor (String) -> Void)?
 
     init(columns: Int, rows: Int) throws {
         terminal = OSAllocatedUnfairLock(initialState: Terminal(columns: columns, rows: rows))
@@ -54,14 +56,21 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     }
 
     private func ingest(_ data: Data) {
-        let responses = terminal.withLock { terminal in
+        let (responses, clipboard) = terminal.withLock { terminal in
             data.withUnsafeBytes { raw in
                 terminal.feed(raw.bindMemory(to: UInt8.self))
             }
-            return terminal.drainResponses()
+            return (terminal.drainResponses(), terminal.drainClipboard())
         }
         if !responses.isEmpty {
             pty.send(responses)
+        }
+        if let clipboard,
+           let decoded = Data(base64Encoded: clipboard),
+           let text = String(data: decoded, encoding: .utf8) {
+            DispatchQueue.main.async {
+                self.onClipboard?(text)
+            }
         }
         scheduleUpdate()
     }

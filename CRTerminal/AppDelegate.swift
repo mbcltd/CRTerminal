@@ -24,6 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         session.onExit = { _ in
             NSApp.terminate(nil)
         }
+        session.onClipboard = { text in
+            // OSC 52: applications (tmux, vim) set the system clipboard.
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
 
         let view = TerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 540))
         let window = NSWindow(
@@ -100,6 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
 
         let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(
+            withTitle: "Copy",
+            action: #selector(TerminalView.copy(_:)),
+            keyEquivalent: "c")
         editMenu.addItem(
             withTitle: "Paste",
             action: #selector(TerminalView.paste(_:)),

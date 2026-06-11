@@ -28,3 +28,13 @@ GPU completion.
 
 Not yet measured (Phase 3): vtebench throughput, idle-power assertion,
 sustained-firehose behavior.
+
+## Phase 2 — real terminal (2026-06-11)
+
+Same hardware/method. Latency held steady with the full Phase 2 feature set
+(scrollback, wide chars, charsets, regions) in the hot path:
+
+| Run | median | min | max |
+|---|---|---|---|
+| zsh echo | 5.83 ms | 5.41 ms | 12.39 ms |
+| vim editing session | 5.70 ms | 3.48 ms | 11.75 ms |
