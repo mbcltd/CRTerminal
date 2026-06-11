@@ -23,6 +23,12 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         /// After invalidate(), the link is dead — every entry point no-ops
         /// (removeFromSuperview re-enters via viewDidMoveToWindow → poke).
         var invalidated = false
+        /// Hidden tab: the pane keeps its session and state but must not
+        /// produce frames until revealed.
+        var occluded = false
+        /// This pane's CRT preset (sessions theme independently); nil
+        /// falls back to the shared renderer's preset.
+        var preset: CRTPreset?
     }
 
     private let link: CAMetalDisplayLink
@@ -77,22 +83,48 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     /// Something may have changed; make sure frames are being produced.
     func poke(force: Bool = false) {
-        let invalidated = shared.withLock { shared in
+        let blocked = shared.withLock { shared in
             if force { shared.poked = true }
-            return shared.invalidated
+            return shared.invalidated || shared.occluded
         }
-        guard !invalidated else { return }
+        guard !blocked else { return }
         link.isPaused = false
     }
 
     func setViewState(scrollOffset: Int, selection: Selection?, markedText: String? = nil) {
-        let invalidated = shared.withLock { shared in
+        let blocked = shared.withLock { shared in
             shared.viewState = ViewState(
                 scrollOffset: scrollOffset, selection: selection, markedText: markedText)
-            return shared.invalidated
+            return shared.invalidated || shared.occluded
         }
-        guard !invalidated else { return }
+        guard !blocked else { return }
         link.isPaused = false
+    }
+
+    /// The pane's preset changed (theme switch on its session).
+    func setPreset(_ preset: CRTPreset) {
+        let blocked = shared.withLock { shared in
+            shared.preset = preset
+            shared.poked = true
+            return shared.invalidated || shared.occluded
+        }
+        guard !blocked else { return }
+        link.isPaused = false
+    }
+
+    /// Tab switching: an occluded pane's link pauses immediately and stays
+    /// paused through pokes; revealing forces a redraw of whatever arrived.
+    func setOccluded(_ occluded: Bool) {
+        let wake = shared.withLock { shared in
+            shared.occluded = occluded
+            if !occluded { shared.poked = true }
+            return !occluded && !shared.invalidated
+        }
+        if occluded {
+            link.isPaused = true
+        } else if wake {
+            link.isPaused = false
+        }
     }
 
     /// Tear down on the link's own thread: invalidating from another
@@ -117,11 +149,12 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
         guard let session else { return }
-        let (viewState, poked, invalidated) = shared.withLock { shared in
+        let (viewState, poked, preset, blocked) = shared.withLock { shared in
             defer { shared.poked = false }
-            return (shared.viewState, shared.poked, shared.invalidated)
+            return (shared.viewState, shared.poked, shared.preset,
+                    shared.invalidated || shared.occluded)
         }
-        guard !invalidated else { return }
+        guard !blocked else { return }
         let state = session.snapshot
         let now = CACurrentMediaTime()
         let contentChanged = poked
@@ -130,7 +163,8 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         // Animated effects (persistence decay, noise, degauss) opt into
         // frames; the link still pauses once everything is quiescent, so
         // the idle-power contract holds with effects enabled.
-        let animating = renderer.wantsContinuousFrames(at: now, context: context)
+        let animating = renderer.wantsContinuousFrames(
+            at: now, context: context, preset: preset)
         if !contentChanged && !animating {
             idleFrames += 1
             if idleFrames >= Self.pauseAfterIdleFrames {
@@ -149,6 +183,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
             markedText: viewState.markedText,
             contentChanged: contentChanged,
             at: now,
+            preset: preset,
             context: context,
             into: update.drawable)
         shared.withLock { $0.drawCount += 1 }

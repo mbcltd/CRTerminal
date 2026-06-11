@@ -2,42 +2,103 @@ import AppKit
 import CRTRendering
 import TerminalCore
 
-/// One terminal window: a tree of split panes (nested NSSplitViews), a
-/// shared renderer (one glyph atlas per window), a slide-down search bar,
-/// and native tabbing. New tabs are just new windows in the tab group.
+/// One terminal session in a window: its own shell(s) in a tree of split
+/// panes, hosted in a container the sidebar shows/hides on selection.
+final class SessionTab {
+    let id = UUID()
+    let container = NSView()
+    var panes: [TerminalView] = []
+    let createdAt = Date()
+    /// Each session wears its own theme; new sessions start from the
+    /// profile default.
+    var preset: CRTPreset
+
+    init(preset: CRTPreset) {
+        self.preset = preset
+    }
+}
+
+/// One terminal window: a vertical session sidebar (GlassTerm design) on
+/// the left, the active session's pane tree on the right, a shared
+/// renderer (one glyph atlas per window), and a slide-down search bar.
+/// Sessions replaced native window tabs: rows carry live metadata and a
+/// hover detail card, which `NSWindow` tabs cannot do.
 final class TerminalWindowController: NSWindowController, NSWindowDelegate {
-    private(set) var panes: [TerminalView] = []
+    private(set) var tabs: [SessionTab] = []
+    private(set) var activeTabIndex = 0
     private var profile: Profile
     private var sharedRenderer: TerminalRenderer?
-    private let paneContainer = NSView()
+    private let rootView = NSView()
+    /// The area right of the sidebar; hosts tab containers + search bar.
+    private let contentHost = NSView()
+    private let sidebar: SessionSidebarView
+    private var hoverCard: SessionHoverCard?
+    private var hoveredTabID: UUID?
     private var searchBar: SearchBar?
     private var titlebarControls: TitlebarControlCluster?
+    /// 1 Hz metadata refresh (titles, running state, cwd, dirty badges).
+    private var refreshTimer: Timer?
+    /// Latest git dirty counts by tab, filled asynchronously.
+    private var dirtyCounts: [UUID: Int] = [:]
 
     /// Set by the AppDelegate so closed windows are released.
     var onClose: ((TerminalWindowController) -> Void)?
 
+    /// All live panes across every session (probe, teardown, profile apply).
+    var panes: [TerminalView] {
+        tabs.flatMap { $0.panes }
+    }
+
+    var activeTab: SessionTab? {
+        tabs.indices.contains(activeTabIndex) ? tabs[activeTabIndex] : nil
+    }
+
     init(profile: Profile) {
         self.profile = profile
+        sidebar = SessionSidebarView(
+            theme: SidebarTheme(preset: profile.preset(in: PresetCatalog.all)))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 540),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
         window.title = "CRTerminal"
-        window.tabbingMode = .preferred
+        // Sessions live in the sidebar; native tabbing would duplicate them.
+        window.tabbingMode = .disallowed
         super.init(window: window)
         window.delegate = self
 
-        paneContainer.frame = window.contentLayoutRect
-        paneContainer.autoresizingMask = [.width, .height]
-        window.contentView = paneContainer
+        rootView.frame = window.contentLayoutRect
+        rootView.autoresizingMask = [.width, .height]
+        window.contentView = rootView
+
+        sidebar.frame = NSRect(
+            x: 0, y: 0, width: SessionSidebarView.width, height: rootView.bounds.height)
+        sidebar.autoresizingMask = [.height]
+        sidebar.onSelect = { [weak self] index in self?.selectTab(index) }
+        sidebar.onNewSession = { [weak self] in self?.addSession() }
+        sidebar.onHover = { [weak self] index, rowFrame in
+            self?.hoverChanged(index: index, rowFrame: rowFrame)
+        }
+        rootView.addSubview(sidebar)
+
+        contentHost.frame = NSRect(
+            x: SessionSidebarView.width, y: 0,
+            width: rootView.bounds.width - SessionSidebarView.width,
+            height: rootView.bounds.height)
+        contentHost.autoresizingMask = [.width, .height]
+        rootView.addSubview(contentHost)
 
         addTitlebarControls(to: window)
 
-        guard let firstPane = makePane() else { return }
-        install(firstPane, in: paneContainer)
+        addSession()
         sizeWindowToGrid(columns: 80, rows: 24)
         window.center()
+
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshSessionMetadata() }
+        }
     }
 
     @available(*, unavailable)
@@ -46,7 +107,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     }
 
     var focusedPane: TerminalView? {
-        window?.firstResponder as? TerminalView ?? panes.first
+        window?.firstResponder as? TerminalView ?? activeTab?.panes.first
     }
 
     // MARK: Renderer (shared across the window's panes)
@@ -55,18 +116,69 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         if let sharedRenderer { return sharedRenderer }
         let renderer = TerminalRenderer(
             font: profile.font, scale: window?.backingScaleFactor ?? 2)
-        renderer?.preset = currentPreset()
         sharedRenderer = renderer
         return renderer
     }
 
+    /// The profile's preset: the default new sessions start from.
     private func currentPreset() -> CRTPreset {
         profile.preset(in: PresetCatalog.all)
     }
 
+    /// The active session's preset: what the window chrome reflects.
+    var activePreset: CRTPreset {
+        activeTab?.preset ?? currentPreset()
+    }
+
+    // MARK: Sessions (sidebar tabs)
+
+    /// Spawns a fresh shell in a new sidebar session and selects it.
+    @objc func newSession(_ sender: Any?) {
+        addSession()
+    }
+
+    func addSession() {
+        let tab = SessionTab(preset: currentPreset())
+        guard let pane = makePane(in: tab) else { return }
+        tab.container.frame = contentHost.bounds
+        tab.container.autoresizingMask = [.width, .height]
+        contentHost.addSubview(tab.container)
+        tabs.append(tab)
+        install(pane, in: tab.container)
+        selectTab(tabs.count - 1)
+    }
+
+    func selectTab(_ index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        activeTabIndex = index
+        for (i, tab) in tabs.enumerated() {
+            let active = i == index
+            tab.container.isHidden = !active
+            for pane in tab.panes {
+                pane.setOccluded(!active)
+            }
+        }
+        if let pane = activeTab?.panes.first {
+            window?.makeFirstResponder(pane)
+        }
+        hideHoverCard()
+        applyChrome(preset: activePreset)
+        refreshSessionMetadata()
+    }
+
+    @objc func nextSession(_ sender: Any?) {
+        guard !tabs.isEmpty else { return }
+        selectTab((activeTabIndex + 1) % tabs.count)
+    }
+
+    @objc func previousSession(_ sender: Any?) {
+        guard !tabs.isEmpty else { return }
+        selectTab((activeTabIndex + tabs.count - 1) % tabs.count)
+    }
+
     // MARK: Panes
 
-    private func makePane() -> TerminalView? {
+    private func makePane(in tab: SessionTab) -> TerminalView? {
         let session: TerminalSession
         do {
             session = try TerminalSession(
@@ -82,7 +194,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
         let pane = TerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         pane.rendererProvider = { [weak self] in self?.rendererForPane() }
-        pane.preset = currentPreset()
+        pane.preset = tab.preset
         pane.session = session
         session.onExit = { [weak self, weak pane] _ in
             guard let pane else { return }
@@ -97,7 +209,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             NotificationPoster.shared.post(
                 notification, windowIsKey: self?.window?.isKeyWindow ?? false)
         }
-        panes.append(pane)
+        tab.panes.append(pane)
         return pane
     }
 
@@ -109,9 +221,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func sizeWindowToGrid(columns: Int, rows: Int) {
-        guard let window, let pane = panes.first else { return }
+        guard let window, let pane = activeTab?.panes.first else { return }
         let size = pane.sizeForGrid(columns: columns, rows: rows)
-        window.setContentSize(size)
+        window.setContentSize(NSSize(
+            width: size.width + SessionSidebarView.width, height: size.height))
         if let renderer = pane.renderer {
             window.contentResizeIncrements = renderer.cellSize
         }
@@ -131,7 +244,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private func split(vertical: Bool) {
         guard let existing = focusedPane,
               let host = existing.superview,
-              let newPane = makePane() else { return }
+              let tab = tab(owning: existing),
+              let newPane = makePane(in: tab) else { return }
 
         let splitView = NSSplitView(frame: existing.frame)
         splitView.isVertical = vertical
@@ -154,15 +268,19 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(newPane)
     }
 
-    /// Closes a pane; the last pane closing closes the window.
+    private func tab(owning pane: TerminalView) -> SessionTab? {
+        tabs.first { $0.panes.contains { $0 === pane } }
+    }
+
+    /// Closes a pane; the last pane closing closes the session, the last
+    /// session closing closes the window.
     func close(pane: TerminalView) {
         pane.session?.terminate()
         pane.renderLoop?.invalidate()
-        panes.removeAll { $0 === pane }
-        guard !panes.isEmpty else {
-            window?.close()
-            return
-        }
+        guard let tab = tab(owning: pane),
+              let tabIndex = tabs.firstIndex(where: { $0 === tab }) else { return }
+        tab.panes.removeAll { $0 === pane }
+
         if let splitView = pane.superview as? NSSplitView {
             pane.removeFromSuperview()
             // A split with one child left unwraps back into its parent.
@@ -184,9 +302,23 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         } else {
             pane.removeFromSuperview()
         }
-        if let next = panes.first {
+
+        if tab.panes.isEmpty {
+            tab.container.removeFromSuperview()
+            tabs.remove(at: tabIndex)
+            dirtyCounts[tab.id] = nil
+            guard !tabs.isEmpty else {
+                window?.close()
+                return
+            }
+            if tabIndex < activeTabIndex {
+                activeTabIndex -= 1
+            }
+            selectTab(min(activeTabIndex, tabs.count - 1))
+        } else if tabIndex == activeTabIndex, let next = tab.panes.first {
             window?.makeFirstResponder(next)
         }
+        refreshSessionMetadata()
     }
 
     /// ⌘W: close the focused pane (the window when it's the only one).
@@ -198,16 +330,125 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         close(pane: pane)
     }
 
-    // MARK: Tabs
+    // MARK: Sidebar metadata
 
-    /// The titlebar plus button and File ▸ New Tab land here.
-    override func newWindowForTab(_ sender: Any?) {
-        guard let window,
-              let controller = AppDelegate.shared?.makeWindowController() else { return }
-        if let newWindow = controller.window {
-            window.addTabbedWindow(newWindow, ordered: .above)
-            newWindow.makeKeyAndOrderFront(sender)
+    /// Cheap kernel probes each tick; git runs async behind a short cache.
+    private func refreshSessionMetadata() {
+        var rows: [SessionRowModel] = []
+        for (index, tab) in tabs.enumerated() {
+            guard let session = tab.panes.first?.session else { continue }
+            let shellPID = session.shellProcessID
+            let foreground = session.foregroundProcessGroup
+            let isRunning = foreground > 0 && foreground != shellPID
+            let shellName = SessionInfo.processName(of: shellPID)
+                ?? (profile.shellPath as NSString?)?.lastPathComponent ?? "shell"
+            let title = session.snapshot.title ?? shellName
+            let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
+                ?? SessionInfo.workingDirectory(of: shellPID)
+            let metaLine: String
+            if isRunning {
+                let name = SessionInfo.processName(of: foreground) ?? "…"
+                metaLine = "\(name) · live"
+            } else {
+                metaLine = cwd.map(SessionInfo.displayName(path:)) ?? shellName
+            }
+            rows.append(SessionRowModel(
+                id: tab.id, index: index + 1, title: title, metaLine: metaLine,
+                isActive: index == activeTabIndex, isRunning: isRunning,
+                dirtyCount: dirtyCounts[tab.id],
+                theme: SidebarTheme(preset: tab.preset)))
+            if let cwd {
+                let tabID = tab.id
+                SessionInfo.gitStatus(in: cwd) { [weak self] status in
+                    guard let self else { return }
+                    let newCount = status.map(\.dirtyCount)
+                    if self.dirtyCounts[tabID] != newCount {
+                        self.dirtyCounts[tabID] = newCount
+                        // Re-derive rows; the git result is now cached.
+                        self.refreshSessionMetadata()
+                    }
+                }
+            }
         }
+        sidebar.update(rows: rows)
+        if let active = rows.first(where: { $0.isActive }) {
+            window?.title = active.title
+        }
+    }
+
+    // MARK: Hover card
+
+    private func hoverChanged(index: Int?, rowFrame: NSRect) {
+        guard let index, tabs.indices.contains(index) else {
+            hideHoverCard()
+            return
+        }
+        let tab = tabs[index]
+        hoveredTabID = tab.id
+        guard let session = tab.panes.first?.session else { return }
+
+        let theme = SidebarTheme(preset: tab.preset)
+        let shellPID = session.shellProcessID
+        let foreground = session.foregroundProcessGroup
+        let isRunning = foreground > 0 && foreground != shellPID
+        let shellName = SessionInfo.processName(of: shellPID) ?? "shell"
+        let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
+            ?? SessionInfo.workingDirectory(of: shellPID)
+        let uptime = Self.format(uptime: Date().timeIntervalSince(tab.createdAt))
+        let lastExit = session.snapshot.promptMarks.last(where: { $0.exitCode != nil })?
+            .exitCode
+        var model = SessionCardModel(
+            title: session.snapshot.title ?? shellName,
+            index: index + 1,
+            isRunning: isRunning,
+            statusText: isRunning ? "running" : "idle",
+            path: cwd.map(SessionInfo.abbreviate(path:)) ?? "—",
+            branchLine: cwd == nil ? "" : nil,
+            branchIsDirty: false,
+            statusLine: (isRunning ? "● running · up " : "idle · up ") + uptime,
+            processLine: isRunning
+                ? "\(SessionInfo.processName(of: foreground) ?? "…") · pid \(foreground)"
+                : "\(shellName) · pid \(shellPID)",
+            exitLine: lastExit.map { $0 == 0 ? "✓ 0" : "✗ \($0)" })
+
+        let card = hoverCard ?? {
+            let card = SessionHoverCard(theme: theme)
+            rootView.addSubview(card)
+            hoverCard = card
+            return card
+        }()
+        let height = card.update(model: model, theme: theme)
+        let rowInRoot = sidebar.convert(rowFrame, to: rootView)
+        let y = min(
+            max(8, rowInRoot.maxY + 8 - height),
+            rootView.bounds.height - height - 8)
+        card.frame = NSRect(
+            x: SessionSidebarView.width + 12, y: y,
+            width: SessionHoverCard.width, height: height)
+        card.isHidden = false
+
+        // Git arrives async; only apply if the cursor is still on this row.
+        if let cwd {
+            let tabID = tab.id
+            SessionInfo.gitStatus(in: cwd) { [weak self] status in
+                guard let self, self.hoveredTabID == tabID,
+                      let card = self.hoverCard, !card.isHidden else { return }
+                if let status {
+                    model.branchLine = "⎇ \(status.branch) · "
+                        + (status.dirtyCount > 0
+                            ? "✗ \(status.dirtyCount) changed" : "✓ clean")
+                    model.branchIsDirty = status.dirtyCount > 0
+                } else {
+                    model.branchLine = ""
+                }
+                _ = card.update(model: model, theme: theme)
+            }
+        }
+    }
+
+    private func hideHoverCard() {
+        hoveredTabID = nil
+        hoverCard?.isHidden = true
     }
 
     // MARK: Search
@@ -228,16 +469,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         bar.onDismiss = { [weak self] in
             self?.dismissSearch()
         }
-        guard let window else { return }
+        guard window != nil else { return }
         let height: CGFloat = 32
         bar.frame = NSRect(
-            x: 0, y: paneContainer.bounds.height - height,
-            width: paneContainer.bounds.width, height: height)
+            x: 0, y: contentHost.bounds.height - height,
+            width: contentHost.bounds.width, height: height)
         bar.autoresizingMask = [.width, .minYMargin]
-        paneContainer.addSubview(bar)
+        contentHost.addSubview(bar)
         searchBar = bar
         bar.focus()
-        _ = window
     }
 
     @objc func findNext(_ sender: Any?) {
@@ -261,35 +501,42 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Profile
 
-    /// Re-applies an edited profile. Preset and scrollback apply live;
-    /// a font change rebuilds the window's shared renderer.
+    /// Re-applies an edited profile. A font change rebuilds the window's
+    /// shared renderer. The profile's preset is only the default for new
+    /// sessions — existing sessions keep the theme they're wearing.
     func apply(profile: Profile) {
         let fontChanged = profile.font != self.profile.font
         self.profile = profile
-        let preset = currentPreset()
         if fontChanged {
             sharedRenderer = nil
             for pane in panes {
                 pane.resetRenderer()
             }
         }
-        sharedRenderer?.preset = preset
-        for pane in panes {
-            pane.preset = preset
-        }
-        titlebarControls?.update(preset: preset)
+        applyChrome(preset: activePreset)
     }
 
+    /// Themes the active session only; other sessions keep theirs.
     func apply(preset: CRTPreset) {
-        profile.presetName = preset.name
-        for pane in panes {
+        guard let tab = activeTab else { return }
+        tab.preset = preset
+        for pane in tab.panes {
             pane.preset = preset
         }
+        applyChrome(preset: preset)
+        refreshSessionMetadata()
+    }
+
+    /// Window chrome (titlebar cluster, sidebar rail) wears the active
+    /// session's theme.
+    private func applyChrome(preset: CRTPreset) {
         titlebarControls?.update(preset: preset)
+        sidebar.apply(theme: SidebarTheme(preset: preset))
+        hideHoverCard()
     }
 
     var currentPresetName: String {
-        profile.presetName
+        activePreset.name
     }
 
     // MARK: Window plumbing
@@ -314,12 +561,21 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         titlebarControls = cluster
     }
 
+    private static func format(uptime: TimeInterval) -> String {
+        let minutes = Int(uptime) / 60
+        if minutes < 1 { return "\(Int(uptime))s" }
+        if minutes < 60 { return "\(minutes)m" }
+        return String(format: "%dh %02dm", minutes / 60, minutes % 60)
+    }
+
     func windowWillClose(_ notification: Notification) {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
         for pane in panes {
             pane.session?.terminate()
             pane.renderLoop?.invalidate()
         }
-        panes.removeAll()
+        tabs.removeAll()
         onClose?(self)
     }
 }

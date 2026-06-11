@@ -255,17 +255,34 @@ the same pipeline at thumbnail size).
   `NSTextInputClient` for full IME support (marked text drawn by the decorations
   pass), first responder for keys, mouse handling (selection vs. reported mouse modes,
   word/line/rectangular selection, click-through URL opening with ⌘).
-- **Surfaces, tabs, splits.** A window holds a tree of split panes, each pane a
-  surface (view + session + renderer sharing the window's atlas). Native tabs via
-  `NSWindow.tabbingMode`.
-- **Titlebar controls** (per the GlassTerm design handoff): a trailing control
-  cluster with a theme switcher — one chip showing a phosphor-colored dot plus the
-  active preset name, opening a dropdown where each row is styled in its own
-  preset's look with a live-pipeline thumbnail — and the degauss button, drawn as a
-  skeuomorphic graphite front-panel button (engraved label, pressed-in state) that
-  only appears while the active preset has effects enabled. The design's vertical
-  tab sidebar / hover cards / ⌘K palette were deliberately not adopted: they would
-  replace native tabbing, which this architecture commits to.
+- **Surfaces, sessions, splits.** A window holds sessions (sidebar tabs), each a
+  tree of split panes; each pane is a surface (view + session + renderer sharing
+  the window's atlas). Native `NSWindow` tabbing is disallowed — it was replaced
+  by the session sidebar below, which native tabs can't express.
+- **Session sidebar** (per the GlassTerm design handoff, which replaced the
+  earlier native-tabs decision): a 240 pt vertical rail listing the window's
+  sessions as rich rows — phosphor-themed accent bar, icon chip, live title,
+  running pulse (foreground pgid ≠ shell pid via `tcgetpgrp`), cwd/process meta
+  line, git dirty badge — plus a hover detail card per row (path, branch + dirty
+  count, status/uptime, last exit code from OSC 133 marks, process · pid, and
+  focus/⌘N-jump hints). Metadata comes from cheap 1 Hz kernel probes (libproc);
+  git runs async behind a short cache. Hidden sessions are occluded: their render
+  loops pause and ignore pokes until revealed. ⌘1-9 jump to sessions (presets
+  moved to ⌃⌘1-9); ⌘⇧[ / ⌘⇧] cycle. The design's top-tabs toggle and ⌘K palette
+  were not adopted.
+- **Per-session themes.** Presets apply per session, not per window: each
+  `SessionTab` carries its own preset, panes pass it to the shared renderer per
+  draw (the renderer's stored preset is only a fallback; phosphor history resets
+  when a pane's preset changes, tracked on its `SurfaceContext`). Sidebar rows
+  render in their own session's theme; the window chrome (titlebar cluster,
+  sidebar rail) follows the active session. The profile's preset is just the
+  default that new sessions start from.
+- **Titlebar controls** (same handoff): a trailing control cluster with a theme
+  switcher — one chip showing a phosphor-colored dot plus the active preset name,
+  opening a dropdown where each row is styled in its own preset's look with a
+  live-pipeline thumbnail — and the degauss button, drawn as a skeuomorphic
+  graphite front-panel button (engraved label, pressed-in state) that only
+  appears while the active preset has effects enabled.
 - **Settings** — profiles (font, palette, preset, shell, scrollback), live-preview
   preset gallery, written as declarative SwiftUI hosted in a settings window; settings
   persist via `UserDefaults`-backed codable models.

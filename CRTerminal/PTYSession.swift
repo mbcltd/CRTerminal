@@ -158,6 +158,13 @@ nonisolated final class PTYSession: @unchecked Sendable {
         kill(processID, SIGHUP)
     }
 
+    /// Foreground process group of the PTY (what's currently "running"):
+    /// equals the shell's pid at an idle prompt. -1 after exit.
+    var foregroundProcessGroup: pid_t {
+        guard !exited.withLock({ $0 }) else { return -1 }
+        return tcgetpgrp(masterFD)
+    }
+
     /// The kernel hands PTY data out ~1 KiB at a time (≈100k reads for a
     /// 100 MB cat). The reader thread blocks in poll, then drains to EAGAIN,
     /// delivering ~256 KiB batches — syscall-bound, no queue wakeups, with

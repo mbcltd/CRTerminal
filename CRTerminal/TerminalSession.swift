@@ -41,6 +41,13 @@ nonisolated final class TerminalSession: @unchecked Sendable {
         terminal.withLock { $0.state }
     }
 
+    /// The shell's pid (sidebar metadata: cwd, process rows).
+    var shellProcessID: pid_t { pty.processID }
+
+    /// Foreground process group on the PTY; equals the shell's pid when
+    /// nothing is running.
+    var foregroundProcessGroup: pid_t { pty.foregroundProcessGroup }
+
     func send(_ bytes: [UInt8]) {
         pty.send(bytes)
     }

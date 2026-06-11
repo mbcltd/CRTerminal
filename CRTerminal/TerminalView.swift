@@ -28,13 +28,13 @@ final class TerminalView: NSView, NSTextInputClient {
 
     private let degaussSound = DegaussSound()
 
-    /// The CRT preset; the renderer applies it on the next frame. Presets
+    /// The CRT preset for this pane; per-pane because sidebar sessions
+    /// theme independently while sharing the window's renderer. Presets
     /// with a bezel shrink the cell grid (the bezel is part of the view).
     var preset: CRTPreset = .museumOff {
         didSet {
-            renderer?.preset = preset
+            renderLoop?.setPreset(preset)
             updateGridSize()
-            renderLoop?.poke(force: true)
         }
     }
 
@@ -142,13 +142,13 @@ final class TerminalView: NSView, NSTextInputClient {
         guard renderer == nil, window != nil, let metalLayer, let session,
               let renderer = rendererProvider?() ?? Self.makeFallbackRenderer(for: window)
         else { return }
-        renderer.preset = preset
         self.renderer = renderer
         metalLayer.device = renderer.device
         metalLayer.pixelFormat = .bgra8Unorm
         updateGridSize()
         updateLayerGeometry()
         renderLoop = RenderLoop(layer: metalLayer, renderer: renderer, session: session)
+        renderLoop?.setPreset(preset)
     }
 
     /// Standalone views (no controller) still render.
@@ -156,6 +156,12 @@ final class TerminalView: NSView, NSTextInputClient {
         TerminalRenderer(
             font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
             scale: window?.backingScaleFactor ?? 2)
+    }
+
+    /// Hidden tabs must not produce frames; revealing redraws whatever
+    /// arrived while occluded.
+    func setOccluded(_ occluded: Bool) {
+        renderLoop?.setOccluded(occluded)
     }
 
     /// Profile font changed: drop the renderer and pick up the new shared

@@ -9,7 +9,9 @@ public final class SurfaceContext {
     var surfaces: EffectSurfaces?
     var lastDrawTime: CFTimeInterval?
     var lastContentChange: CFTimeInterval = 0
-    var lastPresetGeneration: UInt64 = .max // forces a persistence reset first frame
+    /// Presets are per-pane (sidebar sessions can each wear their own);
+    /// nil forces a persistence reset on the first frame.
+    var lastPreset: CRTPreset?
 
     public init() {}
 }

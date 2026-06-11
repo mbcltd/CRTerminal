@@ -70,12 +70,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         makeWindowController().showWindow(sender)
     }
 
-    @objc private func newTab(_ sender: Any?) {
+    @objc private func newSession(_ sender: Any?) {
         if let key = keyController {
-            key.newWindowForTab(sender)
+            key.addSession()
         } else {
             newWindow(sender)
         }
+    }
+
+    @objc private func jumpToSession(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else { return }
+        keyController?.selectTab(index)
     }
 
     private func profilesChanged() {
@@ -120,6 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             menuItem.state = (menuItem.representedObject as? String) == current
                 ? .on : .off
         }
+        if menuItem.action == #selector(jumpToSession(_:)) {
+            guard let index = menuItem.representedObject as? Int,
+                  let controller = keyController,
+                  index < controller.tabs.count else { return false }
+            menuItem.state = index == controller.activeTabIndex ? .on : .off
+        }
         return true
     }
 
@@ -160,9 +171,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let newWindowItem = shellMenu.addItem(
             withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
         newWindowItem.target = self
-        let newTabItem = shellMenu.addItem(
-            withTitle: "New Tab", action: #selector(newTab(_:)), keyEquivalent: "t")
-        newTabItem.target = self
+        let newSessionItem = shellMenu.addItem(
+            withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "t")
+        newSessionItem.target = self
+        let nextSession = shellMenu.addItem(
+            withTitle: "Next Session",
+            action: #selector(TerminalWindowController.nextSession(_:)), keyEquivalent: "]")
+        nextSession.keyEquivalentModifierMask = [.command, .shift]
+        let previousSession = shellMenu.addItem(
+            withTitle: "Previous Session",
+            action: #selector(TerminalWindowController.previousSession(_:)), keyEquivalent: "[")
+        previousSession.keyEquivalentModifierMask = [.command, .shift]
         shellMenu.addItem(.separator())
         shellMenu.addItem(
             withTitle: "Split Right",
@@ -201,10 +220,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         let viewMenu = NSMenu(title: "View")
         for (index, preset) in PresetCatalog.all.enumerated() {
+            // ⌃⌘1-9; sessions own plain ⌘1-9 (macOS tab convention).
             let item = viewMenu.addItem(
                 withTitle: preset.name,
                 action: #selector(selectPreset(_:)),
                 keyEquivalent: index < 9 ? String(index + 1) : "")
+            item.keyEquivalentModifierMask = [.command, .control]
             item.target = self
             item.representedObject = preset.name
         }
@@ -239,6 +260,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(
             withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        for index in 0..<9 {
+            let item = windowMenu.addItem(
+                withTitle: "Session \(index + 1)",
+                action: #selector(jumpToSession(_:)),
+                keyEquivalent: String(index + 1))
+            item.target = self
+            item.representedObject = index
+        }
         let windowMenuItem = NSMenuItem()
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)

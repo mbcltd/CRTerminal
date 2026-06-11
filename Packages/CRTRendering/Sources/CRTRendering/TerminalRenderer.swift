@@ -36,10 +36,11 @@ public final class TerminalRenderer {
     /// CRT effect state shared between the main thread (preset changes,
     /// degauss button) and render threads (per-frame reads). One renderer
     /// serves every pane in a window, so this is per-window state; the
-    /// per-surface pieces live in each pane's `SurfaceContext`.
+    /// per-surface pieces live in each pane's `SurfaceContext`. The stored
+    /// preset is only a fallback — panes pass their own per draw, since
+    /// sidebar sessions can each wear a different theme.
     private struct EffectsState {
         var preset: CRTPreset = .museumOff
-        var presetGeneration: UInt64 = 0
         var degaussStart: CFTimeInterval?
     }
     private let effectsState = OSAllocatedUnfairLock(initialState: EffectsState())
@@ -142,12 +143,15 @@ public final class TerminalRenderer {
         markedText: String? = nil,
         contentChanged: Bool = true,
         at time: CFTimeInterval = CACurrentMediaTime(),
+        preset: CRTPreset? = nil,
         context: SurfaceContext,
         into drawable: CAMetalDrawable
     ) {
         autoreleasepool {
             let target = drawable.texture
-            let frame = beginFrame(at: time, contentChanged: contentChanged, context: context)
+            let frame = beginFrame(
+                at: time, contentChanged: contentChanged, context: context,
+                preset: preset)
             guard let buffer = commandQueue.makeCommandBuffer() else { return }
             if frame.preset.effects {
                 let bezel = Int(frame.uniforms(width: target.width, height: target.height,
@@ -182,17 +186,12 @@ public final class TerminalRenderer {
 
     // MARK: CRT effects
 
-    /// The active preset. Setting it bumps the preset generation, which
-    /// resets each pane's phosphor history on its next frame.
+    /// The fallback preset for panes that don't pass their own per draw.
+    /// (Per-pane phosphor history resets when a pane's preset changes —
+    /// `beginFrame` compares against the context's last preset.)
     public var preset: CRTPreset {
         get { effectsState.withLock { $0.preset } }
-        set {
-            effectsState.withLock { state in
-                guard state.preset != newValue else { return }
-                state.preset = newValue
-                state.presetGeneration &+= 1
-            }
-        }
+        set { effectsState.withLock { $0.preset = newValue } }
     }
 
     /// Fire the degauss animation (the *thunk* sound is app policy).
@@ -206,9 +205,11 @@ public final class TerminalRenderer {
     /// keeps ticking while this holds and pauses once quiescent.
     public func wantsContinuousFrames(
         at time: CFTimeInterval = CACurrentMediaTime(),
-        context: SurfaceContext
+        context: SurfaceContext,
+        preset panePreset: CRTPreset? = nil
     ) -> Bool {
-        let (preset, degaussStart) = effectsState.withLock { ($0.preset, $0.degaussStart) }
+        let (fallback, degaussStart) = effectsState.withLock { ($0.preset, $0.degaussStart) }
+        let preset = panePreset ?? fallback
         guard preset.effects else { return false }
         if let degaussStart, time - degaussStart < Self.degaussDuration + 0.1 { return true }
         if preset.artifacts.isAnimated { return true }
@@ -233,18 +234,20 @@ public final class TerminalRenderer {
 
     /// Internal for tests: the decay/degauss bookkeeping is asserted directly.
     func beginFrame(
-        at time: CFTimeInterval, contentChanged: Bool, context: SurfaceContext
+        at time: CFTimeInterval, contentChanged: Bool, context: SurfaceContext,
+        preset panePreset: CRTPreset? = nil
     ) -> FrameSetup {
         // Shared (per-window) state under the lock; per-pane clocks on the
         // context, which belongs to a single render thread.
-        let (preset, presetGeneration, degaussStart):
-            (CRTPreset, UInt64, CFTimeInterval?) = effectsState.withLock { state in
+        let (fallback, degaussStart):
+            (CRTPreset, CFTimeInterval?) = effectsState.withLock { state in
             if let start = state.degaussStart,
                (time - start) / Self.degaussDuration >= 1 {
                 state.degaussStart = nil
             }
-            return (state.preset, state.presetGeneration, state.degaussStart)
+            return (state.preset, state.degaussStart)
         }
+        let preset = panePreset ?? fallback
 
         if contentChanged { context.lastContentChange = time }
         // Long gaps (paused link) decay the phosphor fully; clamp so a
@@ -259,8 +262,8 @@ public final class TerminalRenderer {
 
         let tau = preset.phosphor.decayMs / 1000
         var decayFactor: Float = tau > 0 ? Float(exp(-dt / tau)) : 0
-        if context.lastPresetGeneration != presetGeneration {
-            context.lastPresetGeneration = presetGeneration
+        if context.lastPreset != preset {
+            context.lastPreset = preset
             decayFactor = 0
         }
         return FrameSetup(
