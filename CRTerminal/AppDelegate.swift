@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
+        NotificationPoster.shared.activate()
         ProfileStore.shared.onChange = { [weak self] in
             self?.profilesChanged()
         }
@@ -214,9 +215,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func jump(to target: JumpTarget) {
-        guard let controller = target.controller,
-              let index = controller.tabs.firstIndex(where: { $0.id == target.tabID })
+        focusSession(id: target.tabID)
+    }
+
+    /// Lands on a session wherever it lives: activates the app, fronts
+    /// the owning window, selects the tab. Notification taps and the ⌘K
+    /// palette both end here.
+    func focusSession(id: UUID) {
+        guard let controller = controllers.first(where: { controller in
+            controller.tabs.contains { $0.id == id }
+        }), let index = controller.tabs.firstIndex(where: { $0.id == id })
         else { return }
+        NSApp.activate()
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         controller.selectTab(index)

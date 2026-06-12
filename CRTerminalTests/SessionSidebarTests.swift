@@ -318,6 +318,36 @@ struct SessionTabLifecycleTests {
         #expect(NSApp.dockTile.badgeLabel ?? "" == "")
     }
 
+    @Test @MainActor func bellNotificationsDebouncePerSession() {
+        let poster = NotificationPoster()
+        let noisy = UUID(), other = UUID()
+        let start = Date()
+        #expect(poster.shouldPostBell(for: noisy, at: start))
+        // A burst stays quiet — and does not re-arm the window.
+        #expect(!poster.shouldPostBell(for: noisy, at: start.addingTimeInterval(1)))
+        #expect(!poster.shouldPostBell(for: noisy, at: start.addingTimeInterval(1.9)))
+        // Other sessions debounce independently.
+        #expect(poster.shouldPostBell(for: other, at: start.addingTimeInterval(1)))
+        // After the window, the next bell posts again.
+        #expect(poster.shouldPostBell(for: noisy, at: start.addingTimeInterval(2.5)))
+    }
+
+    @Test @MainActor func focusSessionLandsOnTheTabAcrossWindows() throws {
+        let app = try #require(AppDelegate.shared)
+        let first = app.makeWindowController()
+        let second = app.makeWindowController()
+        defer {
+            first.window?.close()
+            second.window?.close()
+        }
+        second.addSession()  // two tabs; the new one is active
+        let target = second.tabs[0].id
+        #expect(second.activeTab?.id != target)
+
+        app.focusSession(id: target)
+        #expect(second.activeTab?.id == target)
+    }
+
     @Test @MainActor func bellBadgeFollowsTheRowModel() {
         let view = SessionRowView()
         view.frame = NSRect(x: 0, y: 0, width: 220, height: 50)

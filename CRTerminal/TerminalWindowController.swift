@@ -243,11 +243,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             if let pane { self.noteAttention(in: pane) }
             NotificationPoster.shared.post(
-                notification, windowIsKey: self.window?.isKeyWindow ?? false)
+                notification, windowIsKey: self.window?.isKeyWindow ?? false,
+                sessionID: pane.flatMap { pane in
+                    self.tabs.first { $0.panes.contains(pane) }?.id
+                })
         }
         pane.onBell = { [weak self, weak pane] in
             guard let pane else { return }
-            self?.noteAttention(in: pane)
+            self?.noteBell(in: pane)
         }
     }
 
@@ -271,6 +274,22 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         tabs[index].lastBellAt = Date()
         refreshSessionMetadata()
         AppDelegate.shared?.bellRequiresAttention()
+    }
+
+    /// BEL: badge via noteAttention, plus a notification titled with the
+    /// ringing process when the whole app is in the background.
+    private func noteBell(in pane: TerminalView) {
+        noteAttention(in: pane)
+        guard let index = tabs.firstIndex(where: { $0.panes.contains(pane) }),
+              let session = pane.session else { return }
+        let foreground = session.foregroundProcessGroup
+        let processName = foreground > 0
+            ? SessionInfo.processName(of: foreground) : nil
+        NotificationPoster.shared.postBell(
+            sessionID: tabs[index].id,
+            title: processName ?? session.snapshot.title
+                ?? SessionInfo.processName(of: session.shellProcessID) ?? "Shell",
+            body: "Session \(index + 1) rang the bell")
     }
 
     /// Viewing the active tab consumes its attention badge.
