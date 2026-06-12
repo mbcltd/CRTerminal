@@ -64,10 +64,18 @@ final class GlyphAtlas {
     private var fonts: [CTFont]
     private var entries: [Key: Entry] = [:]
     private var scalarToGlyph: [UInt32: (fontIndex: UInt16, glyph: CGGlyph)?] = [:]
+    private var boxEntries: [UInt32: Entry] = [:]
     private var grayPacker = ShelfPacker(size: textureSize)
     private var colorPacker = ShelfPacker(size: textureSize)
 
-    init?(device: MTLDevice, font: CTFont, scale: CGFloat) {
+    /// Cell extent in device pixels and the baseline's distance below the
+    /// cell top — needed to synthesize exact-cell box/block glyphs.
+    private let cellWidthPx: Int
+    private let cellHeightPx: Int
+    private let ascentPx: Float
+
+    init?(device: MTLDevice, font: CTFont, scale: CGFloat,
+          cellSize: CGSize, ascent: CGFloat) {
         let grayDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm,
             width: Self.textureSize,
@@ -89,9 +97,21 @@ final class GlyphAtlas {
         self.colorTexture = colorTexture
         self.fonts = [font]
         self.scale = scale
+        self.cellWidthPx = Int((cellSize.width * scale).rounded())
+        self.cellHeightPx = Int((cellSize.height * scale).rounded())
+        self.ascentPx = Float(ascent * scale)
     }
 
     func entry(forScalar scalar: UInt32) -> Entry? {
+        // Box drawing and block elements never come from the font: glyphs
+        // there don't fill the rounded-up cell (or come from a fallback with
+        // foreign metrics), leaving seams. Synthesized from cell geometry.
+        if BoxDrawing.covers(scalar) {
+            if let cached = boxEntries[scalar] { return cached }
+            let entry = rasterizeBox(scalar)
+            boxEntries[scalar] = entry
+            return entry
+        }
         guard let resolved = resolveGlyph(scalar) else { return nil }
         let key = Key(fontIndex: resolved.fontIndex, glyph: resolved.glyph)
         if let cached = entries[key] { return cached }
@@ -208,6 +228,48 @@ final class GlyphAtlas {
                 Float(rect.minX * scale) - Float(pad),
                 Float(rect.maxY * scale) + Float(pad)),
             isColor: color,
+            isEmpty: false)
+    }
+
+    /// Procedural box-drawing/block-element entry: the bitmap is exactly one
+    /// cell (plus the atlas gutter) and the bearing pins the quad to the cell
+    /// rect, so adjacent cells tile with no seams.
+    private func rasterizeBox(_ scalar: UInt32) -> Entry {
+        let pad = 1
+        let width = cellWidthPx + 2 * pad
+        let height = cellHeightPx + 2 * pad
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            else { return }
+            context.translateBy(x: CGFloat(pad), y: CGFloat(pad))
+            BoxDrawing.draw(
+                scalar, in: context, width: cellWidthPx, height: cellHeightPx)
+        }
+
+        guard let slot = grayPacker.allocate(width: width, height: height) else {
+            return .empty
+        }
+        texture.replace(
+            region: MTLRegionMake2D(slot.x, slot.y, width, height),
+            mipmapLevel: 0,
+            withBytes: pixels,
+            bytesPerRow: width)
+
+        let textureSize = Float(Self.textureSize)
+        return Entry(
+            uvOrigin: SIMD2(Float(slot.x) / textureSize, Float(slot.y) / textureSize),
+            uvSize: SIMD2(Float(width) / textureSize, Float(height) / textureSize),
+            size: SIMD2(Float(width), Float(height)),
+            bearing: SIMD2(-Float(pad), ascentPx + Float(pad)),
+            isColor: false,
             isEmpty: false)
     }
 }

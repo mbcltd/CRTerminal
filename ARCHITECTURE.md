@@ -184,6 +184,10 @@ minimum.
   texture atlases: an alpha-only atlas for regular glyphs (grayscale AA), an RGBA
   atlas for color emoji. Keyed by (font, glyph ID, style, subpixel-offset bucket),
   LRU-evicted. Atlas pages are allocated on demand; a font-size change flushes.
+  Box Drawing (U+2500–257F) and Block Elements (U+2580–259F) never come from the
+  font: `BoxDrawing` synthesizes them from exact cell geometry, pixel-snapped, so
+  adjacent cells tile seamlessly (font glyphs don't fill the rounded-up cell and
+  fallback fonts have foreign metrics, both of which leave background seams).
 - **Shaping.** The fast path maps one cell → one glyph via the font's cmap, no shaping.
   When ligatures are enabled, runs of cells are shaped with Core Text per run and the
   result cached keyed by a hash of the run's content+attrs — `=>` costs shaping once,

@@ -66,19 +66,8 @@ public final class TerminalRenderer {
     }
 
     public init?(font: CTFont, scale: CGFloat, scheme: ColorScheme = .default) {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue(),
-              let atlas = GlyphAtlas(device: device, font: font, scale: scale),
-              let effectPipeline = EffectPipeline(device: device)
-        else { return nil }
-        self.device = device
-        self.commandQueue = queue
-        self.atlas = atlas
-        self.effectPipeline = effectPipeline
-        self.scale = scale
-        self.scheme = scheme
-
-        // Monospace cell metrics from the font.
+        // Monospace cell metrics from the font — computed before the atlas,
+        // which needs them to synthesize exact-cell box/block glyphs.
         var glyph = CGGlyph(0)
         var advance = CGSize.zero
         var character = UniChar(0x30) // '0'
@@ -87,6 +76,20 @@ public final class TerminalRenderer {
         ascent = CTFontGetAscent(font)
         let height = CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font)
         cellSize = CGSize(width: advance.width.rounded(.up), height: height.rounded(.up))
+
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let atlas = GlyphAtlas(
+                device: device, font: font, scale: scale,
+                cellSize: cellSize, ascent: ascent),
+              let effectPipeline = EffectPipeline(device: device)
+        else { return nil }
+        self.device = device
+        self.commandQueue = queue
+        self.atlas = atlas
+        self.effectPipeline = effectPipeline
+        self.scale = scale
+        self.scheme = scheme
 
         do {
             let library = try device.makeLibrary(source: shaderSource, options: nil)
