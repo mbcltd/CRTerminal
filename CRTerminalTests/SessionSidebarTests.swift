@@ -23,7 +23,10 @@ struct SidebarThemeTests {
     }
 }
 
-struct SessionInfoTests {
+/// Serialized: these spawn real PTY children, and concurrent forks from a
+/// multithreaded test host can wedge a child between fork and exec (seen
+/// as a cwd-poll timeout on CI runners).
+@Suite(.serialized) struct SessionInfoTests {
     @Test func abbreviatesHomePaths() {
         let home = NSHomeDirectory()
         #expect(SessionInfo.abbreviate(path: home) == "~")
@@ -289,6 +292,30 @@ struct SessionTabLifecycleTests {
             Notification(name: NSWindow.didBecomeKeyNotification))
         #expect(controller.tabs[1].unseenBells == 0)
         #expect(controller.tabs[0].unseenBells == 1)
+    }
+
+    @Test @MainActor func dockBadgeSumsAttentionSessionsAcrossWindows() throws {
+        let app = try #require(AppDelegate.shared)
+        // Registered controllers, like real windows (the dock badge only
+        // sums windows the app knows about).
+        let first = app.makeWindowController()
+        let second = app.makeWindowController()
+        defer {
+            first.window?.close()
+            second.window?.close()
+        }
+
+        first.tabs[0].panes.first?.onBell?()
+        second.tabs[0].panes.first?.onBell?()
+        #expect(NSApp.dockTile.badgeLabel == "2")
+
+        // Viewing each window's session decrements the badge.
+        first.windowDidBecomeKey(
+            Notification(name: NSWindow.didBecomeKeyNotification))
+        #expect(NSApp.dockTile.badgeLabel == "1")
+
+        second.selectTab(0)
+        #expect(NSApp.dockTile.badgeLabel ?? "" == "")
     }
 
     @Test @MainActor func bellBadgeFollowsTheRowModel() {
