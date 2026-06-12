@@ -276,20 +276,28 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         AppDelegate.shared?.bellRequiresAttention()
     }
 
-    /// BEL: badge via noteAttention, plus a notification titled with the
-    /// ringing process when the whole app is in the background.
+    /// BEL: badge via noteAttention, plus a notification when the whole
+    /// app is in the background — titled with the ringing command, the
+    /// session and its directory in the body ("claude / Session 2 ·
+    /// ~/dev/app"), so a stack of notifications tells the sessions apart.
     private func noteBell(in pane: TerminalView) {
         noteAttention(in: pane)
         guard let index = tabs.firstIndex(where: { $0.panes.contains(pane) }),
               let session = pane.session else { return }
+        let shellPID = session.shellProcessID
         let foreground = session.foregroundProcessGroup
-        let processName = foreground > 0
-            ? SessionInfo.processName(of: foreground) : nil
+        let isRunning = foreground > 0 && foreground != shellPID
+        let command = isRunning ? SessionInfo.processName(of: foreground) : nil
+        let title = command ?? session.snapshot.title
+            ?? SessionInfo.processName(of: shellPID) ?? "Shell"
+        let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
+            ?? SessionInfo.workingDirectory(of: shellPID)
+        var details = ["Session \(index + 1)"]
+        if let cwd { details.append(SessionInfo.abbreviate(path: cwd)) }
         NotificationPoster.shared.postBell(
             sessionID: tabs[index].id,
-            title: processName ?? session.snapshot.title
-                ?? SessionInfo.processName(of: session.shellProcessID) ?? "Shell",
-            body: "Session \(index + 1) rang the bell")
+            title: title,
+            body: details.joined(separator: " · "))
     }
 
     /// Viewing the active tab consumes its attention badge.
