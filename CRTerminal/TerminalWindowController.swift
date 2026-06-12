@@ -53,7 +53,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         tabs.indices.contains(activeTabIndex) ? tabs[activeTabIndex] : nil
     }
 
-    init(profile: Profile) {
+    /// `spawnInitialSession: false` makes an empty shell of a window for
+    /// adopting a torn-off session; callers must adopt one immediately.
+    init(profile: Profile, spawnInitialSession: Bool = true) {
         self.profile = profile
         sidebar = SessionSidebarView(
             theme: SidebarTheme(preset: profile.preset(in: PresetCatalog.all)))
@@ -76,9 +78,23 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             x: 0, y: 0, width: SessionSidebarView.width, height: rootView.bounds.height)
         sidebar.autoresizingMask = [.height]
         sidebar.onSelect = { [weak self] index in self?.selectTab(index) }
+        sidebar.onClose = { [weak self] index in self?.closeSession(at: index) }
         sidebar.onNewSession = { [weak self] in self?.addSession() }
         sidebar.onHover = { [weak self] index, rowFrame in
             self?.hoverChanged(index: index, rowFrame: rowFrame)
+        }
+        sidebar.onDropSession = { [weak self] id, gapIndex in
+            guard let self else { return false }
+            // The app delegate resolves drags that came from another
+            // window; outside it (unit tests) reorder locally.
+            if let app = AppDelegate.shared,
+               app.moveSession(id: id, to: self, at: gapIndex) {
+                return true
+            }
+            return self.reorderSession(id: id, to: gapIndex)
+        }
+        sidebar.onDragEndedWithoutDrop = { id, screenPoint in
+            AppDelegate.shared?.sessionDragEnded(id: id, droppedAt: screenPoint)
         }
         rootView.addSubview(sidebar)
 
@@ -91,8 +107,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
         addTitlebarControls(to: window)
 
-        addSession()
-        sizeWindowToGrid(columns: 80, rows: 24)
+        if spawnInitialSession {
+            addSession()
+            sizeWindowToGrid(columns: 80, rows: 24)
+        }
         window.center()
 
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
@@ -194,24 +212,32 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             return nil
         }
         let pane = TerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
-        pane.rendererProvider = { [weak self] in self?.rendererForPane() }
         pane.preset = tab.preset
         pane.session = session
-        session.onExit = { [weak self, weak pane] _ in
-            guard let pane else { return }
-            self?.close(pane: pane)
-        }
         session.onClipboard = { text in
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(text, forType: .string)
         }
+        wire(pane: pane)
+        tab.panes.append(pane)
+        return pane
+    }
+
+    /// Points a pane's renderer and session callbacks at this window; runs
+    /// on creation and again when a dragged session is adopted from
+    /// another window.
+    private func wire(pane: TerminalView) {
+        pane.rendererProvider = { [weak self] in self?.rendererForPane() }
+        guard let session = pane.session else { return }
+        session.onExit = { [weak self, weak pane] _ in
+            guard let pane else { return }
+            self?.close(pane: pane)
+        }
         session.onNotification = { [weak self] notification in
             NotificationPoster.shared.post(
                 notification, windowIsKey: self?.window?.isKeyWindow ?? false)
         }
-        tab.panes.append(pane)
-        return pane
     }
 
     private func install(_ pane: TerminalView, in container: NSView) {
@@ -320,6 +346,69 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             window?.makeFirstResponder(next)
         }
         refreshSessionMetadata()
+    }
+
+    /// Closes a whole sidebar session — every pane in it (the row's ✕).
+    func closeSession(at index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        for pane in tabs[index].panes {
+            close(pane: pane)
+        }
+    }
+
+    // MARK: Session dragging (reorder / move between windows)
+
+    /// Sidebar drag-reorder: moves the session into the gap index the drop
+    /// indicator showed (0...count, between rows after removal).
+    @discardableResult
+    func reorderSession(id: UUID, to gapIndex: Int) -> Bool {
+        guard let from = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        var to = min(max(0, gapIndex), tabs.count)
+        if from < to { to -= 1 }
+        let active = activeTab
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: to)
+        if let active, let index = tabs.firstIndex(where: { $0 === active }) {
+            activeTabIndex = index
+        }
+        refreshSessionMetadata()
+        return true
+    }
+
+    /// Removes a session from this window without terminating its shells,
+    /// for adoption by another window. A window left with no sessions
+    /// closes — so callers must attach the tab to an already-open window.
+    func detachSession(id: UUID) -> SessionTab? {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = tabs.remove(at: index)
+        dirtyCounts[tab.id] = nil
+        tab.container.removeFromSuperview()
+        hideHoverCard()
+        guard !tabs.isEmpty else {
+            window?.close()
+            return tab
+        }
+        if index < activeTabIndex {
+            activeTabIndex -= 1
+        }
+        selectTab(min(activeTabIndex, tabs.count - 1))
+        return tab
+    }
+
+    /// Adopts a session detached from another window: the tab keeps its
+    /// shells and theme, but its panes join this window's renderer (one
+    /// glyph atlas per window) and callbacks.
+    func adopt(tab: SessionTab, at gapIndex: Int) {
+        let index = min(max(0, gapIndex), tabs.count)
+        tab.container.frame = contentHost.bounds
+        tab.container.autoresizingMask = [.width, .height]
+        contentHost.addSubview(tab.container)
+        tabs.insert(tab, at: index)
+        for pane in tab.panes {
+            wire(pane: pane)
+            pane.resetRenderer()
+        }
+        selectTab(index)
     }
 
     /// ⌘W: close the focused pane (the window when it's the only one).

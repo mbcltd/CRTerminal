@@ -42,10 +42,28 @@ public final class TerminalRenderer {
     private struct EffectsState {
         var preset: CRTPreset = .museumOff
         var degaussStart: CFTimeInterval?
+        /// Amplitude of the running degauss animation (and its sound):
+        /// how much magnetization had built up when the coil fired.
+        var degaussAmplitude: Float = 1
+        /// When the tube was last demagnetized; nil until the first frame
+        /// ("power-on"). Magnetization accrues from here.
+        var magnetizedSince: CFTimeInterval?
     }
     private let effectsState = OSAllocatedUnfairLock(initialState: EffectsState())
 
     public static let degaussDuration: CFTimeInterval = 1.5
+
+    /// Magnetization buildup: nothing to degauss for the first 30 s, then
+    /// the effect grows from 10% to full strength over the next 5 minutes.
+    static let degaussDeadTime: CFTimeInterval = 30
+    static let degaussRampDuration: CFTimeInterval = 300
+
+    /// 0 (freshly degaussed) ... 1 (fully magnetized).
+    static func magnetization(after elapsed: CFTimeInterval) -> Float {
+        guard elapsed >= degaussDeadTime else { return 0 }
+        let ramp = min((elapsed - degaussDeadTime) / degaussRampDuration, 1)
+        return Float(0.1 + 0.9 * ramp)
+    }
 
     private struct Uniforms {
         var viewport: SIMD2<Float>
@@ -178,8 +196,13 @@ public final class TerminalRenderer {
                 context.surfaces = surfaces
             } else {
                 context.surfaces = nil // museum off: no offscreen chain at all
+                // The view reserves contentInsetPt around the grid; shift
+                // the cell pass to match (offscreen renderImage stays
+                // unpadded — the margin is window layout, not content).
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                               markedText: markedText, in: buffer, to: target)
+                               markedText: markedText, in: buffer, to: target,
+                               padPx: Int((CGFloat(frame.preset.contentInsetPt) * scale)
+                                   .rounded()))
             }
             attachLatencySample(to: buffer)
             buffer.present(drawable)
@@ -197,9 +220,22 @@ public final class TerminalRenderer {
         set { effectsState.withLock { $0.preset = newValue } }
     }
 
-    /// Fire the degauss animation (the *thunk* sound is app policy).
-    public func degauss(at time: CFTimeInterval = CACurrentMediaTime()) {
-        effectsState.withLock { $0.degaussStart = time }
+    /// Fire the degauss coil. The visible wobble (and the caller's sound)
+    /// scales with how much magnetization has built up since the last
+    /// firing — returns that amplitude, 0 when there is nothing to degauss
+    /// yet (no animation runs).
+    @discardableResult
+    public func degauss(at time: CFTimeInterval = CACurrentMediaTime()) -> Float {
+        effectsState.withLock { state in
+            let elapsed = time - (state.magnetizedSince ?? time)
+            let amplitude = Self.magnetization(after: elapsed)
+            // The coil fires regardless; the tube is clean either way.
+            state.magnetizedSince = time
+            guard amplitude > 0 else { return 0 }
+            state.degaussStart = time
+            state.degaussAmplitude = amplitude
+            return amplitude
+        }
     }
 
     /// True while an effect needs frames with no new terminal output:
@@ -226,12 +262,14 @@ public final class TerminalRenderer {
     struct FrameSetup {
         var preset: CRTPreset
         var degaussPhase: Float
+        var degaussAmplitude: Float = 1
         var decayFactor: Float
         var time: CFTimeInterval
 
         func uniforms(width: Int, height: Int, scale: CGFloat) -> CRTUniforms {
             CRTUniforms(preset: preset, width: width, height: height, scale: scale,
-                        time: time, degaussPhase: degaussPhase)
+                        time: time, degaussPhase: degaussPhase,
+                        degaussAmplitude: degaussAmplitude)
         }
     }
 
@@ -242,13 +280,15 @@ public final class TerminalRenderer {
     ) -> FrameSetup {
         // Shared (per-window) state under the lock; per-pane clocks on the
         // context, which belongs to a single render thread.
-        let (fallback, degaussStart):
-            (CRTPreset, CFTimeInterval?) = effectsState.withLock { state in
+        let (fallback, degaussStart, degaussAmplitude):
+            (CRTPreset, CFTimeInterval?, Float) = effectsState.withLock { state in
             if let start = state.degaussStart,
                (time - start) / Self.degaussDuration >= 1 {
                 state.degaussStart = nil
             }
-            return (state.preset, state.degaussStart)
+            // First frame = power-on; magnetization starts accruing.
+            if state.magnetizedSince == nil { state.magnetizedSince = time }
+            return (state.preset, state.degaussStart, state.degaussAmplitude)
         }
         let preset = panePreset ?? fallback
 
@@ -271,6 +311,7 @@ public final class TerminalRenderer {
         }
         return FrameSetup(
             preset: preset, degaussPhase: degaussPhase,
+            degaussAmplitude: degaussAmplitude,
             decayFactor: decayFactor, time: time)
     }
 
@@ -416,13 +457,18 @@ public final class TerminalRenderer {
     /// own render threads, and the glyph atlas caches are not concurrent.
     private let encodeLock = NSLock()
 
+    /// `padPx` shifts the grid away from the texture edges (museum off
+    /// renders straight to the drawable, which is inset-larger than the
+    /// grid); the pass clears the whole texture, so the pad shows the
+    /// scheme background.
     private func encodeCellPass(
         _ state: TerminalState,
         scrollOffset: Int,
         selection: Selection?,
         markedText: String? = nil,
         in buffer: MTLCommandBuffer,
-        to texture: MTLTexture
+        to texture: MTLTexture,
+        padPx: Int = 0
     ) {
         encodeLock.lock()
         defer { encodeLock.unlock() }
@@ -573,7 +619,19 @@ public final class TerminalRenderer {
         guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass)
         else { return }
 
-        var uniforms = Uniforms(viewport: SIMD2(Float(texture.width), Float(texture.height)))
+        // A 1:1 pixel mapping translated by the pad: the viewport rect must
+        // stay inside the render target, so shrink it symmetrically and size
+        // the NDC scale to match.
+        let pad = max(0, min(padPx, (texture.width - 2) / 2, (texture.height - 2) / 2))
+        if pad > 0 {
+            encoder.setViewport(MTLViewport(
+                originX: Double(pad), originY: Double(pad),
+                width: Double(texture.width - 2 * pad),
+                height: Double(texture.height - 2 * pad),
+                znear: 0, zfar: 1))
+        }
+        var uniforms = Uniforms(viewport: SIMD2(
+            Float(texture.width - 2 * pad), Float(texture.height - 2 * pad)))
 
         // setVertexBytes caps at 4 KiB; instance arrays go in real buffers.
         if !bgInstances.isEmpty,

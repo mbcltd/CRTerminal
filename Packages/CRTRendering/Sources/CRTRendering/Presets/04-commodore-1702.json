@@ -8,5 +8,6 @@
   "scanlines": { "lines": 242, "strength": 0.45, "beamWidth": 0.9 },
   "bloom": { "threshold": 0.5, "strength": 0.7, "radiusMM": 0.6 },
   "artifacts": { "noise": 0.04, "humBar": 0.02, "jitter": 0.15, "convergenceMM": 0.12, "aberration": 0.35 },
-  "bezel": { "widthPt": 18, "color": "#3A342C" }
+  "bezel": { "widthPt": 18, "color": "#3A342C" },
+  "degaussButton": false
 }

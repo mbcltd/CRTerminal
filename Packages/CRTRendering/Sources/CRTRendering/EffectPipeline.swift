@@ -4,6 +4,7 @@ import QuartzCore
 /// GPU-facing uniforms derived from a CRTPreset. Field order matches the
 /// MSL struct in EffectShaders.swift; the float2/float3 fields keep both
 /// layouts in lockstep (24 scalars = 96 bytes before the first float3).
+/// Add new scalars at the tail so the float3 alignment stays untouched.
 struct CRTUniforms {
     var viewport: SIMD2<Float> = .zero
     var screenOrigin: SIMD2<Float> = .zero
@@ -29,6 +30,7 @@ struct CRTUniforms {
     var tint: SIMD3<Float> = .one
     var bezelColor: SIMD3<Float> = .zero
     var bezelPx: Float = 0
+    var degaussAmplitude: Float = 1
 
     /// Nominal Mac panel: ~110 points per inch.
     static func pixelsPerMM(scale: CGFloat) -> Float {
@@ -36,7 +38,7 @@ struct CRTUniforms {
     }
 
     init(preset: CRTPreset, width: Int, height: Int, scale: CGFloat,
-         time: CFTimeInterval, degaussPhase: Float) {
+         time: CFTimeInterval, degaussPhase: Float, degaussAmplitude: Float = 1) {
         let pxPerMM = Self.pixelsPerMM(scale: scale)
         viewport = SIMD2(Float(width), Float(height))
         bezelPx = Float(preset.bezel.widthPt) * Float(scale)
@@ -47,6 +49,7 @@ struct CRTUniforms {
 
         self.time = Float(time.truncatingRemainder(dividingBy: 3600))
         self.degaussPhase = degaussPhase
+        self.degaussAmplitude = degaussAmplitude
         curvature = Float(preset.geometry.curvature)
         cornerRadius = Float(preset.geometry.cornerRadius)
         vignette = Float(preset.geometry.vignette)

@@ -34,6 +34,7 @@ struct CRTUniforms {
     float3 tint;
     float3 bezelColor;
     float bezelPx;
+    float degaussAmplitude; // wobble strength, 0..1 (magnetization buildup)
 };
 
 struct FSQOut {
@@ -135,7 +136,7 @@ fragment float4 crt_composite(FSQOut in [[stage_in]],
     float degaussEnv = 0.0;
     if (u.degaussPhase < 1.0) {
         float p = max(u.degaussPhase, 0.0);
-        degaussEnv = exp(-3.5 * p) * (1.0 - p);
+        degaussEnv = exp(-3.5 * p) * (1.0 - p) * u.degaussAmplitude;
         float r = length(c);
         float swirl = degaussEnv * 0.30 * sin(34.0 * p - r * 6.0) * (0.25 + r);
         float ca = cos(swirl), sa = sin(swirl);

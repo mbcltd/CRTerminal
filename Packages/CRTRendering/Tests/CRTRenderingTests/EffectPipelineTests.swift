@@ -175,6 +175,28 @@ struct EffectPipelineTests {
         #expect(after.degaussPhase == 1)
     }
 
+    @Test func magnetizationBuildsUpBetweenDegausses() throws {
+        guard let renderer = makeRenderer() else { return }
+        let context = SurfaceContext()
+        renderer.preset = preset("DEC VT220")
+        // Power-on: the first frame starts the magnetization clock.
+        _ = renderer.beginFrame(at: 0, contentChanged: true, context: context)
+
+        // Inside the 30 s dead time the coil has nothing to do: no
+        // amplitude, no animation — but the clock still resets.
+        #expect(renderer.degauss(at: 10) == 0)
+        #expect(!renderer.wantsContinuousFrames(at: 10.5, context: context))
+
+        // Exactly at the dead time: the minimum 10% kick.
+        #expect(abs(renderer.degauss(at: 40) - 0.1) < 0.001)
+        let frame = renderer.beginFrame(at: 40.1, contentChanged: false, context: context)
+        #expect(abs(frame.degaussAmplitude - 0.1) < 0.001)
+
+        // Halfway up the 5-minute ramp, then fully magnetized.
+        #expect(abs(renderer.degauss(at: 40 + 30 + 150) - 0.55) < 0.001)
+        #expect(renderer.degauss(at: 220 + 30 + 300) == 1)
+    }
+
     @Test func quiescentEffectsDoNotWantFrames() throws {
         guard let renderer = makeRenderer() else { return }
         let context = SurfaceContext()

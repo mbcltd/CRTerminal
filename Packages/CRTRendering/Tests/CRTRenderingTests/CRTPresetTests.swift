@@ -35,6 +35,13 @@ struct CRTPresetTests {
         #expect(preset.mask.type == .none)
         #expect(preset.bezel.widthPt == 0)
         #expect(!preset.artifacts.isAnimated)
+        #expect(preset.degaussButton)
+    }
+
+    @Test func commodore1702HasNoDegaussButton() throws {
+        // The 1702 degaussed itself at power-on; no front-panel button.
+        let preset = try #require(CRTPresetLibrary.preset(named: "Commodore 1702"))
+        #expect(!preset.degaussButton)
     }
 
     @Test func presetRoundTripsThroughJSON() throws {

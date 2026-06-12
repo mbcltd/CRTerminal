@@ -9,7 +9,7 @@ struct Profile: Codable, Equatable, Identifiable {
     /// PostScript name; nil = the system monospaced font.
     var fontName: String?
     var fontSize: Double = 13
-    var presetName: String = "DEC VT220"
+    var presetName: String = "Museum off"
     /// nil = the user's login shell ($SHELL).
     var shellPath: String?
     /// Where new shells start; nil = the home folder. "~" is expanded.

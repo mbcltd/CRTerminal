@@ -19,6 +19,15 @@ struct TitlebarControlsTests {
         #expect(degauss?.isHidden == false)
     }
 
+    @Test @MainActor func degaussButtonHidesWhenTheMonitorLacksOne() {
+        let autoDegauss = CRTPreset(name: "Self-degaussing", effects: true,
+                                    degaussButton: false)
+        let cluster = TitlebarControlCluster(
+            presets: [autoDegauss, .museumOff], currentPreset: autoDegauss)
+        let degauss = cluster.subviews.compactMap { $0 as? DegaussButton }.first
+        #expect(degauss?.isHidden == true)
+    }
+
     @Test @MainActor func clusterShrinksWhenDegaussHides() {
         let crt = CRTPreset(name: "Tube", effects: true)
         let cluster = TitlebarControlCluster(

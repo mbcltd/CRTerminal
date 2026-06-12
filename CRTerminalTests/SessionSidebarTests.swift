@@ -118,6 +118,99 @@ struct SessionTabLifecycleTests {
         #expect(controller.activeTabIndex == 0)
     }
 
+    @Test @MainActor func closeSessionClosesTheWholeTab() {
+        let controller = TerminalWindowController(profile: Profile())
+        defer { controller.window?.close() }
+        controller.addSession()
+        #expect(controller.tabs.count == 2)
+
+        // The sidebar ✕ closes by row index; the active session shifts.
+        controller.closeSession(at: 0)
+        #expect(controller.tabs.count == 1)
+        #expect(controller.activeTabIndex == 0)
+    }
+
+    @Test @MainActor func reorderMovesTheSessionAndFollowsTheActiveOne() {
+        let controller = TerminalWindowController(profile: Profile())
+        defer { controller.window?.close() }
+        controller.addSession()
+        controller.addSession()  // 3 tabs, the last one active
+        let ids = controller.tabs.map(\.id)
+
+        // Drag the first row into the gap after the last row.
+        #expect(controller.reorderSession(id: ids[0], to: 3))
+        #expect(controller.tabs.map(\.id) == [ids[1], ids[2], ids[0]])
+        // The active session moved indexes but stays active.
+        #expect(controller.activeTab?.id == ids[2])
+        #expect(controller.activeTabIndex == 1)
+
+        #expect(!controller.reorderSession(id: UUID(), to: 0))
+    }
+
+    @Test @MainActor func detachAndAdoptMoveASessionBetweenWindows() {
+        let source = TerminalWindowController(profile: Profile())
+        let destination = TerminalWindowController(profile: Profile())
+        defer {
+            source.window?.close()
+            destination.window?.close()
+        }
+        source.addSession()
+        let id = source.tabs[0].id
+
+        guard let tab = source.detachSession(id: id) else {
+            Issue.record("detach returned nil")
+            return
+        }
+        #expect(source.tabs.count == 1)
+        destination.adopt(tab: tab, at: 0)
+        #expect(destination.tabs.count == 2)
+        #expect(destination.tabs[0].id == id)
+        #expect(destination.activeTab?.id == id)
+        // The container (and its shells) now live in the new window.
+        #expect(tab.container.window === destination.window)
+        #expect(!tab.panes.isEmpty)
+    }
+
+    @Test @MainActor func detachingTheLastSessionClosesTheWindow() {
+        let controller = TerminalWindowController(profile: Profile())
+        var closed = false
+        controller.onClose = { _ in closed = true }
+
+        let tab = controller.detachSession(id: controller.tabs[0].id)
+        #expect(tab != nil)
+        #expect(controller.tabs.isEmpty)
+        #expect(closed)
+        // The detached session survives the window for adoption elsewhere;
+        // nobody adopts it here, so clean up its shell.
+        for pane in tab?.panes ?? [] {
+            pane.session?.terminate()
+            pane.renderLoop?.invalidate()
+        }
+    }
+
+    @Test @MainActor func sidebarMapsDropPointsToGapIndexes() {
+        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .museumOff))
+        sidebar.update(rows: [
+            SessionRowModel(
+                id: UUID(), index: 1, title: "one", metaLine: "~",
+                isActive: true, isRunning: false, dirtyCount: nil,
+                theme: SidebarTheme(preset: .museumOff)),
+            SessionRowModel(
+                id: UUID(), index: 2, title: "two", metaLine: "~",
+                isActive: false, isRunning: false, dirtyCount: nil,
+                theme: SidebarTheme(preset: .museumOff)),
+        ])
+        sidebar.layoutSubtreeIfNeeded()
+        let first = sidebar.frameForRow(at: 0)
+        let second = sidebar.frameForRow(at: 1)
+        // Top half of a row inserts before it, bottom half after.
+        #expect(sidebar.dropGapIndex(at: NSPoint(x: 10, y: first.minY + 4)) == 0)
+        #expect(sidebar.dropGapIndex(at: NSPoint(x: 10, y: first.maxY - 4)) == 1)
+        #expect(sidebar.dropGapIndex(at: NSPoint(x: 10, y: second.maxY - 4)) == 2)
+        // Way below the rows clamps to the end.
+        #expect(sidebar.dropGapIndex(at: NSPoint(x: 10, y: second.maxY + 300)) == 2)
+    }
+
     @Test @MainActor func presetsApplyPerSessionNotPerWindow() {
         let controller = TerminalWindowController(profile: Profile())
         defer { controller.window?.close() }

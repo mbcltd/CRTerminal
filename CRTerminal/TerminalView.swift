@@ -38,9 +38,10 @@ final class TerminalView: NSView, NSTextInputClient {
         }
     }
 
-    /// Points reserved around the grid for the preset's bezel.
+    /// Points reserved around the grid: the preset's bezel, or a small
+    /// margin when effects are off.
     private var contentInset: CGFloat {
-        preset.effects ? CGFloat(preset.bezel.widthPt) : 0
+        CGFloat(preset.contentInsetPt)
     }
 
     /// Menu/titlebar-button entry point (nil-target action).
@@ -48,11 +49,14 @@ final class TerminalView: NSView, NSTextInputClient {
         degauss()
     }
 
-    /// The degauss button does what it says on the tin.
+    /// The degauss button does what it says on the tin — but only as hard
+    /// as the tube has magnetized since the last firing: a freshly
+    /// degaussed tube gives a quiet, barely-there wobble (or nothing at
+    /// all within the first 30 seconds).
     func degauss() {
-        guard preset.effects else { return }
-        renderer?.degauss()
-        degaussSound.play()
+        guard preset.effects, let amplitude = renderer?.degauss(),
+              amplitude > 0 else { return }
+        degaussSound.play(volume: amplitude)
         renderLoop?.poke(force: true)
     }
 

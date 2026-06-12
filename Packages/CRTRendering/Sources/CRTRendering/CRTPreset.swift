@@ -201,12 +201,27 @@ public struct CRTPreset: Codable, Equatable, Sendable {
     public var bloom: Bloom
     public var artifacts: Artifacts
     public var bezel: Bezel
+    /// Whether the monitor sports a manual degauss button. Sets without
+    /// one (the Commodore 1702 degaussed itself at power-on) hide the
+    /// titlebar button; the menu command still works.
+    public var degaussButton: Bool
+
+    /// Points reserved between the window edge and the cell grid: the
+    /// bezel when effects are on, a small breathing margin for the plain
+    /// screen so text doesn't sit flush against the edge.
+    public var contentInsetPt: Double {
+        effects ? bezel.widthPt : Self.plainInsetPt
+    }
+
+    /// The grid margin when effects are off (museum off).
+    public static let plainInsetPt: Double = 8
 
     public init(
         name: String, year: Int? = nil, blurb: String? = nil, effects: Bool = true,
         phosphor: Phosphor = Phosphor(), geometry: Geometry = Geometry(),
         mask: Mask = Mask(), scanlines: Scanlines = Scanlines(),
-        bloom: Bloom = Bloom(), artifacts: Artifacts = Artifacts(), bezel: Bezel = Bezel()
+        bloom: Bloom = Bloom(), artifacts: Artifacts = Artifacts(), bezel: Bezel = Bezel(),
+        degaussButton: Bool = true
     ) {
         self.name = name
         self.year = year
@@ -219,6 +234,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         self.bloom = bloom
         self.artifacts = artifacts
         self.bezel = bezel
+        self.degaussButton = degaussButton
     }
 
     /// Sections may be omitted in JSON; they default to "off".
@@ -235,6 +251,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         bloom = try container.decodeIfPresent(Bloom.self, forKey: .bloom) ?? Bloom()
         artifacts = try container.decodeIfPresent(Artifacts.self, forKey: .artifacts) ?? Artifacts()
         bezel = try container.decodeIfPresent(Bezel.self, forKey: .bezel) ?? Bezel()
+        degaussButton = try container.decodeIfPresent(Bool.self, forKey: .degaussButton) ?? true
     }
 
     /// Everything off — the lean modern terminal.

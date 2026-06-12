@@ -46,7 +46,7 @@ final class TitlebarControlCluster: NSView {
         currentPresetName = preset.name
         themeButton.configure(
             name: preset.name, dotColor: NSColor(preset.phosphor.color))
-        degaussButton.isHidden = !preset.effects
+        degaussButton.isHidden = !preset.effects || !preset.degaussButton
         relayout()
     }
 

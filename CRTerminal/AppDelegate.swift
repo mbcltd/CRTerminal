@@ -87,14 +87,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Windows & tabs
 
-    func makeWindowController() -> TerminalWindowController {
+    func makeWindowController(spawnInitialSession: Bool = true) -> TerminalWindowController {
         let controller = TerminalWindowController(
-            profile: ProfileStore.shared.defaultProfile)
+            profile: ProfileStore.shared.defaultProfile,
+            spawnInitialSession: spawnInitialSession)
         controller.onClose = { [weak self] closed in
             self?.controllers.removeAll { $0 === closed }
         }
         controllers.append(controller)
         return controller
+    }
+
+    // MARK: Session dragging
+
+    /// A sidebar drop landed on `destination`: move the dragged session
+    /// there, detaching it from whichever window holds it. Returns false
+    /// when the session isn't in any registered window (the sidebar then
+    /// falls back to a local reorder).
+    func moveSession(
+        id: UUID, to destination: TerminalWindowController, at gapIndex: Int
+    ) -> Bool {
+        guard let source = controllers.first(where: { controller in
+            controller.tabs.contains { $0.id == id }
+        }) else { return false }
+        if source === destination {
+            return destination.reorderSession(id: id, to: gapIndex)
+        }
+        guard let tab = source.detachSession(id: id) else { return false }
+        destination.adopt(tab: tab, at: gapIndex)
+        return true
+    }
+
+    /// A session drag ended on no drop target. Outside every terminal
+    /// window that's a tear-off — the session moves into a fresh window at
+    /// the drop point. Inside a window it's just a cancelled drag.
+    func sessionDragEnded(id: UUID, droppedAt screenPoint: NSPoint) {
+        guard !controllers.contains(where: {
+            $0.window?.frame.contains(screenPoint) == true
+        }) else { return }
+        guard let source = controllers.first(where: { controller in
+            controller.tabs.contains { $0.id == id }
+        }) else { return }
+        let topLeft = NSPoint(x: screenPoint.x - 60, y: screenPoint.y + 20)
+        // Tearing off a window's only session would recreate the same
+        // window, so just move it to the drop point.
+        if source.tabs.count == 1 {
+            source.window?.setFrameTopLeftPoint(topLeft)
+            return
+        }
+        guard let tab = source.detachSession(id: id) else { return }
+        let controller = makeWindowController(spawnInitialSession: false)
+        // Keep the source window's size so the torn-off grid doesn't reflow.
+        if let frame = source.window?.frame, let window = controller.window {
+            window.setFrame(NSRect(origin: window.frame.origin, size: frame.size),
+                            display: false)
+        }
+        controller.adopt(tab: tab, at: 0)
+        controller.window?.setFrameTopLeftPoint(topLeft)
+        controller.showWindow(nil)
     }
 
     private var keyController: TerminalWindowController? {

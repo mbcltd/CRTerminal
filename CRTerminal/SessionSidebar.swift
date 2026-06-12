@@ -73,17 +73,34 @@ struct SessionCardModel: Equatable {
 
 private let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
 
+extension NSPasteboard.PasteboardType {
+    /// A sidebar session row drag: the payload is the SessionTab UUID.
+    static let crtSessionRow = NSPasteboard.PasteboardType("mbcltd.crterminal.session-row")
+}
+
 final class SessionSidebarView: NSView {
     static let width: CGFloat = 240
 
     var onSelect: ((Int) -> Void)?
+    /// The row's hover ✕: close the session at this index.
+    var onClose: ((Int) -> Void)?
     var onNewSession: (() -> Void)?
     /// Hover changed: row index (into the models array) or nil, plus the
     /// row's frame in the sidebar's coordinates for card placement.
     var onHover: ((Int?, NSRect) -> Void)?
+    /// A row drop landed here (from this window's sidebar or another's):
+    /// move the session to the gap index. Returns whether it was accepted.
+    var onDropSession: ((UUID, Int) -> Bool)?
+    /// A row drag ended with no drop target anywhere — the tear-off case.
+    var onDragEndedWithoutDrop: ((UUID, NSPoint) -> Void)?
 
     private(set) var theme: SidebarTheme
     private var rowViews: [SessionRowView] = []
+    /// Insertion gap (0...count) the current drag would drop into.
+    private var dropGap: Int? {
+        didSet { if dropGap != oldValue { needsDisplay = true } }
+    }
+    private var draggedSessionID: UUID?
     private let headerHeight: CGFloat = 42
     private let footerHeight: CGFloat = 44
     private let rowHeight: CGFloat = 50
@@ -100,6 +117,7 @@ final class SessionSidebarView: NSView {
         addSubview(plusButton)
         footer.onClick = { [weak self] in self?.onNewSession?() }
         addSubview(footer)
+        registerForDraggedTypes([.crtSessionRow])
         applyTheme()
     }
 
@@ -134,10 +152,19 @@ final class SessionSidebarView: NSView {
                       let index = self.rowViews.firstIndex(of: row) else { return }
                 self.onSelect?(index)
             }
+            row.onClose = { [weak self, weak row] in
+                guard let self, let row,
+                      let index = self.rowViews.firstIndex(of: row) else { return }
+                self.onClose?(index)
+            }
             row.onHoverChange = { [weak self, weak row] hovering in
                 guard let self, let row,
                       let index = self.rowViews.firstIndex(of: row) else { return }
                 self.onHover?(hovering ? index : nil, row.frame)
+            }
+            row.onDragStart = { [weak self, weak row] event in
+                guard let self, let row else { return }
+                self.beginRowDrag(row, with: event)
             }
             rowViews.append(row)
             addSubview(row)
@@ -151,6 +178,63 @@ final class SessionSidebarView: NSView {
 
     func frameForRow(at index: Int) -> NSRect {
         rowViews.indices.contains(index) ? rowViews[index].frame : .zero
+    }
+
+    // MARK: Row dragging (reorder / move between windows / tear off)
+
+    /// Maps a point in sidebar coordinates to the insertion gap between
+    /// rows (0 = before the first row, count = after the last).
+    func dropGapIndex(at point: NSPoint) -> Int {
+        let slot = rowHeight + 3
+        let raw = Int(((point.y - (headerHeight + 4)) / slot).rounded())
+        return min(max(0, raw), sessionCount)
+    }
+
+    /// Rows report the gesture; the sidebar runs the dragging session so
+    /// one place owns the pasteboard and the end-of-drag bookkeeping.
+    private func beginRowDrag(_ row: SessionRowView, with event: NSEvent) {
+        guard let id = row.model?.id else { return }
+        let item = NSPasteboardItem()
+        item.setString(id.uuidString, forType: .crtSessionRow)
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+        dragItem.setDraggingFrame(row.frame, contents: row.dragImage())
+        draggedSessionID = id
+        onHover?(nil, .zero)  // no hover card while dragging
+        let session = beginDraggingSession(with: [dragItem], event: event, source: self)
+        // A drag released outside every window tears the session off into
+        // a new window — snapping the image back would contradict that.
+        session.animatesToStartingPositionsOnCancelOrFail = false
+    }
+
+    private func dragUpdate(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard sender.draggingPasteboard.availableType(from: [.crtSessionRow]) != nil
+        else { return [] }
+        dropGap = dropGapIndex(at: convert(sender.draggingLocation, from: nil))
+        return .move
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragUpdate(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragUpdate(sender)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dropGap = nil
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        dropGap = nil
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { dropGap = nil }
+        guard let string = sender.draggingPasteboard.string(forType: .crtSessionRow),
+              let id = UUID(uuidString: string) else { return false }
+        let gap = dropGapIndex(at: convert(sender.draggingLocation, from: nil))
+        return onDropSession?(id, gap) ?? false
     }
 
     override func layout() {
@@ -192,6 +276,38 @@ final class SessionSidebarView: NSView {
                 x: plusButton.frame.minX - 8 - countSize.width,
                 y: (headerHeight - countSize.height) / 2),
             withAttributes: countAttrs)
+
+        // Insertion indicator in the gap a row drag would drop into.
+        if let dropGap {
+            let y = headerHeight + 4 + CGFloat(dropGap) * (rowHeight + 3) - 2.5
+            theme.accent.setFill()
+            NSBezierPath(
+                roundedRect: NSRect(x: 8, y: y, width: bounds.width - 16, height: 3),
+                xRadius: 1.5, yRadius: 1.5
+            ).fill()
+        }
+    }
+}
+
+extension SessionSidebarView: NSDraggingSource {
+    func draggingSession(
+        _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        // .move outside the app too, so a tear-off drop over the desktop
+        // doesn't show the forbidden cursor.
+        .move
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession, endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        dropGap = nil
+        guard let id = draggedSessionID else { return }
+        draggedSessionID = nil
+        if operation.isEmpty {
+            onDragEndedWithoutDrop?(id, screenPoint)
+        }
     }
 }
 
@@ -202,10 +318,20 @@ final class SessionRowView: NSView {
         didSet { if model != oldValue { modelDidChange(from: oldValue) } }
     }
     var onClick: (() -> Void)?
+    var onClose: (() -> Void)?
     var onHoverChange: ((Bool) -> Void)?
+    /// Fired once when a press turns into a drag (passes the drag event).
+    var onDragStart: ((NSEvent) -> Void)?
 
     private var isHovered = false
+    private var isCloseHovered = false
+    private var mouseDownLocation: NSPoint?
     private let pulseDot = CALayer()
+
+    /// The hover-only ✕ pinned to the right edge.
+    private var closeRect: NSRect {
+        NSRect(x: bounds.width - 10 - 16, y: bounds.midY - 8, width: 16, height: 16)
+    }
 
     override var isFlipped: Bool { true }
 
@@ -249,7 +375,12 @@ final class SessionRowView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        installHoverTracking()
+        // mouseMoved keeps the ✕'s own hover highlight live inside the row.
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow],
+            owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -258,16 +389,55 @@ final class SessionRowView: NSView {
         onHoverChange?(true)
     }
 
+    override func mouseMoved(with event: NSEvent) {
+        let inClose = closeRect.contains(convert(event.locationInWindow, from: nil))
+        if inClose != isCloseHovered {
+            isCloseHovered = inClose
+            needsDisplay = true
+        }
+    }
+
     override func mouseExited(with event: NSEvent) {
         isHovered = false
+        isCloseHovered = false
         needsDisplay = true
         onHoverChange?(false)
     }
 
+    override func mouseDown(with event: NSEvent) {
+        mouseDownLocation = convert(event.locationInWindow, from: nil)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // A small threshold keeps sloppy clicks from becoming drags. Once a
+        // dragging session starts, AppKit swallows the matching mouseUp, so
+        // the row won't also select.
+        guard let start = mouseDownLocation else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard hypot(point.x - start.x, point.y - start.y) > 4 else { return }
+        mouseDownLocation = nil
+        onDragStart?(event)
+    }
+
     override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+        mouseDownLocation = nil
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point) else { return }
+        if isHovered && closeRect.contains(point) {
+            onClose?()
+        } else {
             onClick?()
         }
+    }
+
+    /// A bitmap of the row as currently drawn, for the drag image.
+    func dragImage() -> NSImage {
+        let image = NSImage(size: bounds.size)
+        if let rep = bitmapImageRepForCachingDisplay(in: bounds) {
+            cacheDisplay(in: bounds, to: rep)
+            image.addRepresentation(rep)
+        }
+        return image
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -312,6 +482,27 @@ final class SessionRowView: NSView {
 
         let textX = chipRect.maxX + 10
         var textRight = bounds.width - 10
+
+        // Hover-only close widget; the badge and title shuffle left of it.
+        if isHovered {
+            let close = closeRect
+            if isCloseHovered {
+                theme.chip.setFill()
+                NSBezierPath(roundedRect: close, xRadius: 5, yRadius: 5).fill()
+            }
+            let crossAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: isCloseHovered ? theme.text : theme.dim,
+            ]
+            let cross = "✕" as NSString
+            let crossSize = cross.size(withAttributes: crossAttrs)
+            cross.draw(
+                at: NSPoint(
+                    x: close.midX - crossSize.width / 2,
+                    y: close.midY - crossSize.height / 2),
+                withAttributes: crossAttrs)
+            textRight = close.minX - 6
+        }
 
         // Dirty badge pinned right.
         if let dirty = model.dirtyCount, dirty > 0 {

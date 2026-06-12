@@ -10,7 +10,9 @@ final class DegaussSound {
     private var buffer: AVAudioPCMBuffer?
     private var started = false
 
-    func play() {
+    /// `volume` scales the thunk 0...1 — a barely magnetized tube
+    /// degausses quietly.
+    func play(volume: Float = 1) {
         if buffer == nil {
             buffer = Self.synthesize()
         }
@@ -22,6 +24,7 @@ final class DegaussSound {
             started = true
         }
         player.stop()
+        player.volume = max(0, min(volume, 1))
         player.scheduleBuffer(buffer, at: nil)
         player.play()
     }

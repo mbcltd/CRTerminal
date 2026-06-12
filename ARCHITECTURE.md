@@ -378,6 +378,62 @@ Homebrew cask, website/screenshots (the presets sell themselves), vttest/esctest
 regression checklist, README rewrite.
 **Exit:** signed, notarized 1.0 downloadable outside the App Store.
 
+# Feature plan: tab alerts, dock badge, and progress
+
+When a background tool rings BEL or posts a notification (Claude Code waiting for
+input is the motivating case), the user should see it without watching the tab.
+Design: a per-session *attention* state, set when a bell/notification arrives in a
+session that is not focused (not the active tab, or window not key, or app not
+active), cleared the moment that tab is selected. Surfaces, from quietest outward:
+sidebar row badge → dock badge → user notification. A bell in the focused pane stays
+sound-only. Activating the app does not clear attention; only viewing the tab does.
+OSC `9;4` (ConEmu progress) joins the same pipeline so a tab can show task progress.
+
+### Phase A — TerminalCore: OSC 9;4 progress
+Parse `OSC 9;4;state;percent` (0 clear, 1 normal, 2 error, 3 indeterminate,
+4 paused) into a `progress` field on `TerminalState`, instead of today's misparse as
+a notification with body `"4;…"`. Clear stale progress on FTCS prompt start (OSC
+133). Package tests for states, malformed payloads, clamping; fuzz run.
+**Exit:** `Scripts/test.sh core` green; `printf '\e]9;4;1;50\a'` sets progress and a
+new prompt clears it.
+
+### Phase B — Attention model + sidebar bell badge
+`TerminalView`'s existing `bellCount` diff gains an `onBell` callback wired like
+`onNotification`; `SessionTab` tracks `unseenBells`/`lastBellAt`; controller sets it
+when the session isn't focused, clears in `selectTab` and on window-became-key.
+Sidebar rows render an amber bell dot (count if > 1) with the existing pulse
+animation; hover card gets a "rang bell Nm ago" line.
+**Exit:** bell in a background tab badges its row; selecting the tab clears it;
+`SessionSidebarTests` cover set/clear rules.
+
+### Phase C — Progress in the tab row
+`refreshSessionMetadata` (1 s timer) reads `snapshot.progress`; rows draw a thin
+progress bar along the bottom edge in the row's phosphor accent (amber for error,
+shimmer for indeterminate) and append the percent to the meta line.
+**Exit:** `Scripts/probe.sh typist` with an OSC 9;4 emitter shows the bar in the
+sidebar screenshot.
+
+### Phase D — Dock icon badge
+App-level aggregation across all window controllers sums attention sessions into
+`NSApp.dockTile.badgeLabel`; optional (settings-gated, default off) single
+`requestUserAttention` bounce when a bell arrives while the app is inactive.
+**Exit:** bells in two windows badge the dock with "2"; viewing each tab decrements.
+
+### Phase E — BEL notifications with click-to-jump
+`NotificationPoster` posts for plain BEL when the app is inactive, titled with the
+session's process name, debounced ~2 s per session. A
+`UNUserNotificationCenterDelegate` carries the session UUID in `userInfo`; clicking
+activates the app, fronts the owning window (reuse the ⌘K cross-window session
+lookup), and selects the tab. OSC 9/777 notifications gain the same jump.
+**Exit:** a bell from a hidden window's session posts one notification per burst and
+clicking it lands on that session.
+
+### Phase F — Alert settings + visual bell
+Global "Alerts" settings group (UserDefaults-backed, `ProfileStore` pattern): bell
+sound, sidebar badges, dock badge, bounce, notifications, visual bell. Visual bell =
+~150 ms phosphor brightness surge on the bell pane via an effect-pipeline uniform.
+**Exit:** every alert surface can be disabled; visual bell flashes with sound off.
+
 ## Risks and mitigations
 
 - **Resize reflow** is notoriously fiddly → ship non-reflow resize early (Phase 2),
