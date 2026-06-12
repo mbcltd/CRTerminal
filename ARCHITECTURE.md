@@ -431,7 +431,9 @@ clicking it lands on that session.
 ### Phase F — Alert settings + visual bell
 Global "Alerts" settings group (UserDefaults-backed, `ProfileStore` pattern): bell
 sound, sidebar badges, dock badge, bounce, notifications, visual bell. Visual bell =
-~150 ms phosphor brightness surge on the bell pane via an effect-pipeline uniform.
+~150 ms phosphor-tinted overlay flash on the bell pane (a CALayer above the Metal
+surface, not a pipeline uniform, so it works on every preset including museum off);
+deliberately fires in the focused tab too, where it is the only visible cue.
 **Exit:** every alert surface can be disabled; visual bell flashes with sound off.
 
 ## Risks and mitigations

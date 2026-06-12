@@ -43,6 +43,8 @@ struct SettingsView: View {
                 selected.wrappedValue.presetName = preset.name
             }
             .tabItem { Label("Presets", systemImage: "tv") }
+            AlertsSettingsView()
+                .tabItem { Label("Alerts", systemImage: "bell") }
         }
         .frame(minWidth: 620, minHeight: 480)
     }
@@ -145,4 +147,37 @@ struct SettingsView: View {
             return font.familyName
         })).sorted()
     }()
+}
+
+/// The Alerts tab: which surfaces a bell reaches. Toggles write straight
+/// through to AlertSettings, which broadcasts to open windows.
+struct AlertsSettingsView: View {
+    /// Bumped on every write so SwiftUI re-reads the pass-through bindings.
+    @State private var revision = 0
+
+    private func setting(
+        _ keyPath: ReferenceWritableKeyPath<AlertSettings, Bool>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { _ = revision; return AlertSettings.shared[keyPath: keyPath] },
+            set: { AlertSettings.shared[keyPath: keyPath] = $0; revision += 1 })
+    }
+
+    var body: some View {
+        Form {
+            Section("Every bell") {
+                Toggle("Sound", isOn: setting(\.bellSound))
+                Toggle("Visual bell (flash the pane)", isOn: setting(\.visualBell))
+            }
+            Section("Sessions you aren't watching") {
+                Toggle("Badge the sidebar row", isOn: setting(\.sidebarBadges))
+                Toggle("Badge the Dock icon", isOn: setting(\.dockBadge))
+            }
+            Section("While CRTerminal is in the background") {
+                Toggle("Post a notification", isOn: setting(\.notifications))
+                Toggle("Bounce the Dock icon", isOn: setting(\.dockBounce))
+            }
+        }
+        .formStyle(.grouped)
+    }
 }

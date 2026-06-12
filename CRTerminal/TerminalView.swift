@@ -31,6 +31,30 @@ final class TerminalView: NSView, NSTextInputClient {
 
     private let degaussSound = DegaussSound()
 
+    /// Visual bell: a brief phosphor-tinted wash over the pane, fading
+    /// out CRT-style. A plain CALayer above the Metal surface, so it
+    /// works on every preset including museum off.
+    private let bellFlashLayer = CALayer()
+    var bellFlashing: Bool {
+        bellFlashLayer.animation(forKey: "bellFlash") != nil
+    }
+
+    func flashBell() {
+        guard let layer else { return }
+        if bellFlashLayer.superlayer == nil {
+            layer.addSublayer(bellFlashLayer)
+        }
+        bellFlashLayer.frame = bounds
+        let phosphor = preset.effects ? NSColor(preset.phosphor.color) : .white
+        bellFlashLayer.backgroundColor = phosphor.cgColor
+        bellFlashLayer.opacity = 0
+        let flash = CABasicAnimation(keyPath: "opacity")
+        flash.fromValue = 0.3
+        flash.toValue = 0.0
+        flash.duration = 0.15
+        bellFlashLayer.add(flash, forKey: "bellFlash")
+    }
+
     /// The CRT preset for this pane; per-pane because sidebar sessions
     /// theme independently while sharing the window's renderer. Presets
     /// with a bezel shrink the cell grid (the bezel is part of the view).
@@ -107,7 +131,10 @@ final class TerminalView: NSView, NSTextInputClient {
         let state = session.snapshot
         if state.bellCount != lastBellCount {
             lastBellCount = state.bellCount
-            NSSound.beep()
+            if AlertSettings.shared.bellSound { NSSound.beep() }
+            // Deliberately not gated on focus: in the focused tab the
+            // flash is the only visible cue a bell happened.
+            if AlertSettings.shared.visualBell { flashBell() }
             onBell?()
         }
         // Only the focused pane drives the window/tab title.

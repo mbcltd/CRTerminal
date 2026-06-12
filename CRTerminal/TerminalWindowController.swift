@@ -491,7 +491,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Sidebar metadata
 
     /// Cheap kernel probes each tick; git runs async behind a short cache.
-    private func refreshSessionMetadata() {
+    /// Internal so alert-settings changes can re-apply without waiting a tick.
+    func refreshSessionMetadata() {
         var rows: [SessionRowModel] = []
         for (index, tab) in tabs.enumerated() {
             guard let session = tab.panes.first?.session else { continue }
@@ -518,7 +519,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 id: tab.id, index: index + 1, title: title, metaLine: metaLine,
                 isActive: index == activeTabIndex, isRunning: isRunning,
                 dirtyCount: dirtyCounts[tab.id],
-                attentionCount: tab.unseenBells > 0 ? tab.unseenBells : nil,
+                attentionCount: AlertSettings.shared.sidebarBadges
+                    && tab.unseenBells > 0 ? tab.unseenBells : nil,
                 progress: progress,
                 theme: SidebarTheme(preset: tab.preset)))
             if let cwd {

@@ -47,6 +47,7 @@ final class NotificationPoster: NSObject, UNUserNotificationCenterDelegate {
         _ notification: TerminalNotification, windowIsKey: Bool,
         sessionID: UUID? = nil
     ) {
+        guard AlertSettings.shared.notifications else { return }
         guard !windowIsKey || !NSApp.isActive else { return }
         deliver(
             title: notification.title.isEmpty ? "CRTerminal" : notification.title,
@@ -57,6 +58,7 @@ final class NotificationPoster: NSObject, UNUserNotificationCenterDelegate {
     /// foreground the sound + sidebar badge already cover it), and at
     /// most once per session per burst.
     func postBell(sessionID: UUID, title: String, body: String) {
+        guard AlertSettings.shared.notifications else { return }
         guard !NSApp.isActive else { return }
         guard shouldPostBell(for: sessionID) else { return }
         deliver(title: title, body: body, sessionID: sessionID)

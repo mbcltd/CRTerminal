@@ -21,6 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         ProfileStore.shared.onChange = { [weak self] in
             self?.profilesChanged()
         }
+        AlertSettings.shared.onChange = { [weak self] in
+            guard let self else { return }
+            for controller in self.controllers {
+                controller.refreshSessionMetadata()
+            }
+            self.refreshDockBadge()
+        }
 
         let controller = makeWindowController()
         controller.window?.setFrameAutosaveName("MainWindow")
@@ -106,16 +113,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// each window's metadata tick and on every attention change, so
     /// closes and cross-window session moves correct it within a second.
     func refreshDockBadge() {
-        let count = controllers.reduce(0) { $0 + $1.attentionSessionCount }
+        let count = AlertSettings.shared.dockBadge
+            ? controllers.reduce(0) { $0 + $1.attentionSessionCount } : 0
         NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
     }
 
     /// A bell arrived while the app is inactive. The badge follows via
-    /// refreshDockBadge; the single dock bounce hides behind a
-    /// default-off key until Phase F grows the alerts settings UI.
+    /// refreshDockBadge; the single dock bounce is opt-in.
     func bellRequiresAttention() {
-        if !NSApp.isActive,
-           UserDefaults.standard.bool(forKey: "DockBounceOnBell") {
+        if !NSApp.isActive, AlertSettings.shared.dockBounce {
             NSApp.requestUserAttention(.informationalRequest)
         }
     }

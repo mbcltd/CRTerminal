@@ -318,6 +318,58 @@ struct SessionTabLifecycleTests {
         #expect(NSApp.dockTile.badgeLabel ?? "" == "")
     }
 
+    @Test @MainActor func alertSettingsDefaultAndPersist() {
+        let name = "AlertSettingsTests"
+        let suite = UserDefaults(suiteName: name)!
+        suite.removePersistentDomain(forName: name)
+        let settings = AlertSettings(defaults: suite)
+        // Everything on out of the box except the dock bounce.
+        #expect(settings.bellSound)
+        #expect(settings.visualBell)
+        #expect(settings.sidebarBadges)
+        #expect(settings.dockBadge)
+        #expect(!settings.dockBounce)
+        #expect(settings.notifications)
+
+        var changes = 0
+        settings.onChange = { changes += 1 }
+        settings.dockBounce = true
+        settings.bellSound = false
+        #expect(changes == 2)
+        // A fresh instance over the same store sees the writes.
+        let reloaded = AlertSettings(defaults: suite)
+        #expect(reloaded.dockBounce)
+        #expect(!reloaded.bellSound)
+        suite.removePersistentDomain(forName: name)
+    }
+
+    @Test @MainActor func visualBellFlashesThePaneItself() {
+        let view = TerminalView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        #expect(!view.bellFlashing)
+        // Not gated on focus: the focused pane flashes too.
+        view.flashBell()
+        #expect(view.bellFlashing)
+    }
+
+    @Test @MainActor func dockBadgeCanBeDisabled() throws {
+        let app = try #require(AppDelegate.shared)
+        let controller = app.makeWindowController()
+        let hadBadge = AlertSettings.shared.dockBadge
+        defer {
+            AlertSettings.shared.dockBadge = hadBadge
+            controller.window?.close()
+        }
+        controller.tabs[0].panes.first?.onBell?()
+        #expect(NSApp.dockTile.badgeLabel == "1")
+
+        AlertSettings.shared.dockBadge = false
+        #expect(NSApp.dockTile.badgeLabel ?? "" == "")
+        // The attention state survives; only the surface is muted.
+        #expect(controller.tabs[0].unseenBells == 1)
+        AlertSettings.shared.dockBadge = true
+        #expect(NSApp.dockTile.badgeLabel == "1")
+    }
+
     @Test @MainActor func bellNotificationsDebouncePerSession() {
         let poster = NotificationPoster()
         let noisy = UUID(), other = UUID()
