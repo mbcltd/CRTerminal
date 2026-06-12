@@ -12,6 +12,10 @@ final class SessionTab {
     /// Each session wears its own theme; new sessions start from the
     /// profile default.
     var preset: CRTPreset
+    /// Bells (and notifications) that arrived while the session wasn't
+    /// being watched; the sidebar badges the row until the tab is viewed.
+    var unseenBells = 0
+    var lastBellAt: Date?
 
     init(preset: CRTPreset) {
         self.preset = preset
@@ -179,6 +183,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         if let pane = activeTab?.panes.first {
             window?.makeFirstResponder(pane)
         }
+        activeTab?.unseenBells = 0
         hideHoverCard()
         applyChrome(preset: activePreset)
         refreshSessionMetadata()
@@ -234,9 +239,39 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             guard let pane else { return }
             self?.close(pane: pane)
         }
-        session.onNotification = { [weak self] notification in
+        session.onNotification = { [weak self, weak pane] notification in
+            guard let self else { return }
+            if let pane { self.noteAttention(in: pane) }
             NotificationPoster.shared.post(
-                notification, windowIsKey: self?.window?.isKeyWindow ?? false)
+                notification, windowIsKey: self.window?.isKeyWindow ?? false)
+        }
+        pane.onBell = { [weak self, weak pane] in
+            guard let pane else { return }
+            self?.noteAttention(in: pane)
+        }
+    }
+
+    // MARK: Attention (sidebar bell badges)
+
+    /// A bell or notification fired in this pane's session. Unless the
+    /// user is watching it — active tab in the key window of the active
+    /// app — badge the sidebar row until the tab is next viewed.
+    private func noteAttention(in pane: TerminalView) {
+        guard let index = tabs.firstIndex(where: { $0.panes.contains(pane) })
+        else { return }
+        let watched = index == activeTabIndex
+            && window?.isKeyWindow == true && NSApp.isActive
+        guard !watched else { return }
+        tabs[index].unseenBells += 1
+        tabs[index].lastBellAt = Date()
+        refreshSessionMetadata()
+    }
+
+    /// Viewing the active tab consumes its attention badge.
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let tab = activeTab, tab.unseenBells > 0 {
+            tab.unseenBells = 0
+            refreshSessionMetadata()
         }
     }
 
@@ -446,6 +481,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 id: tab.id, index: index + 1, title: title, metaLine: metaLine,
                 isActive: index == activeTabIndex, isRunning: isRunning,
                 dirtyCount: dirtyCounts[tab.id],
+                attentionCount: tab.unseenBells > 0 ? tab.unseenBells : nil,
                 theme: SidebarTheme(preset: tab.preset)))
             if let cwd {
                 let tabID = tab.id
@@ -499,7 +535,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             processLine: isRunning
                 ? "\(SessionInfo.processName(of: foreground) ?? "…") · pid \(foreground)"
                 : "\(shellName) · pid \(shellPID)",
-            exitLine: lastExit.map { $0 == 0 ? "✓ 0" : "✗ \($0)" })
+            exitLine: lastExit.map { $0 == 0 ? "✓ 0" : "✗ \($0)" },
+            bellLine: tab.unseenBells > 0 ? tab.lastBellAt.map {
+                "rang \(Self.format(uptime: -$0.timeIntervalSinceNow)) ago"
+            } : nil)
 
         let card = hoverCard ?? {
             let card = SessionHoverCard(theme: theme)

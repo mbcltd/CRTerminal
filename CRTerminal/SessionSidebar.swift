@@ -54,6 +54,8 @@ struct SessionRowModel: Equatable {
     var isActive: Bool
     var isRunning: Bool
     var dirtyCount: Int?
+    /// Bells unseen since the tab was last viewed; nil hides the badge.
+    var attentionCount: Int? = nil
     var theme: SidebarTheme
 }
 
@@ -69,6 +71,8 @@ struct SessionCardModel: Equatable {
     var statusLine: String
     var processLine: String
     var exitLine: String?
+    /// "rang 2m ago" while the session has unseen bells.
+    var bellLine: String? = nil
 }
 
 private let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -327,6 +331,9 @@ final class SessionRowView: NSView {
     private var isCloseHovered = false
     private var mouseDownLocation: NSPoint?
     private let pulseDot = CALayer()
+    /// Amber attention dot, pulsing until the session is viewed.
+    private let bellDot = CALayer()
+    var showsBellBadge: Bool { !bellDot.isHidden }
 
     /// The hover-only ✕ pinned to the right edge.
     private var closeRect: NSRect {
@@ -342,6 +349,10 @@ final class SessionRowView: NSView {
         pulseDot.cornerRadius = 3
         pulseDot.isHidden = true
         layer?.addSublayer(pulseDot)
+        bellDot.frame = CGRect(x: 0, y: 0, width: 7, height: 7)
+        bellDot.cornerRadius = 3.5
+        bellDot.isHidden = true
+        layer?.addSublayer(bellDot)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
     }
@@ -368,6 +379,22 @@ final class SessionRowView: NSView {
                 pulseDot.add(pulse, forKey: "pulse")
             } else {
                 pulseDot.removeAnimation(forKey: "pulse")
+            }
+        }
+        bellDot.backgroundColor = theme.amber.cgColor
+        let hasBells = (model.attentionCount ?? 0) > 0
+        if hasBells != ((old?.attentionCount ?? 0) > 0) {
+            bellDot.isHidden = !hasBells
+            if hasBells {
+                let pulse = CABasicAnimation(keyPath: "opacity")
+                pulse.fromValue = 1.0
+                pulse.toValue = 0.35
+                pulse.duration = 0.75
+                pulse.autoreverses = true
+                pulse.repeatCount = .infinity
+                bellDot.add(pulse, forKey: "pulse")
+            } else {
+                bellDot.removeAnimation(forKey: "pulse")
             }
         }
         needsDisplay = true
@@ -504,6 +531,26 @@ final class SessionRowView: NSView {
             textRight = close.minX - 6
         }
 
+        // Bell badge: an amber dot (plus a count past one bell), pinned
+        // rightmost — attention outranks the git badge.
+        if let bells = model.attentionCount, bells > 0 {
+            bellDot.position = CGPoint(x: textRight - 9, y: bounds.midY)
+            textRight -= 18
+            if bells > 1 {
+                let count = "\(bells)" as NSString
+                let countAttrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                    .foregroundColor: theme.amber,
+                ]
+                let size = count.size(withAttributes: countAttrs)
+                count.draw(
+                    at: NSPoint(
+                        x: textRight - size.width, y: bounds.midY - size.height / 2),
+                    withAttributes: countAttrs)
+                textRight -= size.width + 6
+            }
+        }
+
         // Dirty badge pinned right.
         if let dirty = model.dirtyCount, dirty > 0 {
             let badge = "+\(dirty)" as NSString
@@ -617,6 +664,9 @@ final class SessionHoverCard: NSView {
             lines.append(Line(
                 key: "EXIT", value: exitLine,
                 color: exitLine.hasPrefix("✓") ? theme.green : theme.amber, mono: false))
+        }
+        if let bellLine = model.bellLine {
+            lines.append(Line(key: "BELL", value: bellLine, color: theme.amber, mono: false))
         }
         lines.append(Line(
             key: "PROCESS", value: model.processLine, color: theme.dim, mono: true))

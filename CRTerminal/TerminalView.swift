@@ -22,6 +22,9 @@ final class TerminalView: NSView, NSTextInputClient {
     private(set) var currentMatch: Selection?
 
     private var lastBellCount: UInt64 = 0
+    /// Fired alongside the beep; the window controller turns it into a
+    /// sidebar attention badge when this pane isn't the one being watched.
+    var onBell: (() -> Void)?
     private var markedText: String?
     /// Frames actually drawn (on the render thread); probe-reported.
     var drawCount: Int { renderLoop?.drawCount ?? 0 }
@@ -105,6 +108,7 @@ final class TerminalView: NSView, NSTextInputClient {
         if state.bellCount != lastBellCount {
             lastBellCount = state.bellCount
             NSSound.beep()
+            onBell?()
         }
         // Only the focused pane drives the window/tab title.
         if let title = state.title, window?.title != title,

@@ -211,6 +211,58 @@ struct SessionTabLifecycleTests {
         #expect(sidebar.dropGapIndex(at: NSPoint(x: 10, y: second.maxY + 300)) == 2)
     }
 
+    @Test @MainActor func bellInABackgroundSessionBadgesUntilViewed() {
+        let controller = TerminalWindowController(profile: Profile())
+        defer { controller.window?.close() }
+        controller.addSession()  // tab 1 is now active
+        let background = controller.tabs[0]
+
+        background.panes.first?.onBell?()
+        background.panes.first?.onBell?()
+        #expect(background.unseenBells == 2)
+        #expect(background.lastBellAt != nil)
+        #expect(controller.tabs[1].unseenBells == 0)
+
+        // Viewing the tab consumes the badge.
+        controller.selectTab(0)
+        #expect(background.unseenBells == 0)
+    }
+
+    @Test @MainActor func becomingKeyClearsOnlyTheActiveTabsBadge() {
+        let controller = TerminalWindowController(profile: Profile())
+        defer { controller.window?.close() }
+        controller.addSession()  // tab 1 active
+        controller.tabs[0].panes.first?.onBell?()
+        // The active tab still badges: the window isn't key in tests, so
+        // nobody is watching it.
+        controller.tabs[1].panes.first?.onBell?()
+        #expect(controller.tabs[0].unseenBells == 1)
+        #expect(controller.tabs[1].unseenBells == 1)
+
+        controller.windowDidBecomeKey(
+            Notification(name: NSWindow.didBecomeKeyNotification))
+        #expect(controller.tabs[1].unseenBells == 0)
+        #expect(controller.tabs[0].unseenBells == 1)
+    }
+
+    @Test @MainActor func bellBadgeFollowsTheRowModel() {
+        let view = SessionRowView()
+        view.frame = NSRect(x: 0, y: 0, width: 220, height: 50)
+        var model = SessionRowModel(
+            id: UUID(), index: 1, title: "one", metaLine: "~", isActive: false,
+            isRunning: false, dirtyCount: nil, theme: SidebarTheme(preset: .museumOff))
+        view.model = model
+        #expect(!view.showsBellBadge)
+
+        model.attentionCount = 2
+        view.model = model
+        #expect(view.showsBellBadge)
+
+        model.attentionCount = nil
+        view.model = model
+        #expect(!view.showsBellBadge)
+    }
+
     @Test @MainActor func presetsApplyPerSessionNotPerWindow() {
         let controller = TerminalWindowController(profile: Profile())
         defer { controller.window?.close() }
