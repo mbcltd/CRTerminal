@@ -43,6 +43,20 @@ struct SessionInfoTests {
         #expect(cwd == FileManager.default.currentDirectoryPath)
         #expect(SessionInfo.processName(of: pid)?.isEmpty == false)
     }
+
+    @Test func spawnedShellStartsInTheProfileDirectory() throws {
+        let session = try TerminalSession(
+            columns: 80, rows: 24, workingDirectory: "/private/tmp")
+        defer { session.terminate() }
+        // The cwd is set in the child between fork and exec, racing this
+        // observer — poll briefly rather than assuming it's visible at once.
+        var cwd = SessionInfo.workingDirectory(of: session.shellProcessID)
+        for _ in 0..<500 where cwd != "/private/tmp" {
+            usleep(10_000)
+            cwd = SessionInfo.workingDirectory(of: session.shellProcessID)
+        }
+        #expect(cwd == "/private/tmp")
+    }
 }
 
 struct SessionSidebarViewTests {

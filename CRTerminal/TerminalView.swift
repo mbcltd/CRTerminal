@@ -264,10 +264,11 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func keyDown(with event: NSEvent) {
         // Control combinations bypass the input context (^C must not reach
-        // an IME). NSEvent already maps ctrl+letter to the control character.
+        // an IME). NSEvent already maps ctrl+letter to the control character;
+        // ctrl+space stays a plain space (0x20) and must become NUL by hand.
         if event.modifierFlags.contains(.control),
            let characters = event.characters, !characters.isEmpty,
-           let scalar = characters.unicodeScalars.first, scalar.value < 0x20 {
+           let scalar = characters.unicodeScalars.first, scalar.value <= 0x20 {
             // Under the kitty protocol, modified keys get CSI u encodings
             // so applications can tell ^I from Tab, ^[ from Esc, etc.
             let kittyFlags = session?.snapshot.modes.kittyKeyboardFlags ?? []
@@ -277,7 +278,7 @@ final class TerminalView: NSView, NSTextInputClient {
                 sendKeyboard(encoded)
                 return
             }
-            sendKeyboard([UInt8(scalar.value)])
+            sendKeyboard([scalar.value == 0x20 ? 0x00 : UInt8(scalar.value)])
             return
         }
         inputContext?.handleEvent(event)

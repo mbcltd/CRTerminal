@@ -2,12 +2,19 @@ import Darwin
 import Foundation
 import os
 
+/// Swift marks fork() unavailable ("use posix_spawn"), but posix_spawn cannot
+/// acquire a controlling terminal (there is no TIOCSCTTY file action), which a
+/// terminal emulator strictly requires — bind the libc symbol directly.
+@_silgen_name("fork") private nonisolated func sysFork() -> pid_t
+
 /// Owns the PTY master fd and the shell process. Reads are delivered on a
 /// dedicated serial queue; see ARCHITECTURE.md "PTY and process management".
 /// Mutable state is confined to the IO queue or behind locks.
 nonisolated final class PTYSession: @unchecked Sendable {
     /// _IOW('t', 103, struct winsize) — the importer can't expand the macro.
     private static let TIOCSWINSZ: UInt = 0x8008_7467
+    /// _IO('t', 97) — acquire the tty as the controlling terminal.
+    private static let TIOCSCTTY: UInt = 0x2000_7461
 
     let processID: pid_t
     private let masterFD: Int32
@@ -32,7 +39,8 @@ nonisolated final class PTYSession: @unchecked Sendable {
         case spawn(Int32)
     }
 
-    init(columns: Int, rows: Int, shell: String? = nil) throws {
+    init(columns: Int, rows: Int, shell: String? = nil,
+         workingDirectory: String? = nil) throws {
         // Master/slave pair via plain POSIX (no libutil dependency).
         let master = posix_openpt(O_RDWR | O_NOCTTY)
         guard master >= 0 else { throw Failure.openpt(errno) }
@@ -49,29 +57,13 @@ nonisolated final class PTYSession: @unchecked Sendable {
             ws_row: UInt16(rows), ws_col: UInt16(columns), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(slave, Self.TIOCSWINSZ, &size)
 
-        // Spawn the login shell. POSIX_SPAWN_SETSID + opening the slave as fd
-        // 0 makes it the controlling terminal (first tty open by the session
-        // leader); CLOEXEC_DEFAULT keeps our fds out of the child.
-        var attr: posix_spawnattr_t?
-        posix_spawnattr_init(&attr)
-        defer { posix_spawnattr_destroy(&attr) }
-        var allSignals = sigset_t()
-        sigfillset(&allSignals)
-        posix_spawnattr_setsigdefault(&attr, &allSignals)
-        var noSignals = sigset_t()
-        sigemptyset(&noSignals)
-        posix_spawnattr_setsigmask(&attr, &noSignals)
-        posix_spawnattr_setflags(&attr, Int16(
-            POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
-                | POSIX_SPAWN_CLOEXEC_DEFAULT))
-
-        var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, 0, slavePath, O_RDWR, 0)
-        posix_spawn_file_actions_adddup2(&actions, 0, 1)
-        posix_spawn_file_actions_adddup2(&actions, 0, 2)
-
+        // Spawn the login shell login_tty-style: fork, setsid, then claim the
+        // slave with TIOCSCTTY. posix_spawn cannot do this — there is no file
+        // action for the ioctl, and on macOS merely opening a tty does NOT
+        // acquire it as controlling terminal, so the POSIX_SPAWN_SETSID +
+        // open-slave-as-fd-0 approach left the shell with no ctty (TPGID 0):
+        // the line discipline ate ^C/^Z but had no foreground process group
+        // to signal, and job control was silently broken.
         let shellPath = shell
             ?? ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let loginArg0 = "-" + (shellPath as NSString).lastPathComponent
@@ -81,18 +73,67 @@ nonisolated final class PTYSession: @unchecked Sendable {
         environment["TERM_PROGRAM"] = "CRTerminal"
         environment.removeValue(forKey: "TERM_PROGRAM_VERSION")
 
-        let argv = [strdup(loginArg0), nil]
-        let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        // Everything the child touches is prepared before fork: between fork
+        // and execve only async-signal-safe calls are allowed (no Swift
+        // allocation — another thread may hold the malloc lock).
+        let shellC = strdup(shellPath)
+        defer { free(shellC) }
+        let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+            .allocate(capacity: 2)
+        argv[0] = strdup(loginArg0)
+        argv[1] = nil
         defer {
-            argv.forEach { free($0) }
-            envp.forEach { free($0) }
+            free(argv[0])
+            argv.deallocate()
         }
+        let envp = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+            .allocate(capacity: environment.count + 1)
+        for (index, pair) in environment.enumerated() {
+            envp[index] = strdup("\(pair.key)=\(pair.value)")
+        }
+        envp[environment.count] = nil
+        defer {
+            for index in 0..<environment.count { free(envp[index]) }
+            envp.deallocate()
+        }
+        // Start the shell where the profile says (the app's own cwd is
+        // "/" when launched from Finder — useless to inherit).
+        let cwdC: UnsafeMutablePointer<CChar>? = workingDirectory.flatMap { strdup($0) }
+        defer { free(cwdC) }
 
-        var pid = pid_t(0)
-        let result = posix_spawn(&pid, shellPath, &actions, &attr, argv, envp)
-        guard result == 0 else {
+        let pid = sysFork()
+        guard pid >= 0 else {
+            let error = errno
             close(master)
-            throw Failure.spawn(result)
+            close(slave)
+            throw Failure.spawn(error)
+        }
+        if pid == 0 {
+            // Child. Become session leader and take the slave as the
+            // controlling terminal, then wire it to stdio.
+            if setsid() < 0 { _exit(126) }
+            if ioctl(slave, Self.TIOCSCTTY, 0) != 0 { _exit(126) }
+            dup2(slave, 0)
+            dup2(slave, 1)
+            dup2(slave, 2)
+            // Undo the app's signal state: exec resets handled signals but
+            // ignored dispositions (e.g. SIGPIPE) and the mask are inherited.
+            var noSignals = sigset_t()
+            sigemptyset(&noSignals)
+            sigprocmask(SIG_SETMASK, &noSignals, nil)
+            for sig in 1..<Int32(NSIG) where sig != SIGKILL && sig != SIGSTOP {
+                signal(sig, SIG_DFL)
+            }
+            if let cwdC { chdir(cwdC) }
+            // Keep the app's fds out of the shell (what CLOEXEC_DEFAULT did
+            // under posix_spawn). F_SETFD is safe on guarded fds; close isn't
+            // (EXC_GUARD).
+            let fdLimit = Int32(min(max(sysconf(_SC_OPEN_MAX), 256), 65536))
+            for fd in 3..<fdLimit {
+                _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+            }
+            execve(shellC, argv, envp)
+            _exit(127)
         }
 
         processID = pid
