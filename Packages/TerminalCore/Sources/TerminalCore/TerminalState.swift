@@ -62,6 +62,19 @@ public struct TerminalNotification: Sendable, Equatable {
     public var body: String
 }
 
+/// OSC 9;4 (ConEmu-style) task progress; the app shows it per session.
+public struct ProgressReport: Sendable, Equatable {
+    public enum State: Int, Sendable {
+        case normal = 1
+        case error = 2
+        case indeterminate = 3
+        case paused = 4
+    }
+    public var state: State
+    /// 0...100; meaningless when `state` is `.indeterminate`.
+    public var percent: Int
+}
+
 public struct Cursor: Sendable, Equatable {
     public var x: Int
     public var y: Int
@@ -119,6 +132,9 @@ public struct TerminalState: Sendable {
     public private(set) var generation: UInt64 = 0
     /// Bumped on BEL; the app layer compares and beeps.
     public private(set) var bellCount: UInt64 = 0
+    /// OSC 9;4 task progress; nil when no task is reporting. Cleared on
+    /// the next prompt mark so a crashed tool doesn't pin a stale bar.
+    public private(set) var progress: ProgressReport?
     /// Bytes the terminal wants written back to the application (DSR, DA…).
     var responses: [UInt8] = []
     /// Raw OSC 52 payload (still base64); the app decodes and sets the
@@ -572,6 +588,7 @@ public struct TerminalState: Sendable {
         currentLink = 0
         kittyFlagsStack.removeAll()
         promptMarks.removeAll()
+        progress = nil
         touch()
     }
 
@@ -995,9 +1012,15 @@ extension TerminalState: TerminalHandler {
                 currentLink = uri.isEmpty ? 0 : linkId(for: uri)
             }
         case 9:
-            pendingNotifications.append(TerminalNotification(
-                title: "", body: String(decoding: body, as: UTF8.self)))
-            touch()
+            // "9;4;state;percent" is ConEmu progress, not a notification.
+            if body.first == UInt8(ascii: "4"),
+               body.count == 1 || body.dropFirst().first == UInt8(ascii: ";") {
+                applyProgress(body.dropFirst(2))
+            } else {
+                pendingNotifications.append(TerminalNotification(
+                    title: "", body: String(decoding: body, as: UTF8.self)))
+                touch()
+            }
         case 52:
             // "52;c;<base64>" — ignore queries ("?"); app decodes payload.
             if let dataStart = body.firstIndex(of: UInt8(ascii: ";")) {
@@ -1042,10 +1065,44 @@ extension TerminalState: TerminalHandler {
         return linkTable[Int(id) - 1]
     }
 
+    /// OSC "9;4;state;percent": everything after "4" arrives here ("" or
+    /// ";state;percent"). State 0 (or absent/garbage) clears; an unknown
+    /// state is ignored so future extensions can't flicker the bar.
+    private mutating func applyProgress(_ params: ArraySlice<UInt8>) {
+        let parts = params.split(
+            separator: UInt8(ascii: ";"), omittingEmptySubsequences: false)
+        let state = parts.first.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
+        let percent = parts.count > 1
+            ? Int(String(decoding: parts[1], as: UTF8.self)) : nil
+        let next: ProgressReport?
+        switch state {
+        case 0:
+            next = nil
+        case 1, 2, 4:
+            // Error/paused often arrive without a percent: keep the bar
+            // where it was and recolor.
+            next = ProgressReport(
+                state: ProgressReport.State(rawValue: state)!,
+                percent: min(max(percent ?? progress?.percent ?? 0, 0), 100))
+        case 3:
+            next = ProgressReport(state: .indeterminate, percent: 0)
+        default:
+            return
+        }
+        if next != progress {
+            progress = next
+            touch()
+        }
+    }
+
     private mutating func handleShellIntegration(_ body: ArraySlice<UInt8>) {
         guard let kind = body.first, !isAlternateScreen else { return }
         switch kind {
         case UInt8(ascii: "A"): // prompt start
+            if progress != nil {
+                progress = nil
+                touch()
+            }
             let row = absoluteScreenTop + cursor.y
             guard promptMarks.last?.row != row else { return }
             promptMarks.append(PromptMark(row: row))

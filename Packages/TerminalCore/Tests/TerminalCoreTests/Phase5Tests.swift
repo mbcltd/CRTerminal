@@ -213,6 +213,87 @@ struct NotificationTests {
     }
 }
 
+struct ProgressTests {
+    @Test func reportsAndClears() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;1;50\u{07}")
+        #expect(t.state.progress == ProgressReport(state: .normal, percent: 50))
+        #expect(t.drainNotifications().isEmpty)  // not a notification
+        t.feed("\u{1B}]9;4;0;0\u{07}")
+        #expect(t.state.progress == nil)
+    }
+
+    @Test func clampsPercent() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;1;250\u{07}")
+        #expect(t.state.progress?.percent == 100)
+        t.feed("\u{1B}]9;4;1;-3\u{07}")
+        #expect(t.state.progress?.percent == 0)
+    }
+
+    @Test func errorAndPausedKeepLastPercent() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;1;70\u{07}")
+        t.feed("\u{1B}]9;4;2\u{07}")
+        #expect(t.state.progress == ProgressReport(state: .error, percent: 70))
+        t.feed("\u{1B}]9;4;4\u{07}")
+        #expect(t.state.progress == ProgressReport(state: .paused, percent: 70))
+    }
+
+    @Test func indeterminateIgnoresPercent() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;3;55\u{07}")
+        #expect(t.state.progress == ProgressReport(state: .indeterminate, percent: 0))
+    }
+
+    @Test func malformedPayloadsAreSafe() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;1;50\u{07}")
+        t.feed("\u{1B}]9;4;9;10\u{07}")  // unknown state: ignored
+        #expect(t.state.progress == ProgressReport(state: .normal, percent: 50))
+        t.feed("\u{1B}]9;4;junk;10\u{07}")  // garbage state: clears
+        #expect(t.state.progress == nil)
+        t.feed("\u{1B}]9;4\u{07}")  // bare "4": clears, stays nil
+        #expect(t.state.progress == nil)
+        t.feed("\u{1B}]9;4;1;abc\u{07}")  // garbage percent: 0
+        #expect(t.state.progress == ProgressReport(state: .normal, percent: 0))
+    }
+
+    @Test func nonProgressOSC9StillNotifies() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;42 done\u{07}")  // "4" not followed by ";"
+        #expect(t.drainNotifications() == [
+            TerminalNotification(title: "", body: "42 done")
+        ])
+        #expect(t.state.progress == nil)
+    }
+
+    @Test func promptStartClearsStaleProgress() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;1;80\u{07}")
+        t.feed("\u{1B}]133;A\u{07}$ ")
+        #expect(t.state.progress == nil)
+    }
+
+    @Test func resetClearsProgress() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;1;80\u{07}")
+        t.feed("\u{1B}c")  // RIS
+        #expect(t.state.progress == nil)
+    }
+
+    @Test func progressBumpsGeneration() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]9;4;1;10\u{07}")
+        let before = t.state.generation
+        t.feed("\u{1B}]9;4;1;20\u{07}")
+        #expect(t.state.generation > before)
+        let unchanged = t.state.generation
+        t.feed("\u{1B}]9;4;1;20\u{07}")  // same report: no bump
+        #expect(t.state.generation == unchanged)
+    }
+}
+
 struct KittyKeyboardTests {
     @Test func pushPopAndQuery() {
         var t = makeTerminal()
