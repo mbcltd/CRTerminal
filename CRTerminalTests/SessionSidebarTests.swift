@@ -45,12 +45,18 @@ struct SessionInfoTests {
         #expect(SessionInfo.processName(of: pid)?.isEmpty == false)
     }
 
-    @Test func progressSequenceTypedIntoTheShellReachesTheSnapshot() throws {
-        let session = try TerminalSession(
-            columns: 80, rows: 24, workingDirectory: "/private/tmp")
+    @Test func progressSequenceFromTheChildReachesTheSnapshot() throws {
+        // A scripted "shell" emits the sequence itself: typing into the
+        // real $SHELL is not CI-safe (a fresh runner's zsh stops at its
+        // new-user wizard and never executes the input).
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent("crt-progress-probe.sh").path
+        try "#!/bin/sh\nprintf '\\033]9;4;1;50\\007'\nsleep 30\n"
+            .write(toFile: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: script)
+        let session = try TerminalSession(columns: 80, rows: 24, shell: script)
         defer { session.terminate() }
-        session.send(Array("printf '\\033]9;4;1;50\\007'\n".utf8))
-        // The shell may still be starting up; poll like the cwd test does.
         var progress = session.snapshot.progress
         for _ in 0..<500 where progress == nil {
             usleep(10_000)
