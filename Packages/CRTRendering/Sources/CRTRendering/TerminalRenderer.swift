@@ -48,8 +48,26 @@ public final class TerminalRenderer {
         /// When the tube was last demagnetized; nil until the first frame
         /// ("power-on"). Magnetization accrues from here.
         var magnetizedSince: CFTimeInterval?
+        /// Shape operator runs through Core Text so contextual ligatures
+        /// apply (profile setting; pointless for fonts without them).
+        var ligatures: Bool = true
     }
     private let effectsState = OSAllocatedUnfairLock(initialState: EffectsState())
+
+    public func setLigatures(_ enabled: Bool) {
+        effectsState.withLock { $0.ligatures = enabled }
+    }
+
+    /// Characters that participate in programming ligatures: only runs of
+    /// these are shaped, so prose and log noise stay on the cheap per-cell
+    /// path and the shaping cache stays small.
+    private static let ligatureAlphabet = Set("=<>!&|:+-*/~%?.^#_".unicodeScalars.map(\.value))
+
+    private static func isLigatureCandidate(_ cell: Cell) -> Bool {
+        ligatureAlphabet.contains(cell.glyph)
+            && !cell.attributes.contains(.wide)
+            && !cell.attributes.contains(.wideSpacer)
+    }
 
     public static let degaussDuration: CFTimeInterval = 1.5
 
@@ -501,8 +519,22 @@ public final class TerminalRenderer {
             markedColumns = state.cursor.x..<min(state.cursor.x + span, state.columns)
         }
 
+        let ligatures = effectsState.withLock { $0.ligatures }
+
         for y in 0..<viewport.count {
             let row = viewport[y]
+            // Operator runs shape first; the per-cell pass below skips the
+            // columns they covered (backgrounds/decorations stay per-cell).
+            var shapedColumns: [Bool] = []
+            if ligatures {
+                let cursorColumn = cursorVisible && state.cursorStyle == .block
+                    && state.cursor.y == y && markedColumns.isEmpty
+                    ? state.cursor.x : -1
+                shapedColumns = emitShapedRuns(
+                    row: row, rowY: Float(y) * cellH, cursorColumn: cursorColumn,
+                    cellW: cellW, baselineOffset: baselineOffset,
+                    into: &glyphInstances)
+            }
             for x in 0..<min(state.columns, row.count) {
                 if y == state.cursor.y, markedColumns.contains(x) {
                     bgInstances.append(BgInstance(
@@ -528,6 +560,7 @@ public final class TerminalRenderer {
                 }
                 if cell.glyph != Cell.blank.glyph,
                    !cell.attributes.contains(.wideSpacer),
+                   !(x < shapedColumns.count && shapedColumns[x]),
                    let entry = atlas.entry(forScalar: cell.glyph), !entry.isEmpty {
                     let instance = GlyphInstance(
                         origin: SIMD2(
@@ -685,6 +718,61 @@ public final class TerminalRenderer {
                 instanceCount: overlayInstances.count)
         }
         encoder.endEncoding()
+    }
+
+    /// Finds maximal same-style runs of ligature-alphabet cells, shapes
+    /// them through the atlas (Core Text applies the font's contextual
+    /// alternates), and appends the shaped glyphs. Runs break at style
+    /// changes and at a block cursor, which must keep its own cell glyph
+    /// to invert cleanly. Returns a column mask of what was covered; a
+    /// failed shape leaves its columns unmasked for the per-cell pass.
+    private func emitShapedRuns(
+        row: [Cell], rowY: Float, cursorColumn: Int,
+        cellW: Float, baselineOffset: Float,
+        into glyphInstances: inout [GlyphInstance]
+    ) -> [Bool] {
+        var shaped = [Bool](repeating: false, count: row.count)
+        var x = 0
+        while x < row.count {
+            let cell = row[x]
+            guard Self.isLigatureCandidate(cell), x != cursorColumn else {
+                x += 1
+                continue
+            }
+            var end = x + 1
+            while end < row.count, end != cursorColumn,
+                  Self.isLigatureCandidate(row[end]),
+                  row[end].foreground == cell.foreground,
+                  row[end].background == cell.background,
+                  row[end].attributes == cell.attributes {
+                end += 1
+            }
+            defer { x = end }
+            guard end - x >= 2 else { continue }
+            var text = ""
+            for column in x..<end {
+                guard let scalar = Unicode.Scalar(row[column].glyph) else { break }
+                text.unicodeScalars.append(scalar)
+            }
+            guard text.count == end - x,
+                  let glyphs = atlas.shape(text), !glyphs.isEmpty else { continue }
+            let fg = resolveColors(cell, isCursor: false).fg
+            let originX = Float(x) * cellW
+            for shapedGlyph in glyphs {
+                guard let entry = atlas.entry(forPrimaryGlyph: shapedGlyph.glyph),
+                      !entry.isEmpty else { continue }
+                glyphInstances.append(GlyphInstance(
+                    origin: SIMD2(
+                        originX + shapedGlyph.xOffsetPx + entry.bearing.x,
+                        rowY + baselineOffset - entry.bearing.y),
+                    size: entry.size,
+                    uvOrigin: entry.uvOrigin,
+                    uvSize: entry.uvSize,
+                    color: fg))
+            }
+            for column in x..<end { shaped[column] = true }
+        }
+        return shaped
     }
 
     private func resolveColors(_ cell: Cell, isCursor: Bool) -> (fg: UInt32, bg: UInt32) {

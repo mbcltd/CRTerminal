@@ -102,6 +102,7 @@ struct SettingsView: View {
                 Slider(value: selected.fontSize, in: 9...32, step: 1) {
                     Text("Size: \(Int(selected.wrappedValue.fontSize)) pt")
                 }
+                Toggle("Font ligatures (=> becomes an arrow)", isOn: selected.ligatures)
                 Picker("CRT preset", selection: selected.presetName) {
                     ForEach(PresetCatalog.all, id: \.name) { preset in
                         Text(preset.name).tag(preset.name)
@@ -141,11 +142,13 @@ struct SettingsView: View {
     private static let monospacedFonts: [String] = {
         let manager = NSFontManager.shared
         let names = manager.availableFontNames(with: .fixedPitchFontMask) ?? []
-        // Family representatives only, to keep the list scannable.
+        // Family representatives only, to keep the list scannable; the
+        // bundled families are process-registered and may be missing from
+        // NSFontManager's list, so they join explicitly.
         return Array(Set(names.compactMap { name -> String? in
             guard let font = NSFont(name: name, size: 12) else { return nil }
             return font.familyName
-        })).sorted()
+        } + BundledFonts.families)).sorted()
     }()
 }
 

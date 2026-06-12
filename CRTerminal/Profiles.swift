@@ -6,7 +6,7 @@ import CRTRendering
 struct Profile: Codable, Equatable, Identifiable {
     var id = UUID()
     var name = "Default"
-    /// PostScript name; nil = the system monospaced font.
+    /// PostScript name; nil = the app default (bundled Geist Mono).
     var fontName: String?
     var fontSize: Double = 13
     var presetName: String = "Museum off"
@@ -15,11 +15,18 @@ struct Profile: Codable, Equatable, Identifiable {
     /// Where new shells start; nil = the home folder. "~" is expanded.
     var workingDirectory: String?
     var scrollbackLines: Int = 10_000
+    /// Shape operator runs so font ligatures (=>, ===) apply.
+    var ligatures = true
 
     var font: NSFont {
         let size = CGFloat(max(6, min(fontSize, 72)))
         if let fontName, let custom = NSFont(name: fontName, size: size) {
             return custom
+        }
+        // The app default: bundled Geist Mono; system monospaced only if
+        // registration failed (or a test host without the bundle).
+        if let geist = NSFont(name: BundledFonts.geistMono, size: size) {
+            return geist
         }
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
@@ -42,6 +49,33 @@ struct Profile: Codable, Equatable, Identifiable {
             return NSHomeDirectory()
         }
         return expanded
+    }
+}
+
+extension Profile {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, fontName, fontSize, presetName, shellPath,
+             workingDirectory, scrollbackLines, ligatures
+    }
+
+    /// Tolerant decoding, in an extension so the memberwise init
+    /// survives: profiles persist as JSON in UserDefaults and a failed
+    /// decode silently resets to defaults — adding a field must never
+    /// invalidate saved profiles.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Default"
+        fontName = try container.decodeIfPresent(String.self, forKey: .fontName)
+        fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 13
+        presetName = try container.decodeIfPresent(String.self, forKey: .presetName)
+            ?? "Museum off"
+        shellPath = try container.decodeIfPresent(String.self, forKey: .shellPath)
+        workingDirectory = try container.decodeIfPresent(
+            String.self, forKey: .workingDirectory)
+        scrollbackLines = try container.decodeIfPresent(
+            Int.self, forKey: .scrollbackLines) ?? 10_000
+        ligatures = try container.decodeIfPresent(Bool.self, forKey: .ligatures) ?? true
     }
 }
 

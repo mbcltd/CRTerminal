@@ -318,6 +318,30 @@ struct SessionTabLifecycleTests {
         #expect(NSApp.dockTile.badgeLabel ?? "" == "")
     }
 
+    @Test @MainActor func defaultProfileFontIsBundledGeistMono() {
+        BundledFonts.register()
+        let profile = Profile()
+        #expect(profile.fontName == nil)
+        #expect(profile.font.fontName == BundledFonts.geistMono)
+        #expect(profile.ligatures)
+    }
+
+    @Test func savedProfilesSurviveNewFields() throws {
+        // Pre-ligatures JSON (no "ligatures" key) must decode, not reset.
+        let old = """
+            [{"id":"6F1C9626-0001-4000-8000-000000000001","name":"Mine",
+              "fontSize":14,"presetName":"IBM 5151","scrollbackLines":5000}]
+            """
+        let profiles = try JSONDecoder().decode(
+            [Profile].self, from: Data(old.utf8))
+        #expect(profiles.count == 1)
+        #expect(profiles[0].name == "Mine")
+        #expect(profiles[0].fontSize == 14)
+        #expect(profiles[0].presetName == "IBM 5151")
+        #expect(profiles[0].scrollbackLines == 5000)
+        #expect(profiles[0].ligatures)  // absent key gets the default
+    }
+
     @Test @MainActor func alertSettingsDefaultAndPersist() {
         let name = "AlertSettingsTests"
         let suite = UserDefaults(suiteName: name)!

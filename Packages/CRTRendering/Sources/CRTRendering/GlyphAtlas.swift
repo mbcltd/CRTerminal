@@ -102,6 +102,108 @@ final class GlyphAtlas {
         self.ascentPx = Float(ascent * scale)
     }
 
+    // MARK: Ligature shaping
+
+    /// One glyph of a shaped run: a primary-font glyph id plus its x
+    /// offset from the run origin in device pixels.
+    struct ShapedGlyph: Equatable {
+        var glyph: CGGlyph
+        var xOffsetPx: Float
+    }
+
+    /// Shaped runs by source text. Entries are nil when shaping bailed
+    /// (fallback font crept in); the bail is cached too.
+    private var shapeCache: [String: [ShapedGlyph]?] = [:]
+    private static let shapeCacheLimit = 4096
+
+    /// The primary font with every ligature feature selector switched
+    /// on. Coding fonts often park their arrows in a stylistic set
+    /// (Geist Mono calls it "Coding ligatures") that default shaping
+    /// ignores; same glyph ids, so atlas rasterization is unaffected.
+    private lazy var shapingFont: CTFont = Self.ligatureFont(for: fonts[0])
+
+    static func ligatureFont(for font: CTFont) -> CTFont {
+        guard let features = CTFontCopyFeatures(font) as? [[String: Any]] else {
+            return font
+        }
+        var settings: [[CFString: Any]] = []
+        for feature in features {
+            guard let type = feature[kCTFontFeatureTypeIdentifierKey as String]
+            else { continue }
+            let selectors = feature[kCTFontFeatureTypeSelectorsKey as String]
+                as? [[String: Any]] ?? []
+            for selector in selectors {
+                guard let name = selector[kCTFontFeatureSelectorNameKey as String]
+                        as? String,
+                      name.localizedCaseInsensitiveContains("ligature"),
+                      !name.localizedCaseInsensitiveContains("off"),
+                      let id = selector[kCTFontFeatureSelectorIdentifierKey as String]
+                else { continue }
+                settings.append([
+                    kCTFontFeatureTypeIdentifierKey: type,
+                    kCTFontFeatureSelectorIdentifierKey: id,
+                ])
+            }
+        }
+        guard !settings.isEmpty else { return font }
+        let descriptor = CTFontDescriptorCreateWithAttributes([
+            kCTFontFeatureSettingsAttribute: settings as CFArray,
+        ] as CFDictionary)
+        return CTFontCreateCopyWithAttributes(font, 0, nil, descriptor)
+    }
+
+    /// Shapes a run of text with Core Text so contextual ligatures
+    /// (=>, ===, //) substitute. Returns nil when the result cannot be
+    /// trusted to the primary font — the caller falls back per-cell.
+    func shape(_ text: String) -> [ShapedGlyph]? {
+        if let cached = shapeCache[text] { return cached }
+        let shaped = shapeUncached(text)
+        if shapeCache.count >= Self.shapeCacheLimit {
+            shapeCache.removeAll(keepingCapacity: true)
+        }
+        shapeCache[text] = shaped
+        return shaped
+    }
+
+    private func shapeUncached(_ text: String) -> [ShapedGlyph]? {
+        let attributes: [CFString: Any] = [
+            kCTFontAttributeName: shapingFont,
+            kCTLigatureAttributeName: 1 as CFNumber,
+        ]
+        guard let attributed = CFAttributedStringCreate(
+            nil, text as CFString, attributes as CFDictionary)
+        else { return nil }
+        let line = CTLineCreateWithAttributedString(attributed)
+        guard let runs = CTLineGetGlyphRuns(line) as? [CTRun],
+              runs.count == 1, let run = runs.first
+        else { return nil }
+        // Glyph ids are only meaningful in the primary font; reject runs
+        // Core Text shaped with a fallback.
+        let runAttributes = CTRunGetAttributes(run) as NSDictionary
+        if let runFont = runAttributes[kCTFontAttributeName as String] {
+            let name = CTFontCopyPostScriptName(runFont as! CTFont)
+            guard name == CTFontCopyPostScriptName(fonts[0]) else { return nil }
+        }
+        let count = CTRunGetGlyphCount(run)
+        guard count > 0 else { return nil }
+        var glyphs = [CGGlyph](repeating: 0, count: count)
+        var positions = [CGPoint](repeating: .zero, count: count)
+        CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
+        CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+        return zip(glyphs, positions).map {
+            ShapedGlyph(glyph: $0, xOffsetPx: Float($1.x * scale))
+        }
+    }
+
+    /// Atlas entry for a shaped glyph id (always the primary font).
+    func entry(forPrimaryGlyph glyph: CGGlyph) -> Entry? {
+        let key = Key(fontIndex: 0, glyph: glyph)
+        if let cached = entries[key] { return cached }
+        let entry = rasterize(fonts[0], glyph, color: false)
+        entries[key] = entry
+        return entry
+    }
+
     func entry(forScalar scalar: UInt32) -> Entry? {
         // Box drawing and block elements never come from the font: glyphs
         // there don't fill the rounded-up cell (or come from a fallback with

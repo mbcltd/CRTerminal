@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before any Profile.font resolution: nil fontName means Geist Mono.
+        BundledFonts.register()
         NSApp.mainMenu = makeMainMenu()
         NotificationPoster.shared.activate()
         ProfileStore.shared.onChange = { [weak self] in

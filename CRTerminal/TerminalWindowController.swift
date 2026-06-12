@@ -138,6 +138,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         if let sharedRenderer { return sharedRenderer }
         let renderer = TerminalRenderer(
             font: profile.font, scale: window?.backingScaleFactor ?? 2)
+        renderer?.setLigatures(profile.ligatures)
         sharedRenderer = renderer
         return renderer
     }
@@ -683,6 +684,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 pane.resetRenderer()
             }
         }
+        sharedRenderer?.setLigatures(profile.ligatures)
         applyChrome(preset: activePreset)
     }
 

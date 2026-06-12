@@ -128,9 +128,11 @@ Honest gaps vs the vtebench-class budget: core throughput is in the
 hundreds of MB/s, not GB/s — the remaining costs are per-cell CoW row
 writes and scroll memmoves; a ring-buffer grid and damage-row render
 caching are the next levers if it ever matters in practice (the e2e
-number is already within ~2× of the kernel PTY ceiling). Ligatures are
-deferred: no ligature-capable monospace font is installed to verify
-against (shaping-cache design is sketched in ARCHITECTURE.md).
+number is already within ~2× of the kernel PTY ceiling). Ligatures
+landed once Geist Mono shipped in the bundle (2026-06-12): only runs of
+operator characters are shaped (prose/log lines skip shaping entirely)
+and shaped runs are cached by text, so the steady-state cost is a
+dictionary hit per operator run per frame.
 
 ## Phase 2 — real terminal (2026-06-11)
 

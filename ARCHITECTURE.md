@@ -189,10 +189,18 @@ minimum.
   adjacent cells tile seamlessly (font glyphs don't fill the rounded-up cell and
   fallback fonts have foreign metrics, both of which leave background seams).
 - **Shaping.** The fast path maps one cell → one glyph via the font's cmap, no shaping.
-  When ligatures are enabled, runs of cells are shaped with Core Text per run and the
-  result cached keyed by a hash of the run's content+attrs — `=>` costs shaping once,
-  then it's a cache hit. Font fallback (emoji, CJK, symbols) uses CTFontCreateForString
-  with a per-codepoint fallback cache.
+  When ligatures are enabled (per profile, default on), only maximal same-style runs of
+  *operator characters* (`=<>!&|:+-*/~%?.^#_`) are shaped with Core Text, so prose and
+  log output never pay for shaping; results are cached by run text — `=>` costs one
+  CTLine, then it's a dictionary hit. Runs split at a block cursor (its cell must keep
+  its own glyph to invert cleanly) and on any fg/bg/attribute change; shaping that
+  drags in a fallback font bails to the per-cell path. Font fallback (emoji, CJK,
+  symbols) uses CTFontCreateForString with a per-codepoint fallback cache.
+- **Bundled fonts.** Geist Mono (Regular/Bold/Italic/BoldItalic) and Departure Mono
+  ship inside CRTRendering's resources (both SIL OFL 1.1; license texts sit beside the
+  files) and are registered with process scope at launch. Geist Mono is the default
+  font (a profile's nil fontName); it is ligature-capable, which is what made the
+  shaping path verifiable.
 - **Draw.** Three instanced draws into an offscreen `terminalTexture`:
   background quads, glyph quads, then decorations (cursor, selection, underlines,
   IME marked-text). A full screen of cells is two-digit-thousands of instances —
