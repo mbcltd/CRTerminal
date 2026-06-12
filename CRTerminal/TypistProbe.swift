@@ -115,6 +115,32 @@ final class TypistProbe {
             report.append("frame: /tmp/crterminal-probe.png")
         }
 
+        // The whole window — sidebar chrome included — for probes that
+        // check badges and progress bars. The layer tree is rendered (not
+        // cacheDisplay) so CALayer dots and bars appear; the Metal surface
+        // stays black, which the framebuffer PNG above covers.
+        if let root = view?.window?.contentView {
+            root.wantsLayer = true
+        }
+        if let root = view?.window?.contentView, let layer = root.layer {
+            let size = root.bounds.size
+            if let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2),
+                pixelsHigh: Int(size.height * 2), bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                rep.size = size
+                if let context = NSGraphicsContext(bitmapImageRep: rep) {
+                    layer.render(in: context.cgContext)
+                    if let png = rep.representation(using: .png, properties: [:]) {
+                        try? png.write(
+                            to: URL(fileURLWithPath: "/tmp/crterminal-window.png"))
+                        report.append("window: /tmp/crterminal-window.png")
+                    }
+                }
+            }
+        }
+
         report.append("=== END REPORT ===")
         let text = report.joined(separator: "\n") + "\n"
         FileHandle.standardError.write(text.data(using: .utf8)!)

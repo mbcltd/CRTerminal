@@ -73,6 +73,11 @@ public struct ProgressReport: Sendable, Equatable {
     public var state: State
     /// 0...100; meaningless when `state` is `.indeterminate`.
     public var percent: Int
+
+    public init(state: State, percent: Int) {
+        self.state = state
+        self.percent = percent
+    }
 }
 
 public struct Cursor: Sendable, Equatable {

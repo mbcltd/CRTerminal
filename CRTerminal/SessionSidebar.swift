@@ -1,5 +1,6 @@
 import AppKit
 import CRTRendering
+import TerminalCore
 
 // The vertical session sidebar from the GlassTerm design handoff: rich
 // rows (accent bar, icon chip, running pulse, metadata line) with a hover
@@ -56,6 +57,8 @@ struct SessionRowModel: Equatable {
     var dirtyCount: Int?
     /// Bells unseen since the tab was last viewed; nil hides the badge.
     var attentionCount: Int? = nil
+    /// OSC 9;4 task progress; nil hides the bar.
+    var progress: ProgressReport? = nil
     var theme: SidebarTheme
 }
 
@@ -334,6 +337,14 @@ final class SessionRowView: NSView {
     /// Amber attention dot, pulsing until the session is viewed.
     private let bellDot = CALayer()
     var showsBellBadge: Bool { !bellDot.isHidden }
+    /// Thin task-progress bar hugging the row's bottom edge.
+    private let progressTrack = CALayer()
+    private let progressFill = CALayer()
+    /// Fill fraction while the bar shows (nil = hidden); for tests.
+    var progressBarFraction: CGFloat? {
+        progressTrack.isHidden || progressTrack.frame.width == 0
+            ? nil : progressFill.frame.width / progressTrack.frame.width
+    }
 
     /// The hover-only ✕ pinned to the right edge.
     private var closeRect: NSRect {
@@ -353,6 +364,11 @@ final class SessionRowView: NSView {
         bellDot.cornerRadius = 3.5
         bellDot.isHidden = true
         layer?.addSublayer(bellDot)
+        for bar in [progressTrack, progressFill] {
+            bar.cornerRadius = 1
+            bar.isHidden = true
+            layer?.addSublayer(bar)
+        }
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
     }
@@ -397,7 +413,46 @@ final class SessionRowView: NSView {
                 bellDot.removeAnimation(forKey: "pulse")
             }
         }
+        let progress = model.progress
+        progressTrack.isHidden = progress == nil
+        progressFill.isHidden = progress == nil
+        progressTrack.backgroundColor = theme.separator.cgColor
+        let fillColor: NSColor
+        switch progress?.state {
+        case .error?: fillColor = theme.amber
+        case .paused?: fillColor = theme.dim
+        default: fillColor = theme.accent
+        }
+        progressFill.backgroundColor = fillColor.cgColor
+        // Indeterminate has no meaningful fill: span the track and shimmer.
+        let indeterminate = progress?.state == .indeterminate
+        if indeterminate != (old?.progress?.state == .indeterminate) {
+            if indeterminate {
+                let shimmer = CABasicAnimation(keyPath: "opacity")
+                shimmer.fromValue = 0.25
+                shimmer.toValue = 0.7
+                shimmer.duration = 0.6
+                shimmer.autoreverses = true
+                shimmer.repeatCount = .infinity
+                progressFill.add(shimmer, forKey: "shimmer")
+            } else {
+                progressFill.removeAnimation(forKey: "shimmer")
+            }
+        }
+        needsLayout = true
         needsDisplay = true
+    }
+
+    override func layout() {
+        super.layout()
+        guard let progress = model?.progress else { return }
+        let track = CGRect(
+            x: 12, y: bounds.height - 5, width: bounds.width - 24, height: 2)
+        progressTrack.frame = track
+        let fraction = progress.state == .indeterminate
+            ? 1.0 : CGFloat(progress.percent) / 100
+        progressFill.frame = CGRect(
+            x: track.minX, y: track.minY, width: track.width * fraction, height: 2)
     }
 
     override func updateTrackingAreas() {

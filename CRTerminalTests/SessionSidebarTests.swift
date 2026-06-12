@@ -1,5 +1,6 @@
 import AppKit
 import CRTRendering
+import TerminalCore
 import Testing
 @testable import CRTerminal
 
@@ -44,6 +45,20 @@ struct SessionInfoTests {
         #expect(SessionInfo.processName(of: pid)?.isEmpty == false)
     }
 
+    @Test func progressSequenceTypedIntoTheShellReachesTheSnapshot() throws {
+        let session = try TerminalSession(
+            columns: 80, rows: 24, workingDirectory: "/private/tmp")
+        defer { session.terminate() }
+        session.send(Array("printf '\\033]9;4;1;50\\007'\n".utf8))
+        // The shell may still be starting up; poll like the cwd test does.
+        var progress = session.snapshot.progress
+        for _ in 0..<500 where progress == nil {
+            usleep(10_000)
+            progress = session.snapshot.progress
+        }
+        #expect(progress == ProgressReport(state: .normal, percent: 50))
+    }
+
     @Test func spawnedShellStartsInTheProfileDirectory() throws {
         let session = try TerminalSession(
             columns: 80, rows: 24, workingDirectory: "/private/tmp")
@@ -79,6 +94,31 @@ struct SessionSidebarViewTests {
         sidebar.layoutSubtreeIfNeeded()
         #expect(sidebar.frameForRow(at: 2) == .zero)
         #expect(sidebar.frameForRow(at: 0) != .zero)
+    }
+
+    @Test @MainActor func progressBarFollowsTheRowModel() {
+        let view = SessionRowView()
+        view.frame = NSRect(x: 0, y: 0, width: 224, height: 50)
+        var model = row(1)
+        view.model = model
+        view.layoutSubtreeIfNeeded()
+        #expect(view.progressBarFraction == nil)
+
+        model.progress = ProgressReport(state: .normal, percent: 50)
+        view.model = model
+        view.layoutSubtreeIfNeeded()
+        #expect(view.progressBarFraction == 0.5)
+
+        // Indeterminate spans the track (the shimmer carries the meaning).
+        model.progress = ProgressReport(state: .indeterminate, percent: 0)
+        view.model = model
+        view.layoutSubtreeIfNeeded()
+        #expect(view.progressBarFraction == 1.0)
+
+        model.progress = nil
+        view.model = model
+        view.layoutSubtreeIfNeeded()
+        #expect(view.progressBarFraction == nil)
     }
 
     @Test @MainActor func selectionCallbackReportsTheClickedRowIndex() {

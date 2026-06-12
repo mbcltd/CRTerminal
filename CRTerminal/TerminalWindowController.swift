@@ -470,18 +470,23 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             let title = session.snapshot.title ?? shellName
             let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
                 ?? SessionInfo.workingDirectory(of: shellPID)
-            let metaLine: String
+            var metaLine: String
             if isRunning {
                 let name = SessionInfo.processName(of: foreground) ?? "…"
                 metaLine = "\(name) · live"
             } else {
                 metaLine = cwd.map(SessionInfo.displayName(path:)) ?? shellName
             }
+            let progress = session.snapshot.progress
+            if let progress, progress.state != .indeterminate {
+                metaLine += " · \(progress.percent)%"
+            }
             rows.append(SessionRowModel(
                 id: tab.id, index: index + 1, title: title, metaLine: metaLine,
                 isActive: index == activeTabIndex, isRunning: isRunning,
                 dirtyCount: dirtyCounts[tab.id],
                 attentionCount: tab.unseenBells > 0 ? tab.unseenBells : nil,
+                progress: progress,
                 theme: SidebarTheme(preset: tab.preset)))
             if let cwd {
                 let tabID = tab.id
