@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Scripts/build.sh)",
+      "Bash(Scripts/build.sh:*)",
+      "Bash(./Scripts/build.sh)",
+      "Bash(./Scripts/build.sh:*)",
+      "Bash(Scripts/test.sh)",
+      "Bash(Scripts/test.sh:*)",
+      "Bash(./Scripts/test.sh)",
+      "Bash(./Scripts/test.sh:*)",
+      "Bash(Scripts/probe.sh)",
+      "Bash(Scripts/probe.sh:*)",
+      "Bash(./Scripts/probe.sh)",
+      "Bash(./Scripts/probe.sh:*)",
+      "Bash(Scripts/bench.sh)",
+      "Bash(Scripts/bench.sh:*)",
+      "Bash(./Scripts/bench.sh)",
+      "Bash(./Scripts/bench.sh:*)",
+      "Bash(Scripts/fuzz.sh)",
+      "Bash(Scripts/fuzz.sh:*)",
+      "Bash(./Scripts/fuzz.sh)",
+      "Bash(./Scripts/fuzz.sh:*)"
+    ]
+  }
+}

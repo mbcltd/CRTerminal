@@ -21,3 +21,6 @@ crash-*
 
 # Profiling artifacts
 *.profraw
+
+# Claude Code (personal approvals stay local)
+.claude/settings.local.json

@@ -10,22 +10,18 @@ See ARCHITECTURE.md for the detailed design (module layout, concurrency model, r
 
 ## Commands
 
-Most code lives in local Swift packages — prefer `swift test` there (fast, no app host):
+Use the wrapper scripts in `Scripts/` — they are allowlisted in
+`.claude/settings.json`, so they run without permission prompts (raw
+`xcodebuild`/`open` variants each re-prompt). Run them from the repo root.
 
 ```sh
-# Package tests (the usual dev loop)
-swift test --package-path Packages/TerminalCore
-swift test --package-path Packages/CRTRendering
+# Build the app (filters output, prints the built .app path; add `release`)
+Scripts/build.sh
 
-# Run a single package test
-swift test --package-path Packages/TerminalCore --filter CellTests/rgbColorRoundTrips
-
-# Build the app
-xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal -destination 'platform=macOS' build
-
-# App-target tests (skipping slow UI tests, as CI does)
-xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal -destination 'platform=macOS' \
-  -skip-testing:CRTerminalUITests test
+# Tests: core | rendering | app | ui | all (default = what CI runs)
+Scripts/test.sh
+Scripts/test.sh core CellTests/rgbColorRoundTrips     # one package test
+Scripts/test.sh app CRTerminalTests/JumpSearchTests   # one app suite/test
 
 # Core throughput benchmarks (always Release; debug parses ~20× slower)
 Scripts/bench.sh
@@ -34,14 +30,15 @@ Scripts/bench.sh
 # lacks the fuzzer runtime. Pass libFuzzer args like -max_total_time=60.)
 Scripts/fuzz.sh
 
-# End-to-end probe: types a command into the live shell, dumps the grid,
-# measures input→render latency, writes /tmp/crterminal-probe.{txt,png}
-# CRT_TYPIST_SCRIPT overrides the typed bytes (real control chars, e.g.
-# $'vim /etc/hosts\r:q\r'; 0x1F = pause 1s — NUL would truncate the env var);
-# CRT_TYPIST_WAIT = settle seconds; CRT_TYPIST_CAPTURE=1 dumps all PTY bytes
-# to /tmp/crterminal-bytes.bin for replay debugging.
-# Must launch via `open` — windows don't display when the binary runs bare.
-open -W --env CRT_TYPIST=1 <DerivedData>/Build/Products/Debug/CRTerminal.app
+# End-to-end probes against the Debug build (launched via `open` — windows
+# don't display when the binary runs bare); each prints its report file.
+# typist: types bytes into the live shell through the real input path,
+# dumps the grid + input→present latency to /tmp/crterminal-probe.{txt,png}.
+# Pass real control chars (e.g. $'vim /etc/hosts\r:q\r'); 0x1F = pause 1s.
+# typist-capture: same, plus all PTY bytes to /tmp/crterminal-bytes.bin.
+# jump: opens the ⌘K palette, applies a query, snapshots the panel.
+Scripts/probe.sh typist $'echo hi\r' [wait-seconds]
+Scripts/probe.sh jump [query]
 ```
 
 Record performance numbers in PERF.md when they change materially.
