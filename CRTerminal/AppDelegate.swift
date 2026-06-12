@@ -31,6 +31,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             probe = TypistProbe(view: pane, session: session)
             probe?.start()
         }
+        if ProcessInfo.processInfo.environment["CRT_JUMP_PROBE"] != nil {
+            runJumpProbe(controller: controller)
+        }
+    }
+
+    /// End-to-end probe (CRT_JUMP_PROBE=1): opens the ⌘K palette over two
+    /// live sessions, applies CRT_JUMP_QUERY, snapshots the panel to
+    /// /tmp/crterminal-jump.png, dumps targets + the post-jump tab index to
+    /// /tmp/crterminal-jump.txt, and exits.
+    private func runJumpProbe(controller: TerminalWindowController) {
+        let query = ProcessInfo.processInfo.environment["CRT_JUMP_QUERY"] ?? ""
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            controller.addSession()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                self.showJumpMenu(nil)
+                self.jumpMenu?.setQuery(query)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.jumpMenu?.writeSnapshot(to: "/tmp/crterminal-jump.png")
+                    var report = JumpTargetBuilder.targets(across: self.controllers).map {
+                        "\($0.title) | \($0.subtitle) | "
+                            + $0.facets.map { "\($0.kind)=\($0.text)" }
+                                .joined(separator: ", ")
+                    }
+                    report.append("results for query '\(query)': "
+                        + "\(self.jumpMenu?.resultCount ?? -1)")
+                    report.append("active tab before jump: \(controller.activeTabIndex)")
+                    // Choose the top result (session 1; session 2 is active)
+                    // and report where we landed.
+                    self.jumpMenu?.choose(row: 0)
+                    report.append("active tab after jump: \(controller.activeTabIndex)")
+                    try? report.joined(separator: "\n").write(
+                        toFile: "/tmp/crterminal-jump.txt", atomically: true, encoding: .utf8)
+                    exit(0)
+                }
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -81,6 +117,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func jumpToSession(_ sender: NSMenuItem) {
         guard let index = sender.representedObject as? Int else { return }
         keyController?.selectTab(index)
+    }
+
+    // MARK: Jump menu (⌘K)
+
+    private var jumpMenu: JumpMenuController?
+
+    /// ⌘K toggles a palette searching every session in every window.
+    @objc private func showJumpMenu(_ sender: Any?) {
+        if let jumpMenu {
+            jumpMenu.dismiss()
+            return
+        }
+        let targets = JumpTargetBuilder.targets(across: controllers)
+        guard !targets.isEmpty else { return }
+        let theme = SidebarTheme(
+            preset: keyController?.activePreset
+                ?? ProfileStore.shared.defaultProfile.preset(in: PresetCatalog.all))
+        let menu = JumpMenuController(targets: targets, theme: theme) { [weak self] target in
+            self?.jump(to: target)
+        }
+        menu.onDismiss = { [weak self] in self?.jumpMenu = nil }
+        jumpMenu = menu
+        menu.show(over: NSApp.keyWindow)
+    }
+
+    private func jump(to target: JumpTarget) {
+        guard let controller = target.controller,
+              let index = controller.tabs.firstIndex(where: { $0.id == target.tabID })
+        else { return }
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.selectTab(index)
     }
 
     private func profilesChanged() {
@@ -182,6 +250,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             withTitle: "Previous Session",
             action: #selector(TerminalWindowController.previousSession(_:)), keyEquivalent: "[")
         previousSession.keyEquivalentModifierMask = [.command, .shift]
+        let jumpMenuItem = shellMenu.addItem(
+            withTitle: "Jump to Session…",
+            action: #selector(showJumpMenu(_:)), keyEquivalent: "k")
+        jumpMenuItem.target = self
         shellMenu.addItem(.separator())
         shellMenu.addItem(
             withTitle: "Split Right",

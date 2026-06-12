@@ -42,6 +42,39 @@ enum SessionInfo {
         return path
     }
 
+    /// Current git branch by reading .git/HEAD directly — no subprocess, so
+    /// it's safe to call synchronously (jump menu opening). Walks up from
+    /// `directory` to the repo root and follows worktree/submodule
+    /// "gitdir:" indirection. Detached HEAD yields a short hash.
+    nonisolated static func gitBranch(near directory: String) -> String? {
+        var dir = directory
+        while true {
+            let gitPath = dir + "/.git"
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDirectory) {
+                var headPath = gitPath + "/HEAD"
+                if !isDirectory.boolValue {
+                    guard let pointer = try? String(contentsOfFile: gitPath, encoding: .utf8),
+                          pointer.hasPrefix("gitdir:") else { return nil }
+                    var gitDir = pointer.dropFirst("gitdir:".count)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !gitDir.hasPrefix("/") { gitDir = dir + "/" + gitDir }
+                    headPath = gitDir + "/HEAD"
+                }
+                guard let head = try? String(contentsOfFile: headPath, encoding: .utf8)
+                else { return nil }
+                let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.hasPrefix("ref: refs/heads/") {
+                    return String(trimmed.dropFirst("ref: refs/heads/".count))
+                }
+                return trimmed.isEmpty ? nil : String(trimmed.prefix(8))
+            }
+            let parent = (dir as NSString).deletingLastPathComponent
+            if parent == dir || parent.isEmpty { return nil }
+            dir = parent
+        }
+    }
+
     struct GitStatus: Equatable, Sendable {
         var branch: String
         var dirtyCount: Int
