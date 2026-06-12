@@ -93,9 +93,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             spawnInitialSession: spawnInitialSession)
         controller.onClose = { [weak self] closed in
             self?.controllers.removeAll { $0 === closed }
+            self?.refreshDockBadge()
         }
         controllers.append(controller)
         return controller
+    }
+
+    // MARK: Dock badge
+
+    /// Sessions with unseen bells, summed across every window. Called by
+    /// each window's metadata tick and on every attention change, so
+    /// closes and cross-window session moves correct it within a second.
+    func refreshDockBadge() {
+        let count = controllers.reduce(0) { $0 + $1.attentionSessionCount }
+        NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
+    }
+
+    /// A bell arrived while the app is inactive. The badge follows via
+    /// refreshDockBadge; the single dock bounce hides behind a
+    /// default-off key until Phase F grows the alerts settings UI.
+    func bellRequiresAttention() {
+        if !NSApp.isActive,
+           UserDefaults.standard.bool(forKey: "DockBounceOnBell") {
+            NSApp.requestUserAttention(.informationalRequest)
+        }
     }
 
     // MARK: Session dragging

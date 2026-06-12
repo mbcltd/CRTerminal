@@ -253,6 +253,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Attention (sidebar bell badges)
 
+    /// Sessions here with unseen bells; the dock badge sums these.
+    var attentionSessionCount: Int {
+        tabs.filter { $0.unseenBells > 0 }.count
+    }
+
     /// A bell or notification fired in this pane's session. Unless the
     /// user is watching it — active tab in the key window of the active
     /// app — badge the sidebar row until the tab is next viewed.
@@ -265,6 +270,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         tabs[index].unseenBells += 1
         tabs[index].lastBellAt = Date()
         refreshSessionMetadata()
+        AppDelegate.shared?.bellRequiresAttention()
     }
 
     /// Viewing the active tab consumes its attention badge.
@@ -505,6 +511,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         if let active = rows.first(where: { $0.isActive }) {
             window?.title = active.title
         }
+        AppDelegate.shared?.refreshDockBadge()
     }
 
     // MARK: Hover card
