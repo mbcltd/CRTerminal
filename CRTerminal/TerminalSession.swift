@@ -20,13 +20,16 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// Called on the main queue with OSC 9/777 desktop notifications.
     var onNotification: (@MainActor (TerminalNotification) -> Void)?
 
-    init(columns: Int, rows: Int, shell: String? = nil, scrollbackLines: Int = 10_000) throws {
+    init(columns: Int, rows: Int, shell: String? = nil,
+         workingDirectory: String? = nil, scrollbackLines: Int = 10_000) throws {
         terminal = OSAllocatedUnfairLock(initialState: {
             var t = Terminal(columns: columns, rows: rows)
             t.scrollbackLimit = max(0, scrollbackLines)
             return t
         }())
-        pty = try PTYSession(columns: columns, rows: rows, shell: shell)
+        pty = try PTYSession(
+            columns: columns, rows: rows, shell: shell,
+            workingDirectory: workingDirectory)
         pty.onData = { [weak self] data in
             self?.ingest(data)
         }

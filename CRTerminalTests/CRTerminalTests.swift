@@ -44,10 +44,23 @@ struct ProfileTests {
         profile.fontName = "Menlo"
         profile.fontSize = 15
         profile.presetName = "IBM 5151"
+        profile.workingDirectory = "~/dev"
         profile.scrollbackLines = 5000
         let data = try JSONEncoder().encode(profile)
         let decoded = try JSONDecoder().decode(Profile.self, from: data)
         #expect(decoded == profile)
+    }
+
+    @Test func workingDirectoryDefaultsToHomeAndExpandsTilde() {
+        var profile = Profile()
+        #expect(profile.resolvedWorkingDirectory == NSHomeDirectory())
+        profile.workingDirectory = "~"
+        #expect(profile.resolvedWorkingDirectory == NSHomeDirectory())
+        profile.workingDirectory = "/tmp"
+        #expect(profile.resolvedWorkingDirectory == "/tmp")
+        // A vanished path must not stop shells from spawning.
+        profile.workingDirectory = "/no/such/place"
+        #expect(profile.resolvedWorkingDirectory == NSHomeDirectory())
     }
 
     @Test func fontFallsBackToSystemMono() {

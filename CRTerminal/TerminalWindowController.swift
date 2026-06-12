@@ -184,6 +184,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             session = try TerminalSession(
                 columns: 80, rows: 24,
                 shell: profile.shellPath,
+                workingDirectory: profile.resolvedWorkingDirectory,
                 scrollbackLines: profile.scrollbackLines)
         } catch {
             let alert = NSAlert()

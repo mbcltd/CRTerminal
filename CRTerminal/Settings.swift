@@ -111,6 +111,11 @@ struct SettingsView: View {
                         set: { selected.wrappedValue.shellPath = $0.isEmpty ? nil : $0 }),
                     prompt: Text("Login shell ($SHELL)"))
                 TextField(
+                    "Working directory", text: Binding(
+                        get: { selected.wrappedValue.workingDirectory ?? "" },
+                        set: { selected.wrappedValue.workingDirectory = $0.isEmpty ? nil : $0 }),
+                    prompt: Text("Home folder (~)"))
+                TextField(
                     "Scrollback lines",
                     value: selected.scrollbackLines, format: .number)
                 Toggle("Default profile for new windows", isOn: Binding(

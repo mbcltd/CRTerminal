@@ -12,6 +12,8 @@ struct Profile: Codable, Equatable, Identifiable {
     var presetName: String = "DEC VT220"
     /// nil = the user's login shell ($SHELL).
     var shellPath: String?
+    /// Where new shells start; nil = the home folder. "~" is expanded.
+    var workingDirectory: String?
     var scrollbackLines: Int = 10_000
 
     var font: NSFont {
@@ -24,6 +26,22 @@ struct Profile: Codable, Equatable, Identifiable {
 
     func preset(in presets: [CRTPreset]) -> CRTPreset {
         presets.first { $0.name == presetName } ?? .museumOff
+    }
+
+    /// The startup directory for new shells: the preference with "~"
+    /// expanded, falling back to home when unset or no longer a directory
+    /// (a vanished path must not stop shells from spawning).
+    var resolvedWorkingDirectory: String {
+        guard let workingDirectory, !workingDirectory.isEmpty else {
+            return NSHomeDirectory()
+        }
+        let expanded = (workingDirectory as NSString).expandingTildeInPath
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return NSHomeDirectory()
+        }
+        return expanded
     }
 }
 
