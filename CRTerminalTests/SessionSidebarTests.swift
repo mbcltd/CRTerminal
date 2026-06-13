@@ -121,11 +121,11 @@ struct SessionSidebarViewTests {
         SessionRowModel(
             id: UUID(), index: index, title: "session \(index)",
             metaLine: "~/dev", isActive: active, isRunning: running,
-            dirtyCount: nil, theme: SidebarTheme(preset: .museumOff))
+            dirtyCount: nil, theme: SidebarTheme(preset: .darkStandard))
     }
 
     @Test @MainActor func reconcilesRowViewsAgainstModels() {
-        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .museumOff))
+        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .darkStandard))
         sidebar.update(rows: [row(1, active: true), row(2), row(3)])
         sidebar.layoutSubtreeIfNeeded()
         #expect(sidebar.frameForRow(at: 2) != .zero)
@@ -162,7 +162,7 @@ struct SessionSidebarViewTests {
     }
 
     @Test @MainActor func selectionCallbackReportsTheClickedRowIndex() {
-        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .museumOff))
+        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .darkStandard))
         var selected: Int?
         sidebar.onSelect = { selected = $0 }
         sidebar.update(rows: [row(1, active: true), row(2)])
@@ -269,16 +269,16 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func sidebarMapsDropPointsToGapIndexes() {
-        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .museumOff))
+        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .darkStandard))
         sidebar.update(rows: [
             SessionRowModel(
                 id: UUID(), index: 1, title: "one", metaLine: "~",
                 isActive: true, isRunning: false, dirtyCount: nil,
-                theme: SidebarTheme(preset: .museumOff)),
+                theme: SidebarTheme(preset: .darkStandard)),
             SessionRowModel(
                 id: UUID(), index: 2, title: "two", metaLine: "~",
                 isActive: false, isRunning: false, dirtyCount: nil,
-                theme: SidebarTheme(preset: .museumOff)),
+                theme: SidebarTheme(preset: .darkStandard)),
         ])
         sidebar.layoutSubtreeIfNeeded()
         let first = sidebar.frameForRow(at: 0)
@@ -460,7 +460,7 @@ struct SessionTabLifecycleTests {
         view.frame = NSRect(x: 0, y: 0, width: 220, height: 50)
         var model = SessionRowModel(
             id: UUID(), index: 1, title: "one", metaLine: "~", isActive: false,
-            isRunning: false, dirtyCount: nil, theme: SidebarTheme(preset: .museumOff))
+            isRunning: false, dirtyCount: nil, theme: SidebarTheme(preset: .darkStandard))
         view.model = model
         #expect(!view.showsBellBadge)
 

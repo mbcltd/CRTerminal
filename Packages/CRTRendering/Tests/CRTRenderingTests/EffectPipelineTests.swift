@@ -32,12 +32,12 @@ struct EffectPipelineTests {
 
     // MARK: Composite behavior
 
-    @Test func museumOffMatchesPlainRender() throws {
+    @Test func darkStandardMatchesPlainRender() throws {
         guard let renderer = makeRenderer() else { return } // no Metal device
         let state = makeTerminal().state
         let plain = try #require(renderer.renderImage(state))
-        let museum = try #require(renderer.renderImage(state, preset: .museumOff))
-        #expect(bytes(plain) == bytes(museum))
+        let standard = try #require(renderer.renderImage(state, preset: .darkStandard))
+        #expect(bytes(plain) == bytes(standard))
     }
 
     @Test func effectsChangeTheImage() throws {
@@ -154,7 +154,7 @@ struct EffectPipelineTests {
         let context = SurfaceContext()
         renderer.preset = preset("Commodore 1702") // noise + hum + jitter
         #expect(renderer.wantsContinuousFrames(at: 1_000_000, context: context))
-        renderer.preset = .museumOff
+        renderer.preset = .darkStandard
         #expect(!renderer.wantsContinuousFrames(at: 1_000_000, context: context))
     }
 

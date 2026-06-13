@@ -13,7 +13,14 @@ public final class TerminalRenderer {
     /// Cell size in points (pixels = points × scale).
     public let cellSize: CGSize
     public let scale: CGFloat
+    /// The scheme used to encode the current cell pass. Switched per draw
+    /// to match the active preset's appearance (light/dark); resolved from
+    /// `baseScheme` under `encodeLock`, so readers in the encode path see a
+    /// stable value even though panes share one renderer.
     public var scheme: ColorScheme
+    /// The configured dark scheme; the base that `.dark` presets render with
+    /// (light presets switch to `ColorScheme.light`).
+    private let baseScheme: ColorScheme
 
     private let commandQueue: MTLCommandQueue
     private let bgPipeline: MTLRenderPipelineState
@@ -40,7 +47,7 @@ public final class TerminalRenderer {
     /// preset is only a fallback — panes pass their own per draw, since
     /// sidebar sessions can each wear a different theme.
     private struct EffectsState {
-        var preset: CRTPreset = .museumOff
+        var preset: CRTPreset = .darkStandard
         var degaussStart: CFTimeInterval?
         /// Amplitude of the running degauss animation (and its sound):
         /// how much magnetization had built up when the coil fired.
@@ -126,6 +133,7 @@ public final class TerminalRenderer {
         self.effectPipeline = effectPipeline
         self.scale = scale
         self.scheme = scheme
+        self.baseScheme = scheme
 
         do {
             let library = try device.makeLibrary(source: shaderSource, options: nil)
@@ -203,7 +211,8 @@ public final class TerminalRenderer {
                 }
                 guard var surfaces = context.surfaces else { return }
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                               markedText: markedText, in: buffer, to: surfaces.terminal)
+                               markedText: markedText, in: buffer, to: surfaces.terminal,
+                               appearance: frame.preset.appearance)
                 effectPipeline.encode(
                     into: buffer, surfaces: &surfaces, output: target,
                     uniforms: frame.uniforms(width: target.width, height: target.height, scale: scale),
@@ -219,6 +228,7 @@ public final class TerminalRenderer {
                 // unpadded — the margin is window layout, not content).
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                                markedText: markedText, in: buffer, to: target,
+                               appearance: frame.preset.appearance,
                                padPx: Int((CGFloat(frame.preset.contentInsetPt) * scale)
                                    .rounded()))
             }
@@ -410,7 +420,8 @@ public final class TerminalRenderer {
             // timing matches the live chain).
             surfaces.persistenceValid = false
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                           markedText: markedText, in: buffer, to: surfaces.terminal)
+                           markedText: markedText, in: buffer, to: surfaces.terminal,
+                           appearance: preset.appearance)
             effectPipeline.encode(
                 into: buffer, surfaces: &surfaces, output: texture,
                 uniforms: CRTUniforms(
@@ -425,7 +436,8 @@ public final class TerminalRenderer {
             buffer.waitUntilCompleted()
         } else {
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                           markedText: markedText, in: buffer, to: texture)
+                           markedText: markedText, in: buffer, to: texture,
+                           appearance: preset?.appearance ?? .dark)
             buffer.commit()
             buffer.waitUntilCompleted()
         }
@@ -486,10 +498,14 @@ public final class TerminalRenderer {
         markedText: String? = nil,
         in buffer: MTLCommandBuffer,
         to texture: MTLTexture,
+        appearance: CRTPreset.Appearance = .dark,
         padPx: Int = 0
     ) {
         encodeLock.lock()
         defer { encodeLock.unlock() }
+        // Pick the light/dark scheme for this pass while holding the lock so
+        // the encode-path readers (resolveColors, emitShapedRuns) are stable.
+        scheme = appearance == .light ? .light : baseScheme
         let cellW = Float(cellSize.width * scale)
         let cellH = Float(cellSize.height * scale)
         let baselineOffset = Float(ascent * scale)

@@ -1,0 +1,6 @@
+{
+  "name": "Dark Standard",
+  "blurb": "All effects disabled; the lean modern terminal.",
+  "effects": false,
+  "appearance": "dark"
+}

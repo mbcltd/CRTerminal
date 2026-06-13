@@ -58,7 +58,7 @@ final class TerminalView: NSView, NSTextInputClient {
     /// The CRT preset for this pane; per-pane because sidebar sessions
     /// theme independently while sharing the window's renderer. Presets
     /// with a bezel shrink the cell grid (the bezel is part of the view).
-    var preset: CRTPreset = .museumOff {
+    var preset: CRTPreset = .darkStandard {
         didSet {
             renderLoop?.setPreset(preset)
             updateGridSize()

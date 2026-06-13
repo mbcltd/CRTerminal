@@ -9,7 +9,7 @@ struct Profile: Codable, Equatable, Identifiable {
     /// PostScript name; nil = the app default (bundled Geist Mono).
     var fontName: String?
     var fontSize: Double = 13
-    var presetName: String = "Museum off"
+    var presetName: String = "Dark Standard"
     /// nil = the user's login shell ($SHELL).
     var shellPath: String?
     /// Where new shells start; nil = the home folder. "~" is expanded.
@@ -32,7 +32,7 @@ struct Profile: Codable, Equatable, Identifiable {
     }
 
     func preset(in presets: [CRTPreset]) -> CRTPreset {
-        presets.first { $0.name == presetName } ?? .museumOff
+        presets.first { $0.name == presetName } ?? .darkStandard
     }
 
     /// The startup directory for new shells: the preference with "~"
@@ -69,7 +69,7 @@ extension Profile {
         fontName = try container.decodeIfPresent(String.self, forKey: .fontName)
         fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 13
         presetName = try container.decodeIfPresent(String.self, forKey: .presetName)
-            ?? "Museum off"
+            ?? "Dark Standard"
         shellPath = try container.decodeIfPresent(String.self, forKey: .shellPath)
         workingDirectory = try container.decodeIfPresent(
             String.self, forKey: .workingDirectory)

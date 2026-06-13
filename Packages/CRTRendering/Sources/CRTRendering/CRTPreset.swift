@@ -14,6 +14,14 @@ public struct CRTPreset: Codable, Equatable, Sendable {
     /// bypassed and the terminal texture goes straight to the drawable.
     public var effects: Bool
 
+    /// Whether the terminal renders with the dark or the light color
+    /// scheme (the historic CRT presets are all dark; the plain "standard"
+    /// presets offer both). The renderer maps this to a `ColorScheme`.
+    public enum Appearance: String, Codable, Sendable {
+        case dark, light
+    }
+    public var appearance: Appearance
+
     // MARK: Sections
 
     public struct Phosphor: Codable, Equatable, Sendable {
@@ -218,6 +226,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
 
     public init(
         name: String, year: Int? = nil, blurb: String? = nil, effects: Bool = true,
+        appearance: Appearance = .dark,
         phosphor: Phosphor = Phosphor(), geometry: Geometry = Geometry(),
         mask: Mask = Mask(), scanlines: Scanlines = Scanlines(),
         bloom: Bloom = Bloom(), artifacts: Artifacts = Artifacts(), bezel: Bezel = Bezel(),
@@ -227,6 +236,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         self.year = year
         self.blurb = blurb
         self.effects = effects
+        self.appearance = appearance
         self.phosphor = phosphor
         self.geometry = geometry
         self.mask = mask
@@ -244,6 +254,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         year = try container.decodeIfPresent(Int.self, forKey: .year)
         blurb = try container.decodeIfPresent(String.self, forKey: .blurb)
         effects = try container.decodeIfPresent(Bool.self, forKey: .effects) ?? true
+        appearance = try container.decodeIfPresent(Appearance.self, forKey: .appearance) ?? .dark
         phosphor = try container.decodeIfPresent(Phosphor.self, forKey: .phosphor) ?? Phosphor()
         geometry = try container.decodeIfPresent(Geometry.self, forKey: .geometry) ?? Geometry()
         mask = try container.decodeIfPresent(Mask.self, forKey: .mask) ?? Mask()
@@ -254,10 +265,15 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         degaussButton = try container.decodeIfPresent(Bool.self, forKey: .degaussButton) ?? true
     }
 
-    /// Everything off — the lean modern terminal.
-    public static let museumOff = CRTPreset(
-        name: "Museum off", blurb: "All effects disabled; the modern terminal.",
+    /// Everything off — the lean modern terminal, dark scheme.
+    public static let darkStandard = CRTPreset(
+        name: "Dark Standard", blurb: "All effects disabled; the modern terminal.",
         effects: false)
+
+    /// Everything off — the lean modern terminal, light scheme.
+    public static let lightStandard = CRTPreset(
+        name: "Light Standard", blurb: "All effects disabled; a light scheme.",
+        effects: false, appearance: .light)
 }
 
 /// An sRGB color encoded as "#RRGGBB" in JSON.

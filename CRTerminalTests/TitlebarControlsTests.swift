@@ -7,12 +7,12 @@ struct TitlebarControlsTests {
     @Test @MainActor func degaussButtonOnlyExistsOnCRTPresets() {
         let crt = CRTPreset(name: "Tube", effects: true)
         let cluster = TitlebarControlCluster(
-            presets: [crt, .museumOff], currentPreset: crt)
+            presets: [crt, .darkStandard], currentPreset: crt)
         let degauss = cluster.subviews.compactMap { $0 as? DegaussButton }.first
         #expect(degauss != nil)
         #expect(degauss?.isHidden == false)
 
-        cluster.update(preset: .museumOff)
+        cluster.update(preset: .darkStandard)
         #expect(degauss?.isHidden == true)
 
         cluster.update(preset: crt)
@@ -23,7 +23,7 @@ struct TitlebarControlsTests {
         let autoDegauss = CRTPreset(name: "Self-degaussing", effects: true,
                                     degaussButton: false)
         let cluster = TitlebarControlCluster(
-            presets: [autoDegauss, .museumOff], currentPreset: autoDegauss)
+            presets: [autoDegauss, .darkStandard], currentPreset: autoDegauss)
         let degauss = cluster.subviews.compactMap { $0 as? DegaussButton }.first
         #expect(degauss?.isHidden == true)
     }
@@ -31,9 +31,9 @@ struct TitlebarControlsTests {
     @Test @MainActor func clusterShrinksWhenDegaussHides() {
         let crt = CRTPreset(name: "Tube", effects: true)
         let cluster = TitlebarControlCluster(
-            presets: [crt, .museumOff], currentPreset: crt)
+            presets: [crt, .darkStandard], currentPreset: crt)
         let withDegauss = cluster.frame.width
-        cluster.update(preset: .museumOff)
+        cluster.update(preset: .darkStandard)
         #expect(cluster.frame.width < withDegauss)
     }
 }

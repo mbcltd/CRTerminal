@@ -10,7 +10,7 @@ public enum CRTPresetLibrary {
         guard let urls = Bundle.module.urls(
             forResourcesWithExtension: "json", subdirectory: "Presets") else {
             assertionFailure("bundled preset directory missing")
-            return [.museumOff]
+            return [.darkStandard]
         }
         let presets = urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
             .compactMap { url -> CRTPreset? in
@@ -21,7 +21,7 @@ public enum CRTPresetLibrary {
                     return nil
                 }
             }
-        return presets.isEmpty ? [.museumOff] : presets
+        return presets.isEmpty ? [.darkStandard] : presets
     }()
 
     public static func load(from url: URL) throws -> CRTPreset {

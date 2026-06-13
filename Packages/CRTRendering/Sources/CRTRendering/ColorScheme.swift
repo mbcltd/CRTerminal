@@ -25,6 +25,14 @@ public struct ColorScheme: Sendable {
         selectionBackground: pack(0x33, 0x4E, 0x6E),
         palette: xterm256())
 
+    /// Near-black on paper white: the light counterpart of `default`,
+    /// sharing the standard xterm 256-color palette.
+    public static let light = ColorScheme(
+        foreground: pack(0x1C, 0x1C, 0x1C),
+        background: pack(0xF7, 0xF6, 0xF2),
+        selectionBackground: pack(0xB3, 0xD4, 0xFF),
+        palette: xterm256())
+
     public func resolve(_ color: PackedColor, isForeground: Bool, bold: Bool) -> UInt32 {
         if color.isDefault {
             return isForeground ? foreground : background
