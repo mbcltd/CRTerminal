@@ -275,6 +275,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         settingsWindow?.makeKeyAndOrderFront(sender)
     }
 
+    @objc private func showAboutPanel(_ sender: Any?) {
+        let credits = NSMutableAttributedString()
+        let link = NSAttributedString(
+            string: "morgan-brown.com",
+            attributes: [
+                .link: URL(string: "https://morgan-brown.com")!,
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            ])
+        credits.append(link)
+
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(selectPreset(_:)) {
             let current = keyController?.currentPresetName
@@ -297,10 +311,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let mainMenu = NSMenu()
 
         let appMenu = NSMenu()
-        appMenu.addItem(
+        let about = appMenu.addItem(
             withTitle: "About crterm",
-            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            action: #selector(showAboutPanel(_:)),
             keyEquivalent: "")
+        about.target = self
         appMenu.addItem(.separator())
         let settings = appMenu.addItem(
             withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
