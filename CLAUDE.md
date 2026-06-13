@@ -37,8 +37,11 @@ Scripts/fuzz.sh
 # Pass real control chars (e.g. $'vim /etc/hosts\r:q\r'); 0x1F = pause 1s.
 # typist-capture: same, plus all PTY bytes to /tmp/crterminal-bytes.bin.
 # jump: opens the ⌘K palette, applies a query, snapshots the panel.
+# jump-live: jump, but first types [setup] into session 1 so the palette
+# sees a live foreground command (keep [setup] short — see the script).
 Scripts/probe.sh typist $'echo hi\r' [wait-seconds]
 Scripts/probe.sh jump [query]
+Scripts/probe.sh jump-live $'/tmp/setup\r' [query]
 ```
 
 Record performance numbers in PERF.md when they change materially.
@@ -62,4 +65,5 @@ Gotchas learned the hard way:
 - `setVertexBytes` caps at 4 KiB — per-cell instance arrays must use `makeBuffer`.
 - `TIOCSWINSZ` is ENOTTY on the posix_openpt *master* on macOS — winsize ioctls must target the slave fd (PTYSession keeps one open). When winsize is zeroed, ncurses silently falls back to 80×24, which can mask the bug.
 - The shell must be spawned login_tty-style: fork + setsid + `TIOCSCTTY` (PTYSession binds `fork` via `@_silgen_name`; Swift marks it unavailable). posix_spawn cannot acquire a controlling terminal — there is no file action for the ioctl, and on macOS `POSIX_SPAWN_SETSID` + opening the slave does NOT claim it — so the shell ran with TPGID 0: the line discipline ate ^C/^Z with no foreground pgrp to signal, and job control silently broke. Symptom check: `ps -o tpgid,tt -p $$` showing `TT = ??`.
+- `proc_name`/`pbi_comm` report the executable *vnode's* name, not the command the user invoked — for version-managed symlink installs (`claude` → `versions/2.1.175`) that's the bare version string, so "claude" was unfindable anywhere. The invoked name only survives in the saved exec path, read via sysctl `KERN_PROCARGS2` (what `ps` shows); `SessionInfo.processName` prefers it and falls back to `proc_name`.
 - Bundled fonts must register via `CTFontManagerRegisterGraphicsFont` (in-process), never `CTFontManagerRegisterFontsForURL`: URL registration is a fontd XPC transaction, and racing it against the process's first font lookups (parallel tests do exactly this) wedges the font-registry connection — every later `CTFontCreateWithName` hangs forever at 0% CPU while fontd sits idle. Also, Geist Mono's ligatures live in a "Coding ligatures" stylistic set, not `liga`/`calt`; `GlyphAtlas.ligatureFont(for:)` enables them on the shaping font.

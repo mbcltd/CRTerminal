@@ -48,6 +48,37 @@ struct SidebarThemeTests {
         #expect(SessionInfo.processName(of: pid)?.isEmpty == false)
     }
 
+    /// Claude Code installs as `claude -> versions/2.1.175`; the kernel
+    /// names the process after the resolved vnode ("2.1.175"), so the
+    /// invoked name must come from the saved exec path.
+    @Test func processNameReportsInvokedSymlinkNameNotVnodeName() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("session-info-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let link = dir.appendingPathComponent("claudeish")
+        try FileManager.default.createSymbolicLink(
+            at: link, withDestinationURL: URL(fileURLWithPath: "/bin/sleep"))
+
+        let process = Process()
+        process.executableURL = link
+        process.arguments = ["5"]
+        try process.run()
+        defer { process.terminate() }
+
+        #expect(SessionInfo.processName(of: process.processIdentifier) == "claudeish")
+    }
+
+    @Test func processNameReportsDirectlyExecutedBinaries() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["5"]
+        try process.run()
+        defer { process.terminate() }
+
+        #expect(SessionInfo.processName(of: process.processIdentifier) == "sleep")
+    }
+
     @Test func progressSequenceFromTheChildReachesTheSnapshot() throws {
         // A scripted "shell" emits the sequence itself: typing into the
         // real $SHELL is not CI-safe (a fresh runner's zsh stops at its

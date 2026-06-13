@@ -17,11 +17,35 @@ enum SessionInfo {
         }
     }
 
+    /// The command name as the user invoked it (what `ps` shows). proc_name
+    /// reports the executable vnode's name, which for version-managed
+    /// symlink installs (claude -> versions/2.1.175) is the version string —
+    /// the invoked name only survives in the saved exec path.
     nonisolated static func processName(of pid: pid_t) -> String? {
+        if let invoked = invokedName(of: pid) { return invoked }
         var buffer = [CChar](repeating: 0, count: 64)
         let length = proc_name(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return nil }
         return String(cString: buffer)
+    }
+
+    /// Basename of the path the process was exec'd with, via KERN_PROCARGS2
+    /// (readable for the user's own processes; nil for zombies or other
+    /// users' pids, where the proc_name fallback still applies).
+    private nonisolated static func invokedName(of pid: pid_t) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+        // Layout: argc as Int32, then the NUL-terminated exec path.
+        let start = MemoryLayout<Int32>.size
+        guard start < size, let end = buffer[start..<size].firstIndex(of: 0)
+        else { return nil }
+        let path = String(decoding: buffer[start..<end], as: UTF8.self)
+        let name = (path as NSString).lastPathComponent
+        return name.isEmpty ? nil : name
     }
 
     /// Just the directory name for tight spots like sidebar rows:

@@ -33,6 +33,19 @@ case "$mode" in
     cat /tmp/crterminal-jump.txt
     echo
     echo "panel: /tmp/crterminal-jump.png" ;;
+  jump-live)
+    # Like jump, but first types [setup] into session 1 (typist path) so the
+    # palette is probed against a session with a live foreground command.
+    # Keep [setup] short: typing starts at ~2s (50ms/byte) and the palette
+    # snapshots at ~4s. Usage: Scripts/probe.sh jump-live [setup] [query]
+    envargs=(--env CRT_JUMP_PROBE=1 --env CRT_TYPIST=1 --env CRT_TYPIST_WAIT=30)
+    [ -n "${2:-}" ] && envargs+=(--env "CRT_TYPIST_SCRIPT=$2")
+    [ -n "${3:-}" ] && envargs+=(--env "CRT_JUMP_QUERY=$3")
+    rm -f /tmp/crterminal-jump.txt
+    open -n -W "${envargs[@]}" "$app"
+    cat /tmp/crterminal-jump.txt
+    echo
+    echo "panel: /tmp/crterminal-jump.png" ;;
   *)
     echo "usage: Scripts/probe.sh typist|typist-capture|jump [args]" >&2
     exit 64 ;;
