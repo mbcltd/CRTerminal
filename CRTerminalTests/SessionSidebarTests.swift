@@ -21,6 +21,40 @@ struct SidebarThemeTests {
         let theme = SidebarTheme(preset: preset)
         #expect(theme.green != theme.accent)
     }
+
+    @Test @MainActor func lightPresetYieldsLegibleLightSurface() {
+        let theme = SidebarTheme(preset: .lightStandard)
+        #expect(theme.mode == .light)
+        // Paper surface, dark ink, comfortably readable.
+        #expect(SidebarTheme.relativeLuminance(theme.background) > 0.5)
+        #expect(SidebarTheme.relativeLuminance(theme.text) < 0.3)
+        #expect(SidebarTheme.contrastRatio(theme.text, theme.background) >= 6.5)
+    }
+
+    @Test @MainActor func darkPresetYieldsLegibleDarkSurface() {
+        let theme = SidebarTheme(preset: .darkStandard)
+        #expect(theme.mode == .dark)
+        #expect(SidebarTheme.relativeLuminance(theme.background) < 0.2)
+        #expect(SidebarTheme.contrastRatio(theme.text, theme.background) >= 6.5)
+    }
+
+    /// The crux: any session's accent stays readable on a rail driven by a
+    /// different session's appearance — a bright tube on a light rail, and a
+    /// light tab on a dark rail.
+    @Test @MainActor func accentStaysLegibleAcrossASurfaceMix() {
+        var whiteTube = CRTPreset(name: "Composite", effects: true)
+        whiteTube.phosphor = .init(color: HexColor(0xFF, 0xFF, 0xFF), decayMs: 2)
+
+        let onLight = SidebarTheme(surface: .lightStandard, accent: whiteTube)
+        #expect(onLight.mode == .light)
+        #expect(SidebarTheme.contrastRatio(onLight.accent, onLight.background) >= 3.0)
+        #expect(SidebarTheme.contrastRatio(onLight.text, onLight.background) >= 6.5)
+
+        let onDark = SidebarTheme(surface: .darkStandard, accent: .lightStandard)
+        #expect(onDark.mode == .dark)
+        #expect(SidebarTheme.contrastRatio(onDark.accent, onDark.background) >= 3.0)
+        #expect(SidebarTheme.contrastRatio(onDark.text, onDark.background) >= 6.5)
+    }
 }
 
 /// Serialized: these spawn real PTY children, and concurrent forks from a

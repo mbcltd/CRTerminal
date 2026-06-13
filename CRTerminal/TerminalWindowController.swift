@@ -495,6 +495,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// Internal so alert-settings changes can re-apply without waiting a tick.
     func refreshSessionMetadata() {
         var rows: [SessionRowModel] = []
+        // Every row shares the active session's surface (light/dark), so the
+        // rail reads as one coherent surface; each row's accent is its own.
+        let surfacePreset = activePreset
         for (index, tab) in tabs.enumerated() {
             guard let session = tab.panes.first?.session else { continue }
             let shellPID = session.shellProcessID
@@ -523,7 +526,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 attentionCount: AlertSettings.shared.sidebarBadges
                     && tab.unseenBells > 0 ? tab.unseenBells : nil,
                 progress: progress,
-                theme: SidebarTheme(preset: tab.preset)))
+                theme: SidebarTheme(surface: surfacePreset, accent: tab.preset)))
             if let cwd {
                 let tabID = tab.id
                 SessionInfo.gitStatus(in: cwd) { [weak self] status in

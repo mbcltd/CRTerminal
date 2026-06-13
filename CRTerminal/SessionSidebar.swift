@@ -7,8 +7,15 @@ import TerminalCore
 // detail card per session. Chrome colors derive from the active preset so
 // the sidebar wears the same phosphor as the tube next to it.
 
-/// Sidebar/hover-card palette derived from a CRT preset.
+/// Sidebar/hover-card palette. The *surface* (background, text, the whole
+/// legibility baseline) comes from the active session, so the rail reads as
+/// one coherent light-or-dark surface no matter how its tabs are themed; a
+/// row's *accent* hue identifies its own session on top of that surface.
+/// Every derived colour is contrast-clamped against the surface, so any mix
+/// of light, dark and CRT sessions stays legible.
 struct SidebarTheme: Equatable {
+    enum Mode { case dark, light }
+    var mode: Mode
     var accent: NSColor
     var green: NSColor
     var amber: NSColor
@@ -21,26 +28,112 @@ struct SidebarTheme: Equatable {
     var cardBackground: NSColor
     var cardBorder: NSColor
 
+    /// A whole-surface theme — the rail chrome, or a session's own
+    /// self-contained hover card — taking both surface and accent from one
+    /// preset.
     init(preset: CRTPreset) {
-        let phosphor = preset.effects
-            ? NSColor(preset.phosphor.color)
+        self.init(surface: preset, accent: preset)
+    }
+
+    /// A row theme: the surface (and thus light/dark mode) comes from the
+    /// `surface` preset — the active session — while the accent hue comes
+    /// from this row's own `accent` preset.
+    init(surface: CRTPreset, accent accentPreset: CRTPreset) {
+        let mode: Mode = surface.appearance == .light ? .light : .dark
+        self.mode = mode
+
+        // Surface: near-black or near-paper, faintly tinted by the active
+        // session's identity so the rail still "wears the tube" beside it.
+        let surfaceTint = Self.identityColor(for: surface)
+        let bgBase = mode == .light
+            ? NSColor(srgbRed: 0.95, green: 0.95, blue: 0.96, alpha: 1)
+            : NSColor(srgbRed: 0.02, green: 0.03, blue: 0.02, alpha: 1)
+        let bg = bgBase.blended(withFraction: 0.05, of: surfaceTint) ?? bgBase
+        background = bg
+        let cardBase = mode == .light
+            ? NSColor(srgbRed: 0.99, green: 0.99, blue: 1.0, alpha: 0.98)
+            : NSColor(srgbRed: 0.04, green: 0.055, blue: 0.045, alpha: 0.97)
+        cardBackground = cardBase.blended(withFraction: 0.05, of: surfaceTint) ?? cardBase
+
+        // Accent: this session's identity hue, nudged just enough to read.
+        let rawAccent = Self.identityColor(for: accentPreset)
+        accent = Self.legible(rawAccent, on: bg, minContrast: 3.2)
+
+        // Monochrome tubes have exactly one colour; everything else gets
+        // conventional status colours, each clamped to the surface.
+        let monochrome = accentPreset.effects && accentPreset.phosphor.monochrome
+        green = monochrome ? accent
+            : Self.legible(.systemGreen, on: bg, minContrast: 3.2)
+        amber = monochrome ? accent
+            : Self.legible(NSColor(srgbRed: 0.88, green: 0.69, blue: 0.41, alpha: 1),
+                           on: bg, minContrast: 3.2)
+
+        // Text ladder pinned to the surface ink, faintly tinted by the
+        // accent so a row keeps a whisper of its session's colour.
+        let ink: NSColor = mode == .light ? .black : .white
+        let body = Self.legible(
+            ink.blended(withFraction: 0.18, of: rawAccent) ?? ink, on: bg, minContrast: 7)
+        text = body
+        dim = body.withAlphaComponent(0.62)
+        faint = body.withAlphaComponent(0.34)
+
+        chip = accent.withAlphaComponent(mode == .light ? 0.14 : 0.09)
+        separator = (mode == .light ? NSColor.black : accent).withAlphaComponent(0.16)
+        cardBorder = accent.withAlphaComponent(0.3)
+    }
+
+    /// A session's identity colour: a CRT tube glows in its phosphor; the
+    /// plain presets use their own scheme's ink — a near-white glow for the
+    /// dark standard, a dark slate for the light one.
+    private static func identityColor(for preset: CRTPreset) -> NSColor {
+        if preset.effects { return NSColor(preset.phosphor.color) }
+        return preset.appearance == .light
+            ? NSColor(srgbRed: 0.20, green: 0.22, blue: 0.28, alpha: 1)
             : NSColor(srgbRed: 0.91, green: 0.92, blue: 0.96, alpha: 1)
-        accent = phosphor
-        // Monochrome tubes have exactly one color; color tubes and museum
-        // mode get conventional status colors.
-        let monochrome = preset.effects && preset.phosphor.monochrome
-        green = monochrome ? phosphor : .systemGreen
-        amber = monochrome ? phosphor : NSColor(srgbRed: 0.88, green: 0.69, blue: 0.41, alpha: 1)
-        text = phosphor.blended(withFraction: preset.effects ? 0.15 : 0, of: .white) ?? phosphor
-        dim = phosphor.withAlphaComponent(0.62)
-        faint = phosphor.withAlphaComponent(0.34)
-        chip = phosphor.withAlphaComponent(0.09)
-        separator = phosphor.withAlphaComponent(0.16)
-        background = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.02, alpha: 1)
-            .blended(withFraction: 0.06, of: phosphor) ?? .black
-        cardBackground = NSColor(srgbRed: 0.04, green: 0.055, blue: 0.045, alpha: 0.97)
-            .blended(withFraction: 0.05, of: phosphor) ?? .black
-        cardBorder = phosphor.withAlphaComponent(0.3)
+    }
+
+    // MARK: Contrast
+
+    /// `color` nudged toward white (on a dark surface) or black (on a light
+    /// one) just until it clears `minContrast` against `background` — so a
+    /// session's hue survives while staying readable on any rail.
+    static func legible(
+        _ color: NSColor, on background: NSColor, minContrast: CGFloat
+    ) -> NSColor {
+        guard let c = color.usingColorSpace(.sRGB),
+              let bg = background.usingColorSpace(.sRGB) else { return color }
+        if contrastRatio(c, bg) >= minContrast { return c }
+        let target: NSColor = relativeLuminance(bg) < 0.5 ? .white : .black
+        var lo: CGFloat = 0, hi: CGFloat = 1, best = target
+        for _ in 0..<14 {
+            let mid = (lo + hi) / 2
+            let candidate = c.blended(withFraction: mid, of: target) ?? c
+            if contrastRatio(candidate, bg) >= minContrast {
+                best = candidate
+                hi = mid
+            } else {
+                lo = mid
+            }
+        }
+        return best
+    }
+
+    /// WCAG relative luminance of an sRGB colour (alpha ignored).
+    static func relativeLuminance(_ color: NSColor) -> CGFloat {
+        guard let c = color.usingColorSpace(.sRGB) else { return 0 }
+        func lin(_ v: CGFloat) -> CGFloat {
+            v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * lin(c.redComponent)
+            + 0.7152 * lin(c.greenComponent)
+            + 0.0722 * lin(c.blueComponent)
+    }
+
+    /// WCAG contrast ratio between two colours (1...21).
+    static func contrastRatio(_ a: NSColor, _ b: NSColor) -> CGFloat {
+        let hi = max(relativeLuminance(a), relativeLuminance(b))
+        let lo = min(relativeLuminance(a), relativeLuminance(b))
+        return (hi + 0.05) / (lo + 0.05)
     }
 }
 
