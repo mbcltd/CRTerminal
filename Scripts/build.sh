@@ -8,4 +8,5 @@ config=Debug
 xcodebuild -project CRTerminal.xcodeproj -scheme CRTerminal \
   -destination 'platform=macOS' -configuration "$config" build 2>&1 |
   grep -E "error:|warning: call|warning: capture|BUILD (SUCCEEDED|FAILED)"
-{ ls -d ~/Library/Developer/Xcode/DerivedData/CRTerminal-*/Build/Products/"$config"/CRTerminal.app 2>/dev/null || true; } | head -1
+# Product is crterm.app; the DerivedData folder keeps the project name.
+{ ls -d ~/Library/Developer/Xcode/DerivedData/CRTerminal-*/Build/Products/"$config"/crterm.app 2>/dev/null || true; } | head -1

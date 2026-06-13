@@ -176,7 +176,7 @@ struct AlertsSettingsView: View {
                 Toggle("Badge the sidebar row", isOn: setting(\.sidebarBadges))
                 Toggle("Badge the Dock icon", isOn: setting(\.dockBadge))
             }
-            Section("While CRTerminal is in the background") {
+            Section("While crterm is in the background") {
                 Toggle("Post a notification", isOn: setting(\.notifications))
                 Toggle("Bounce the Dock icon", isOn: setting(\.dockBounce))
             }

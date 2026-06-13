@@ -68,7 +68,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
-        window.title = "CRTerminal"
+        window.title = "crterm"
         // Sessions live in the sidebar; native tabbing would duplicate them.
         window.tabbingMode = .disallowed
         super.init(window: window)

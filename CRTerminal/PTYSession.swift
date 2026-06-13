@@ -70,7 +70,7 @@ nonisolated final class PTYSession: @unchecked Sendable {
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "xterm-256color"
         environment["COLORTERM"] = "truecolor"
-        environment["TERM_PROGRAM"] = "CRTerminal"
+        environment["TERM_PROGRAM"] = "crterm"
         environment.removeValue(forKey: "TERM_PROGRAM_VERSION")
 
         // Everything the child touches is prepared before fork: between fork

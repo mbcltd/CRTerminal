@@ -13,7 +13,7 @@
 #       to /tmp/crterminal-jump.png, report: /tmp/crterminal-jump.txt.
 set -euo pipefail
 
-app=$(ls -d ~/Library/Developer/Xcode/DerivedData/CRTerminal-*/Build/Products/Debug/CRTerminal.app 2>/dev/null | head -1)
+app=$(ls -d ~/Library/Developer/Xcode/DerivedData/CRTerminal-*/Build/Products/Debug/crterm.app 2>/dev/null | head -1)
 [ -n "$app" ] || { echo "No Debug build found — run Scripts/build.sh first" >&2; exit 1; }
 
 mode="${1:?usage: Scripts/probe.sh typist|typist-capture|jump [args]}"

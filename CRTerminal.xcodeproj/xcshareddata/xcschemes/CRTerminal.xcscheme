@@ -15,7 +15,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "86CB176B2FDAB54E00C699F7"
-               BuildableName = "CRTerminal.app"
+               BuildableName = "crterm.app"
                BlueprintName = "CRTerminal"
                ReferencedContainer = "container:CRTerminal.xcodeproj">
             </BuildableReference>
@@ -68,7 +68,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "86CB176B2FDAB54E00C699F7"
-            BuildableName = "CRTerminal.app"
+            BuildableName = "crterm.app"
             BlueprintName = "CRTerminal"
             ReferencedContainer = "container:CRTerminal.xcodeproj">
          </BuildableReference>
@@ -85,7 +85,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "86CB176B2FDAB54E00C699F7"
-            BuildableName = "CRTerminal.app"
+            BuildableName = "crterm.app"
             BlueprintName = "CRTerminal"
             ReferencedContainer = "container:CRTerminal.xcodeproj">
          </BuildableReference>

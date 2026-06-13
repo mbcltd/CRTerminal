@@ -50,7 +50,7 @@ final class NotificationPoster: NSObject, UNUserNotificationCenterDelegate {
         guard AlertSettings.shared.notifications else { return }
         guard !windowIsKey || !NSApp.isActive else { return }
         deliver(
-            title: notification.title.isEmpty ? "CRTerminal" : notification.title,
+            title: notification.title.isEmpty ? "crterm" : notification.title,
             body: notification.body, sessionID: sessionID)
     }
 
