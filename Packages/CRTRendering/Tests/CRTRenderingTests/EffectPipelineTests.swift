@@ -7,7 +7,7 @@ import TerminalCore
 
 struct EffectPipelineTests {
     private func makeRenderer() -> TerminalRenderer? {
-        TerminalRenderer(font: CTFontCreateWithName("Menlo" as CFString, 12, nil), scale: 1)
+        RenderTestSupport.menlo()
     }
 
     private func makeTerminal(columns: Int = 20, rows: Int = 6) -> Terminal {

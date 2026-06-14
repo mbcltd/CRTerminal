@@ -7,7 +7,7 @@ import TerminalCore
 
 struct TerminalRendererTests {
     private func makeRenderer() -> TerminalRenderer? {
-        TerminalRenderer(font: CTFontCreateWithName("Menlo" as CFString, 12, nil), scale: 1)
+        RenderTestSupport.menlo()
     }
 
     private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
