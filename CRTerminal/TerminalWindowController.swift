@@ -651,6 +651,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         bar.autoresizingMask = [.width, .minYMargin]
         contentHost.addSubview(bar)
         searchBar = bar
+        // Let the grid keep revealed matches clear of the bar's footprint.
+        for pane in panes {
+            pane.searchBarOverlap = height
+        }
         bar.focus()
     }
 
@@ -666,6 +670,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         searchBar?.removeFromSuperview()
         searchBar = nil
         for pane in panes {
+            pane.searchBarOverlap = 0
             pane.endSearch()
         }
         if let pane = focusedPane {

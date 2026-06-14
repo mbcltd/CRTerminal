@@ -393,6 +393,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             withTitle: "Copy", action: #selector(TerminalView.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(
             withTitle: "Paste", action: #selector(TerminalView.paste(_:)), keyEquivalent: "v")
+        // Nil target → the responder chain handles it: the search field's
+        // field editor when the find bar is focused. Without this item ⌘A is
+        // dead in every text field, since AppKit only wires the shortcut up
+        // through the menu.
+        editMenu.addItem(
+            withTitle: "Select All",
+            action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(.separator())
         editMenu.addItem(
             withTitle: "Find…",

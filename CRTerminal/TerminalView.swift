@@ -20,6 +20,10 @@ final class TerminalView: NSView, NSTextInputClient {
     /// Search state (⌘F bar drives this).
     private var searchQuery: String?
     private(set) var currentMatch: Selection?
+    /// Height (points) of the find bar overlapping the grid's top edge while a
+    /// search is active. The reveal keeps matches below it so a found line in
+    /// the top rows isn't hidden behind the bar. 0 when no bar is shown.
+    var searchBarOverlap: CGFloat = 0
 
     private var lastBellCount: UInt64 = 0
     /// Fired alongside the beep; the window controller turns it into a
@@ -665,9 +669,16 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         currentMatch = match
         selection = match
+        // Rows whose top edge falls under the find bar are visually hidden,
+        // so treat them as off-screen and, when scrolling, drop the match a
+        // matching margin below the top. The grid sits `contentInset` below
+        // the top edge, so a tall bezel (CRT presets) already clears the bar
+        // and this margin is zero.
+        let cellHeight = renderer?.cellSize.height ?? 1
+        let hiddenRows = max(0, Int(ceil((searchBarOverlap - contentInset) / cellHeight)))
         let top = state.absoluteScreenTop - scrollOffset
-        if match.anchor.row < top || match.anchor.row >= top + state.rows {
-            scrollTo(absoluteRow: match.anchor.row, in: state)
+        if match.anchor.row < top + hiddenRows || match.anchor.row >= top + state.rows {
+            scrollTo(absoluteRow: match.anchor.row - hiddenRows, in: state)
         } else {
             pushViewStateToRenderLoop()
         }
