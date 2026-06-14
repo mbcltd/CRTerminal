@@ -1,9 +1,9 @@
 import Foundation
 
 /// Global alert behavior: which surfaces a bell reaches. UserDefaults-
-/// backed singleton in the ProfileStore mold — writes broadcast via
-/// onChange so open windows re-apply live. Global rather than
-/// per-profile: "where do alerts go" is a person-level preference.
+/// backed singleton in the SettingsStore mold — writes broadcast via
+/// onChange so open windows re-apply live. A separate store from
+/// TerminalSettings: "where do alerts go" is a person-level preference.
 @MainActor
 final class AlertSettings {
     static let shared = AlertSettings()

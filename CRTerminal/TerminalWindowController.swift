@@ -10,7 +10,7 @@ final class SessionTab {
     var panes: [TerminalView] = []
     let createdAt = Date()
     /// Each session wears its own theme; new sessions start from the
-    /// profile default.
+    /// global settings default.
     var preset: CRTPreset
     /// Bells (and notifications) that arrived while the session wasn't
     /// being watched; the sidebar badges the row until the tab is viewed.
@@ -30,7 +30,7 @@ final class SessionTab {
 final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private(set) var tabs: [SessionTab] = []
     private(set) var activeTabIndex = 0
-    private var profile: Profile
+    private var settings: TerminalSettings
     private var sharedRenderer: TerminalRenderer?
     private let rootView = NSView()
     /// The area right of the sidebar; hosts tab containers + search bar.
@@ -48,7 +48,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// Set by the AppDelegate so closed windows are released.
     var onClose: ((TerminalWindowController) -> Void)?
 
-    /// All live panes across every session (probe, teardown, profile apply).
+    /// All live panes across every session (probe, teardown, settings apply).
     var panes: [TerminalView] {
         tabs.flatMap { $0.panes }
     }
@@ -59,10 +59,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     /// `spawnInitialSession: false` makes an empty shell of a window for
     /// adopting a torn-off session; callers must adopt one immediately.
-    init(profile: Profile, spawnInitialSession: Bool = true) {
-        self.profile = profile
+    init(settings: TerminalSettings, spawnInitialSession: Bool = true) {
+        self.settings = settings
         sidebar = SessionSidebarView(
-            theme: SidebarTheme(preset: profile.preset(in: PresetCatalog.all)))
+            theme: SidebarTheme(preset: settings.preset(in: PresetCatalog.all)))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 540),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -137,15 +137,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private func rendererForPane() -> TerminalRenderer? {
         if let sharedRenderer { return sharedRenderer }
         let renderer = TerminalRenderer(
-            font: profile.font, scale: window?.backingScaleFactor ?? 2)
-        renderer?.setLigatures(profile.ligatures)
+            font: settings.font, scale: window?.backingScaleFactor ?? 2)
+        renderer?.setLigatures(settings.ligatures)
         sharedRenderer = renderer
         return renderer
     }
 
-    /// The profile's preset: the default new sessions start from.
+    /// The settings preset: the default new sessions start from.
     private func currentPreset() -> CRTPreset {
-        profile.preset(in: PresetCatalog.all)
+        settings.preset(in: PresetCatalog.all)
     }
 
     /// The active session's preset: what the window chrome reflects.
@@ -207,9 +207,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         do {
             session = try TerminalSession(
                 columns: 80, rows: 24,
-                shell: profile.shellPath,
-                workingDirectory: profile.resolvedWorkingDirectory,
-                scrollbackLines: profile.scrollbackLines)
+                shell: settings.shellPath,
+                workingDirectory: settings.resolvedWorkingDirectory,
+                scrollbackLines: settings.scrollbackLines)
         } catch {
             let alert = NSAlert()
             alert.messageText = "Could not start shell"
@@ -504,7 +504,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             let foreground = session.foregroundProcessGroup
             let isRunning = foreground > 0 && foreground != shellPID
             let shellName = SessionInfo.processName(of: shellPID)
-                ?? (profile.shellPath as NSString?)?.lastPathComponent ?? "shell"
+                ?? (settings.shellPath as NSString?)?.lastPathComponent ?? "shell"
             let title = session.snapshot.title ?? shellName
             let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
                 ?? SessionInfo.workingDirectory(of: shellPID)
@@ -673,21 +673,21 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    // MARK: Profile
+    // MARK: Settings
 
-    /// Re-applies an edited profile. A font change rebuilds the window's
-    /// shared renderer. The profile's preset is only the default for new
+    /// Re-applies edited settings. A font change rebuilds the window's
+    /// shared renderer. The settings preset is only the default for new
     /// sessions — existing sessions keep the theme they're wearing.
-    func apply(profile: Profile) {
-        let fontChanged = profile.font != self.profile.font
-        self.profile = profile
+    func apply(settings: TerminalSettings) {
+        let fontChanged = settings.font != self.settings.font
+        self.settings = settings
         if fontChanged {
             sharedRenderer = nil
             for pane in panes {
                 pane.resetRenderer()
             }
         }
-        sharedRenderer?.setLigatures(profile.ligatures)
+        sharedRenderer?.setLigatures(settings.ligatures)
         applyChrome(preset: activePreset)
     }
 
@@ -722,12 +722,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         let cluster = TitlebarControlCluster(
             presets: PresetCatalog.all, currentPreset: currentPreset())
         cluster.onSelectPreset = { [weak self] preset in
+            // Themes the active session only — it does not touch the default
+            // theme, so new sessions and windows keep starting from the
+            // Settings default rather than the last switch.
             self?.apply(preset: preset)
-            // Remember the choice in the default profile; the store change
-            // fans out to every other open window.
-            var profile = ProfileStore.shared.defaultProfile
-            profile.presetName = preset.name
-            ProfileStore.shared.update(profile)
         }
         let accessory = NSTitlebarAccessoryViewController()
         accessory.view = cluster

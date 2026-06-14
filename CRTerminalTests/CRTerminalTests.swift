@@ -37,37 +37,34 @@ struct URLDetectionTests {
     }
 }
 
-struct ProfileTests {
-    @Test func profileRoundTripsThroughJSON() throws {
-        var profile = Profile()
-        profile.name = "Retro"
-        profile.fontName = "Menlo"
-        profile.fontSize = 15
-        profile.presetName = "IBM 5151"
-        profile.workingDirectory = "~/dev"
-        profile.scrollbackLines = 5000
-        let data = try JSONEncoder().encode(profile)
-        let decoded = try JSONDecoder().decode(Profile.self, from: data)
-        #expect(decoded == profile)
+struct TerminalSettingsTests {
+    @Test func settingsRoundTripThroughJSON() throws {
+        var settings = TerminalSettings()
+        settings.fontSize = 15
+        settings.presetName = "IBM 5151"
+        settings.workingDirectory = "~/dev"
+        settings.scrollbackLines = 5000
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(TerminalSettings.self, from: data)
+        #expect(decoded == settings)
     }
 
     @Test func workingDirectoryDefaultsToHomeAndExpandsTilde() {
-        var profile = Profile()
-        #expect(profile.resolvedWorkingDirectory == NSHomeDirectory())
-        profile.workingDirectory = "~"
-        #expect(profile.resolvedWorkingDirectory == NSHomeDirectory())
-        profile.workingDirectory = "/tmp"
-        #expect(profile.resolvedWorkingDirectory == "/tmp")
+        var settings = TerminalSettings()
+        #expect(settings.resolvedWorkingDirectory == NSHomeDirectory())
+        settings.workingDirectory = "~"
+        #expect(settings.resolvedWorkingDirectory == NSHomeDirectory())
+        settings.workingDirectory = "/tmp"
+        #expect(settings.resolvedWorkingDirectory == "/tmp")
         // A vanished path must not stop shells from spawning.
-        profile.workingDirectory = "/no/such/place"
-        #expect(profile.resolvedWorkingDirectory == NSHomeDirectory())
+        settings.workingDirectory = "/no/such/place"
+        #expect(settings.resolvedWorkingDirectory == NSHomeDirectory())
     }
 
-    @Test func fontFallsBackToSystemMono() {
-        var profile = Profile()
-        profile.fontName = "NoSuchFont-Bogus"
-        #expect(profile.font.isFixedPitch)
-        profile.fontSize = 500 // clamped
-        #expect(profile.font.pointSize <= 72)
+    @Test func fontIsFixedPitchAndSizeClamps() {
+        var settings = TerminalSettings()
+        #expect(settings.font.isFixedPitch)
+        settings.fontSize = 500 // clamped
+        #expect(settings.font.pointSize <= 72)
     }
 }

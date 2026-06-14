@@ -40,22 +40,21 @@ struct PresetGalleryView: View {
     let onSelect: (CRTPreset) -> Void
 
     var body: some View {
-        // 5 Hz keeps noise/hum-bar previews alive at negligible cost.
+        // 5 Hz keeps noise/hum-bar previews alive at negligible cost. No
+        // ScrollView of its own: the gallery lives inside the settings
+        // pane's single scroll, so the grid just flows at its natural height.
         TimelineView(.periodic(from: .now, by: 0.2)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
-            ScrollView {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 250), spacing: 14)],
-                    spacing: 14
-                ) {
-                    ForEach(presets, id: \.name) { preset in
-                        card(for: preset, time: time)
-                    }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 250), spacing: 14)],
+                spacing: 14
+            ) {
+                ForEach(presets, id: \.name) { preset in
+                    card(for: preset, time: time)
                 }
-                .padding(14)
             }
+            .padding(.vertical, 6)
         }
-        .frame(minWidth: 580, idealWidth: 580, minHeight: 460, idealHeight: 540)
     }
 
     @ViewBuilder

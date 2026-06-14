@@ -210,7 +210,7 @@ struct SessionSidebarViewTests {
 /// add → select → occlude → close cascade.
 struct SessionTabLifecycleTests {
     @Test @MainActor func addSelectAndCloseSessions() {
-        let controller = TerminalWindowController(profile: Profile())
+        let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }
 
         #expect(controller.tabs.count == 1)
@@ -233,7 +233,7 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func closeSessionClosesTheWholeTab() {
-        let controller = TerminalWindowController(profile: Profile())
+        let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }
         controller.addSession()
         #expect(controller.tabs.count == 2)
@@ -245,7 +245,7 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func reorderMovesTheSessionAndFollowsTheActiveOne() {
-        let controller = TerminalWindowController(profile: Profile())
+        let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }
         controller.addSession()
         controller.addSession()  // 3 tabs, the last one active
@@ -262,8 +262,8 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func detachAndAdoptMoveASessionBetweenWindows() {
-        let source = TerminalWindowController(profile: Profile())
-        let destination = TerminalWindowController(profile: Profile())
+        let source = TerminalWindowController(settings: TerminalSettings())
+        let destination = TerminalWindowController(settings: TerminalSettings())
         defer {
             source.window?.close()
             destination.window?.close()
@@ -286,7 +286,7 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func detachingTheLastSessionClosesTheWindow() {
-        let controller = TerminalWindowController(profile: Profile())
+        let controller = TerminalWindowController(settings: TerminalSettings())
         var closed = false
         controller.onClose = { _ in closed = true }
 
@@ -326,7 +326,7 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func bellInABackgroundSessionBadgesUntilViewed() {
-        let controller = TerminalWindowController(profile: Profile())
+        let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }
         controller.addSession()  // tab 1 is now active
         let background = controller.tabs[0]
@@ -343,7 +343,7 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func becomingKeyClearsOnlyTheActiveTabsBadge() {
-        let controller = TerminalWindowController(profile: Profile())
+        let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }
         controller.addSession()  // tab 1 active
         controller.tabs[0].panes.first?.onBell?()
@@ -383,28 +383,50 @@ struct SessionTabLifecycleTests {
         #expect(NSApp.dockTile.badgeLabel ?? "" == "")
     }
 
-    @Test @MainActor func defaultProfileFontIsBundledGeistMono() {
+    @Test @MainActor func settingsFontIsBundledGeistMono() {
         BundledFonts.register()
-        let profile = Profile()
-        #expect(profile.fontName == nil)
-        #expect(profile.font.fontName == BundledFonts.geistMono)
-        #expect(profile.ligatures)
+        let settings = TerminalSettings()
+        #expect(settings.font.fontName == BundledFonts.geistMono)
+        #expect(settings.ligatures)
     }
 
-    @Test func savedProfilesSurviveNewFields() throws {
+    @Test func savedSettingsSurviveNewFields() throws {
         // Pre-ligatures JSON (no "ligatures" key) must decode, not reset.
         let old = """
-            [{"id":"6F1C9626-0001-4000-8000-000000000001","name":"Mine",
-              "fontSize":14,"presetName":"IBM 5151","scrollbackLines":5000}]
+            {"fontSize":14,"presetName":"IBM 5151","scrollbackLines":5000}
             """
-        let profiles = try JSONDecoder().decode(
-            [Profile].self, from: Data(old.utf8))
-        #expect(profiles.count == 1)
-        #expect(profiles[0].name == "Mine")
-        #expect(profiles[0].fontSize == 14)
-        #expect(profiles[0].presetName == "IBM 5151")
-        #expect(profiles[0].scrollbackLines == 5000)
-        #expect(profiles[0].ligatures)  // absent key gets the default
+        let settings = try JSONDecoder().decode(
+            TerminalSettings.self, from: Data(old.utf8))
+        #expect(settings.fontSize == 14)
+        #expect(settings.presetName == "IBM 5151")
+        #expect(settings.scrollbackLines == 5000)
+        #expect(settings.ligatures)  // absent key gets the default
+    }
+
+    @Test @MainActor func migratesFromLegacyProfilesBlob() {
+        // The retired multi-profile world: a Profiles array plus a default
+        // pointer. The store carries the chosen profile's fields forward.
+        let name = "SettingsStoreMigrationTests"
+        let suite = UserDefaults(suiteName: name)!
+        suite.removePersistentDomain(forName: name)
+        let blob = """
+            [{"id":"6F1C9626-0001-4000-8000-000000000001","name":"Other",
+              "fontSize":11,"presetName":"DEC VT220","scrollbackLines":1000},
+             {"id":"6F1C9626-0001-4000-8000-000000000002","name":"Mine",
+              "fontName":"Menlo","fontSize":14,"presetName":"IBM 5151",
+              "scrollbackLines":5000,"ligatures":false}]
+            """
+        suite.set(Data(blob.utf8), forKey: "Profiles")
+        suite.set("6F1C9626-0001-4000-8000-000000000002", forKey: "DefaultProfileID")
+
+        // The legacy "fontName" key is harmlessly ignored — the font is
+        // now always Geist Mono.
+        let store = SettingsStore(defaults: suite)
+        #expect(store.settings.fontSize == 14)
+        #expect(store.settings.presetName == "IBM 5151")
+        #expect(store.settings.scrollbackLines == 5000)
+        #expect(!store.settings.ligatures)
+        suite.removePersistentDomain(forName: name)
     }
 
     @Test @MainActor func alertSettingsDefaultAndPersist() {
@@ -508,7 +530,7 @@ struct SessionTabLifecycleTests {
     }
 
     @Test @MainActor func presetsApplyPerSessionNotPerWindow() {
-        let controller = TerminalWindowController(profile: Profile())
+        let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }
         controller.addSession()
 
