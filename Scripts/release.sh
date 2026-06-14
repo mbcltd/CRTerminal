@@ -77,10 +77,14 @@ echo "==> Notarising"
 if [ -n "${NOTARY_PROFILE:-}" ]; then
   xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
 elif [ -n "${AC_API_KEY_ID:-}" ]; then
+  # Strip stray whitespace/newlines — pasted secrets often carry a trailing \n,
+  # which notarytool rejects ("Key ID contains invalid characters").
+  KEY_ID=$(printf '%s' "$AC_API_KEY_ID" | tr -d '[:space:]')
+  ISSUER_ID=$(printf '%s' "${AC_API_ISSUER_ID:?set AC_API_ISSUER_ID}" | tr -d '[:space:]')
   xcrun notarytool submit "$DMG" \
     --key "${AC_API_KEY_PATH:?set AC_API_KEY_PATH}" \
-    --key-id "$AC_API_KEY_ID" \
-    --issuer "${AC_API_ISSUER_ID:?set AC_API_ISSUER_ID}" --wait
+    --key-id "$KEY_ID" \
+    --issuer "$ISSUER_ID" --wait
 else
   echo "error: no notarisation credentials (set NOTARY_PROFILE or AC_API_KEY_ID/ISSUER/PATH)" >&2
   exit 1
