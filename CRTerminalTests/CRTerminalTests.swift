@@ -67,4 +67,35 @@ struct TerminalSettingsTests {
         settings.fontSize = 500 // clamped
         #expect(settings.font.pointSize <= 72)
     }
+
+    @Test func restorationDefaultsToSystemAndRoundTrips() throws {
+        var settings = TerminalSettings()
+        #expect(settings.restoration == .system)
+        settings.restoration = .always
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(TerminalSettings.self, from: data)
+        #expect(decoded.restoration == .always)
+    }
+
+    @Test func restorationMissingFromOldBlobDecodesAsSystem() throws {
+        // A settings JSON written before the field existed must still load.
+        let json = #"{"fontSize":13,"presetName":"Dark","scrollbackLines":10000,"ligatures":true}"#
+        let decoded = try JSONDecoder().decode(
+            TerminalSettings.self, from: Data(json.utf8))
+        #expect(decoded.restoration == .system)
+    }
+
+    @Test @MainActor func storeTogglesRestorationEnabled() {
+        let defaults = UserDefaults(suiteName: "restoration-test-\(UUID().uuidString)")!
+        let store = SettingsStore(defaults: defaults)
+        #expect(store.restorationEnabled) // system default
+        store.setRestoration(.never)
+        #expect(!store.restorationEnabled)
+        store.setRestoration(.always)
+        #expect(store.restorationEnabled)
+        // The in-memory override doesn't persist.
+        store.overrideRestoration(.never)
+        #expect(!store.restorationEnabled)
+        #expect(SettingsStore(defaults: defaults).settings.restoration == .always)
+    }
 }

@@ -2,6 +2,7 @@ import AppKit
 import CRTRendering
 import Sparkle
 import SwiftUI
+import TerminalCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private(set) static var shared: AppDelegate?
@@ -10,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var settingsWindow: NSWindow?
     private var previewRenderer: PresetPreviewRenderer?
     private var probe: TypistProbe?
+    private var restoreProbe: RestoreProbe?
 
     /// Sparkle auto-updater. Started at launch; checks the SUFeedURL appcast
     /// declared in Info.plist and backs the "Check for Updates…" menu item.
@@ -20,10 +22,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         AppDelegate.shared = self
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // Before any TerminalSettings.font resolution: the font is always
-        // the bundled Geist Mono, so register it first.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Window restoration (R3) runs *before* applicationDidFinishLaunching
+        // and rebuilds panes — so the bundled font must be registered now,
+        // and the restoration mode must already be resolved.
         BundledFonts.register()
+        // Probe / deterministic-override hook for the lifecycle tests; does
+        // not persist, so it can't clobber the user's saved setting.
+        if let raw = ProcessInfo.processInfo.environment["CRT_RESTORE_MODE"],
+           let mode = RestorationMode(rawValue: raw) {
+            SettingsStore.shared.overrideRestoration(mode)
+        }
+        // A Never launch starts clean and leaves nothing on disk.
+        if SettingsStore.shared.settings.restoration == .never {
+            SessionStateStore.shared.deleteAll()
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
         // Start the updater before building the menu so the "Check for Updates…"
         // item can target it. `startingUpdater: true` also schedules the
         // background check governed by SUEnableAutomaticChecks.
@@ -42,9 +58,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             self.refreshDockBadge()
         }
 
-        let controller = makeWindowController()
-        controller.window?.setFrameAutosaveName("MainWindow")
-        controller.showWindow(nil)
+        // `Always` restores from our own layout backstop when AppKit didn't
+        // (the system "Close windows when quitting" pref is off). AppKit's own
+        // restoration, when it fires, has already populated `controllers` by
+        // now, so we never double-restore.
+        if controllers.isEmpty,
+           SettingsStore.shared.settings.restoration == .always {
+            restoreLayoutFromDisk()
+        }
+
+        let controller: TerminalWindowController
+        if let restored = controllers.first {
+            controller = restored
+        } else {
+            controller = makeWindowController()
+            controller.window?.setFrameAutosaveName("MainWindow")
+            controller.showWindow(nil)
+        }
+        // Drop content files for sessions that aren't alive — closed before
+        // quit, or a clean launch that restored nothing — so none leak.
+        pruneOrphanContents()
         NSApp.activate()
 
         if ProcessInfo.processInfo.environment["CRT_TYPIST"] != nil,
@@ -54,6 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         if ProcessInfo.processInfo.environment["CRT_JUMP_PROBE"] != nil {
             runJumpProbe(controller: controller)
+        }
+        if ProcessInfo.processInfo.environment["CRT_RESTORE_PROBE"] != nil {
+            restoreProbe = RestoreProbe(controller: controller)
+            restoreProbe?.start()
+        }
+        if ProcessInfo.processInfo.environment["CRT_LAYOUT_PROBE"] != nil {
+            runLayoutProbe(controller: controller)
+        }
+        if let phase = ProcessInfo.processInfo.environment["CRT_LIFECYCLE_PROBE"] {
+            runLifecycleProbe(phase: phase, controller: controller)
         }
     }
 
@@ -90,16 +133,418 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// End-to-end probe (CRT_LAYOUT_PROBE=1) for session restoration R2.
+    /// Builds two windows — one with 3 tabs, the middle tab a 2×2 split —
+    /// types a distinct marker and cwd into every pane, saves layout +
+    /// contents, then rebuilds from disk into fresh windows and checks the
+    /// structure, each pane's static text, and each cwd came back. Writes
+    /// /tmp/crterminal-layout.txt and exits.
+    private func runLayoutProbe(controller: TerminalWindowController) {
+        // sessionID → (marker, directory) we expect to see after restore.
+        var expected: [UUID: (marker: String, dir: String)] = [:]
+        func seed(_ pane: TerminalView?, dir: String, marker: String) {
+            guard let pane else { return }
+            pane.send(Array("cd \(dir)\rprintf '\(marker)\\n'\r".utf8))
+            expected[pane.sessionID] = (marker, dir)
+        }
+        func newest(in tab: SessionTab?) -> TerminalView? { tab?.panes.last }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            // Window 1, tab 1: a lone pane.
+            seed(controller.activeTab?.panes.first, dir: "/tmp", marker: "MARK_T1")
+
+            // Window 1, tab 2: a 2×2 split (split right, then split each
+            // column down).
+            controller.addSession()
+            let tab2 = controller.activeTab
+            let b = newest(in: tab2)
+            controller.window?.makeFirstResponder(b)
+            controller.splitRight(nil)
+            let c = newest(in: tab2)
+            controller.window?.makeFirstResponder(b)
+            controller.splitDown(nil)
+            let e = newest(in: tab2)
+            controller.window?.makeFirstResponder(c)
+            controller.splitDown(nil)
+            let f = newest(in: tab2)
+            seed(b, dir: "/usr", marker: "MARK_2B")
+            seed(c, dir: "/var", marker: "MARK_2C")
+            seed(e, dir: "/etc", marker: "MARK_2E")
+            seed(f, dir: "/bin", marker: "MARK_2F")
+
+            // Window 1, tab 3: a lone pane.
+            controller.addSession()
+            seed(newest(in: controller.activeTab), dir: "/usr/lib", marker: "MARK_T3")
+
+            // Window 2: a separate window with one pane.
+            let window2 = self.makeWindowController()
+            window2.showWindow(nil)
+            seed(window2.activeTab?.panes.first, dir: "/usr/bin", marker: "MARK_W2")
+
+            // Let every shell start and print its marker.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                self.finishLayoutProbe(expected: expected)
+            }
+        }
+    }
+
+    private func finishLayoutProbe(expected: [UUID: (marker: String, dir: String)]) {
+        var report = ["=== CRT_LAYOUT REPORT ==="]
+
+        // Save everything, capture the layout we expect to get back, then
+        // rebuild into fresh windows.
+        for controller in controllers { controller.saveAllContents() }
+        let savedLayout = captureLayoutSnapshot()
+        SessionStateStore.shared.saveLayout(savedLayout)
+        report.append("saved windows: \(savedLayout.windows.count)")
+        report.append("saved tabs: \(savedLayout.windows.map(\.tabs.count))")
+
+        // Give the async content writes a beat to hit disk, then restore.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            let restored = self.restoreLayoutFromDisk()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                report.append("restored windows: \(restored.count)")
+
+                var paneCount = 0
+                var markersOK = 0
+                var markersTotal = 0
+                var cwdOK = 0
+                var maxPanesInATab = 0
+                for controller in restored {
+                    for tab in controller.tabs {
+                        maxPanesInATab = max(maxPanesInATab, tab.panes.count)
+                    }
+                    for pane in controller.panes {
+                        paneCount += 1
+                        guard let want = expected[pane.sessionID],
+                              let session = pane.session else { continue }
+                        markersTotal += 1
+                        let text = Self.gridText(session.snapshot)
+                        if text.contains(where: { $0.contains(want.marker) }) {
+                            markersOK += 1
+                        }
+                        let cwd = SessionInfo.workingDirectory(of: session.shellProcessID)
+                        if Self.sameDirectory(cwd, want.dir) { cwdOK += 1 }
+                    }
+                }
+
+                report.append("restored panes: \(paneCount) (expected \(expected.count))")
+                report.append("largest restored tab: \(maxPanesInATab) panes (expect 4 for the 2×2)")
+                report.append("markers restored: \(markersOK)/\(markersTotal)")
+                report.append("cwds restored: \(cwdOK)/\(markersTotal)")
+
+                // Structure: restored layout should match what we saved.
+                let restoredLayout = LayoutSnapshot(
+                    windows: restored.map { $0.captureLayout() })
+                let shapeOK = Self.sameShape(savedLayout, restoredLayout)
+                report.append("split-tree shape preserved: \(shapeOK)")
+
+                // Frames restored across both windows (within a point).
+                let framesOK = zip(savedLayout.windows, restoredLayout.windows)
+                    .allSatisfy { saved, got in
+                        abs(saved.frame.minX - got.frame.minX) < 1
+                            && abs(saved.frame.minY - got.frame.minY) < 1
+                            && abs(saved.frame.width - got.frame.width) < 1
+                            && abs(saved.frame.height - got.frame.height) < 1
+                    }
+                report.append("window frames restored: \(framesOK)")
+
+                let pass = restored.count == savedLayout.windows.count
+                    && paneCount == expected.count
+                    && maxPanesInATab == 4
+                    && markersOK == markersTotal
+                    && cwdOK == markersTotal
+                    && shapeOK
+                    && framesOK
+                report.append("RESULT: \(pass ? "PASS" : "FAIL")")
+
+                let text = (report + ["=== END REPORT ==="]).joined(separator: "\n") + "\n"
+                FileHandle.standardError.write(Data(text.utf8))
+                try? text.write(
+                    toFile: "/tmp/crterminal-layout.txt", atomically: true, encoding: .utf8)
+                exit(0)
+            }
+        }
+    }
+
+    /// Trailing-trimmed text of every scrollback + screen row.
+    private static func gridText(_ state: TerminalState) -> [String] {
+        func text(of row: [Cell]) -> String {
+            var scalars = String.UnicodeScalarView()
+            for cell in row where !cell.attributes.contains(.wideSpacer) {
+                scalars.append(Unicode.Scalar(cell.glyph) ?? "\u{FFFD}")
+            }
+            var s = String(scalars)
+            while s.hasSuffix(" ") { s.removeLast() }
+            return s
+        }
+        return state.scrollback.map(text(of:)) + (0..<state.rows).map { state.lineText($0) }
+    }
+
+    /// cwds match modulo the /private symlink (/tmp == /private/tmp).
+    private static func sameDirectory(_ a: String?, _ b: String) -> Bool {
+        guard let a else { return false }
+        let norm = { (p: String) in p.hasPrefix("/private") ? String(p.dropFirst(8)) : p }
+        return norm(a) == norm(b)
+    }
+
+    /// Structural equality of two layouts: same window/tab counts and the
+    /// same split nesting + session ids (ignoring divider fractions, which
+    /// re-derive from live geometry).
+    private static func sameShape(_ a: LayoutSnapshot, _ b: LayoutSnapshot) -> Bool {
+        guard a.windows.count == b.windows.count else { return false }
+        func sameNode(_ x: SplitNode, _ y: SplitNode) -> Bool {
+            switch (x, y) {
+            case let (.leaf(i), .leaf(j)):
+                return i == j
+            case let (.split(vx, _, cx), .split(vy, _, cy)):
+                return vx == vy && cx.count == cy.count
+                    && zip(cx, cy).allSatisfy { sameNode($0, $1) }
+            default:
+                return false
+            }
+        }
+        return zip(a.windows, b.windows).allSatisfy { wa, wb in
+            wa.tabs.count == wb.tabs.count
+                && zip(wa.tabs, wb.tabs).allSatisfy { sameNode($0.root, $1.root) }
+        }
+    }
+
+    // MARK: Lifecycle probe (R3)
+
+    private static let lifecycleManifest = "/tmp/crterminal-lifecycle-manifest.json"
+    private static let lifecycleReport = "/tmp/crterminal-lifecycle.txt"
+
+    /// Cross-process probe for session restoration R3, run in phases sharing
+    /// the on-disk store (see `Scripts/probe.sh lifecycle`):
+    ///  • save — build windows, type markers, run the quit-time save, record a
+    ///    manifest; exit.  • restore — a fresh launch (mode = Always) restores
+    ///    from disk; verify the windows/contents/cwds came back.
+    ///  • verify-never — a fresh launch (mode = Never) must be clean with no
+    ///    files left on disk.
+    private func runLifecycleProbe(phase: String, controller: TerminalWindowController) {
+        switch phase {
+        case "save": lifecycleSavePhase(controller: controller)
+        case "restore": lifecycleVerifyPhase(restoring: true)
+        case "verify-never": lifecycleVerifyPhase(restoring: false)
+        default: writeLifecycleReport(["FAIL: unknown phase \(phase)"])
+        }
+    }
+
+    private func lifecycleSavePhase(controller: TerminalWindowController) {
+        var expected: [UUID: (marker: String, dir: String)] = [:]
+        func seed(_ pane: TerminalView?, dir: String, marker: String) {
+            guard let pane else { return }
+            pane.send(Array("cd \(dir)\rprintf '\(marker)\\n'\r".utf8))
+            expected[pane.sessionID] = (marker, dir)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            // Window 1: tab 1 lone, tab 2 a left|right split.
+            seed(controller.activeTab?.panes.first, dir: "/tmp", marker: "LIFE_T1")
+            controller.addSession()
+            let tab2 = controller.activeTab
+            let left = tab2?.panes.last
+            controller.window?.makeFirstResponder(left)
+            controller.splitRight(nil)
+            let right = tab2?.panes.last
+            seed(left, dir: "/usr", marker: "LIFE_2L")
+            seed(right, dir: "/var", marker: "LIFE_2R")
+            // Window 2.
+            let window2 = self.makeWindowController()
+            window2.showWindow(nil)
+            seed(window2.activeTab?.panes.first, dir: "/etc", marker: "LIFE_W2")
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                // The exact quit-time save path.
+                self.saveStateForTermination()
+                // Record what we expect to come back, keyed by session id.
+                var manifest: [String: String] = [:]
+                for (id, value) in expected {
+                    manifest[id.uuidString] = "\(value.marker)|\(value.dir)"
+                }
+                if let data = try? JSONEncoder().encode(manifest) {
+                    try? data.write(to: URL(fileURLWithPath: Self.lifecycleManifest))
+                }
+                self.writeLifecycleReport([
+                    "phase: save",
+                    "saved windows: \(self.controllers.count)",
+                    "saved sessions: \(expected.count)",
+                    "RESULT: SAVED",
+                ])
+            }
+        }
+    }
+
+    private func lifecycleVerifyPhase(restoring: Bool) {
+        // Give didFinishLaunching's restore (Always) a moment to settle.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            var report = ["phase: \(restoring ? "restore" : "verify-never")"]
+            let files = (try? FileManager.default.contentsOfDirectory(
+                atPath: SessionStateStore.shared.url(for: UUID())
+                    .deletingLastPathComponent().path)) ?? []
+            let stateFiles = files.filter {
+                $0.hasSuffix(".crtstate") || $0.hasSuffix(".crtlayout")
+            }
+
+            if restoring {
+                let manifest = Self.loadManifest()
+                var markersOK = 0, cwdOK = 0, total = 0
+                var paneCount = 0, maxPanes = 0
+                for controller in self.controllers {
+                    for tab in controller.tabs {
+                        maxPanes = max(maxPanes, tab.panes.count)
+                    }
+                    for pane in controller.panes {
+                        paneCount += 1
+                        guard let want = manifest[pane.sessionID],
+                              let session = pane.session else { continue }
+                        total += 1
+                        let text = Self.gridText(session.snapshot)
+                        if text.contains(where: { $0.contains(want.marker) }) { markersOK += 1 }
+                        let cwd = SessionInfo.workingDirectory(of: session.shellProcessID)
+                        if Self.sameDirectory(cwd, want.dir) { cwdOK += 1 }
+                    }
+                }
+                report.append("restored windows: \(self.controllers.count)")
+                report.append("restored panes: \(paneCount) (expected \(manifest.count))")
+                report.append("largest tab: \(maxPanes) panes (expect 2 for the split)")
+                report.append("markers restored: \(markersOK)/\(total)")
+                report.append("cwds restored: \(cwdOK)/\(total)")
+                let pass = self.controllers.count == 2
+                    && paneCount == manifest.count
+                    && maxPanes == 2
+                    && markersOK == total && total == manifest.count
+                    && cwdOK == total
+                report.append("RESULT: \(pass ? "PASS" : "FAIL")")
+            } else {
+                // Never: a single clean window, nothing on disk.
+                report.append("windows: \(self.controllers.count) (expect 1)")
+                report.append("tabs in window: \(self.controllers.first?.tabs.count ?? -1)")
+                report.append("state files on disk: \(stateFiles.count) \(stateFiles)")
+                let pass = self.controllers.count == 1
+                    && self.controllers.first?.tabs.count == 1
+                    && stateFiles.isEmpty
+                report.append("RESULT: \(pass ? "PASS" : "FAIL")")
+            }
+            self.writeLifecycleReport(report)
+        }
+    }
+
+    private static func loadManifest() -> [UUID: (marker: String, dir: String)] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: lifecycleManifest)),
+              let raw = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        var result: [UUID: (String, String)] = [:]
+        for (key, value) in raw {
+            let parts = value.split(separator: "|", maxSplits: 1).map(String.init)
+            if let id = UUID(uuidString: key), parts.count == 2 {
+                result[id] = (parts[0], parts[1])
+            }
+        }
+        return result
+    }
+
+    private func writeLifecycleReport(_ lines: [String]) {
+        let text = (["=== CRT_LIFECYCLE REPORT ==="] + lines + ["=== END REPORT ==="])
+            .joined(separator: "\n") + "\n"
+        FileHandle.standardError.write(Data(text.utf8))
+        try? text.write(toFile: Self.lifecycleReport, atomically: true, encoding: .utf8)
+        exit(0)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Persist *before* tearing down: the shells are still alive, so cwds
+        // can be read (proc_pidinfo) before SIGHUP, and synchronous writes
+        // finish before the process exits.
+        saveStateForTermination()
         for controller in controllers {
             for pane in controller.panes {
                 pane.session?.terminate()
             }
         }
+    }
+
+    /// Quit-time save of every window's layout + contents (R3). `Never`
+    /// instead wipes any stored state so nothing is left behind.
+    func saveStateForTermination() {
+        guard SettingsStore.shared.restorationEnabled else {
+            SessionStateStore.shared.deleteAll()
+            return
+        }
+        for controller in controllers {
+            controller.saveAllContents(synchronously: true)
+            controller.window?.invalidateRestorableState()
+        }
+        // System mode rides the layout on AppKit's restorable-state coder;
+        // only Always needs our own on-disk layout backstop.
+        if SettingsStore.shared.settings.restoration == .always {
+            SessionStateStore.shared.saveLayoutSynchronously(captureLayoutSnapshot())
+        }
+    }
+
+    // MARK: Coalesced restoration save (significant-change debounce)
+
+    private var restorationSaveWork: DispatchWorkItem?
+
+    /// A layout-affecting change happened; coalesce a save ~2 s later so a
+    /// crash loses little without thrashing the disk on every keystroke.
+    func setNeedsRestorationSave() {
+        guard SettingsStore.shared.restorationEnabled else { return }
+        restorationSaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            for controller in self.controllers { controller.saveAllContents() }
+            if SettingsStore.shared.settings.restoration == .always {
+                SessionStateStore.shared.saveLayout(self.captureLayoutSnapshot())
+            }
+        }
+        restorationSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    /// Delete `.crtstate` files for sessions that are no longer alive.
+    func pruneOrphanContents() {
+        guard SettingsStore.shared.restorationEnabled else { return }
+        let live = Set(controllers.flatMap { $0.liveSessionIDs })
+        SessionStateStore.shared.pruneOrphans(keeping: live)
+    }
+
+    /// React to a restoration-mode change: flip window restorability, and
+    /// either wipe stored state (`Never`) or schedule a fresh save.
+    private func applyRestorationMode() {
+        let enabled = SettingsStore.shared.restorationEnabled
+        for controller in controllers {
+            controller.window?.isRestorable = enabled
+        }
+        if enabled {
+            setNeedsRestorationSave()
+        } else {
+            restorationSaveWork?.cancel()
+            SessionStateStore.shared.deleteAll()
+        }
+    }
+
+    /// NSWindowRestoration callback (via `WindowRestoration`): rebuild one
+    /// window from its archived layout, restoring each pane's contents.
+    func restoreWindow(
+        identifier: NSUserInterfaceItemIdentifier, state: NSCoder,
+        completionHandler: @escaping (NSWindow?, (any Error)?) -> Void
+    ) {
+        guard SettingsStore.shared.restorationEnabled else {
+            completionHandler(nil, nil)
+            return
+        }
+        let controller = makeWindowController(spawnInitialSession: false)
+        controller.window?.identifier = identifier
+        if !controller.restoreState(from: state) {
+            // No usable layout in the archive — don't leave an empty window.
+            controller.addSession()
+        }
+        completionHandler(controller.window, nil)
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -115,6 +560,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller.onClose = { [weak self] closed in
             self?.controllers.removeAll { $0 === closed }
             self?.refreshDockBadge()
+        }
+        controller.onSignificantChange = { [weak self] in
+            self?.setNeedsRestorationSave()
         }
         controllers.append(controller)
         return controller
@@ -256,6 +704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         for controller in controllers {
             controller.apply(settings: settings)
         }
+        applyRestorationMode()
     }
 
     // MARK: CRT presets
@@ -267,6 +716,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // Themes the active session only; the default theme (for new
         // sessions and windows) is set in Settings, not by this switch.
         keyController?.apply(preset: preset)
+    }
+
+    // MARK: Session restoration (R1 debug harness)
+
+    /// Snapshot the focused session to disk. Validates the save half of the
+    /// loop before lifecycle wiring (R3): quit the app after this, relaunch,
+    /// then "Restore Last Saved Session".
+    @objc private func saveSessionStateDebug(_ sender: Any?) {
+        guard keyController?.saveFocusedSessionState() != nil else {
+            NSSound.beep()
+            return
+        }
+    }
+
+    /// Reopen the most recently saved session, restoring its grid + scrollback
+    /// as static text with a fresh shell in the saved directory.
+    @objc private func restoreSessionStateDebug(_ sender: Any?) {
+        guard let newest = SessionStateStore.shared.loadAll().first else {
+            NSSound.beep()
+            return
+        }
+        let controller = keyController ?? makeWindowController()
+        controller.showWindow(sender)
+        controller.window?.makeKeyAndOrderFront(sender)
+        controller.restoreSession(from: newest.snapshot)
+    }
+
+    // MARK: Full-layout restoration (R2)
+
+    /// The layout tree for every open window (frames, tabs, split nesting).
+    func captureLayoutSnapshot() -> LayoutSnapshot {
+        LayoutSnapshot(windows: controllers.map { $0.captureLayout() })
+    }
+
+    /// Persist every window's layout plus every pane's contents. R3 moves the
+    /// layout half onto `NSWindowRestoration`; here it's the debug harness.
+    @objc private func saveLayoutDebug(_ sender: Any?) {
+        guard !controllers.isEmpty else { NSSound.beep(); return }
+        for controller in controllers { controller.saveAllContents() }
+        SessionStateStore.shared.saveLayout(captureLayoutSnapshot())
+    }
+
+    /// Rebuild the saved windows: one fresh controller per window node, each
+    /// reconstructing its tabs/splits and restoring every pane.
+    @discardableResult
+    func restoreLayoutFromDisk(show: Bool = true) -> [TerminalWindowController] {
+        guard let layout = SessionStateStore.shared.loadLayout(),
+              !layout.windows.isEmpty else { return [] }
+        var restored: [TerminalWindowController] = []
+        for windowNode in layout.windows {
+            let controller = makeWindowController(spawnInitialSession: false)
+            controller.restoreLayout(windowNode, contents: SessionStateStore.shared)
+            if show { controller.showWindow(nil) }
+            restored.append(controller)
+        }
+        return restored
+    }
+
+    @objc private func restoreLayoutDebug(_ sender: Any?) {
+        if restoreLayoutFromDisk().isEmpty { NSSound.beep() }
     }
 
     @objc private func showSettings(_ sender: Any?) {
@@ -440,6 +949,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
+
+        // Debug harness for session restoration (R1): save the focused
+        // session, quit, relaunch, restore. Lifecycle wiring lands in R3.
+        let debugMenu = NSMenu(title: "Debug")
+        let saveState = debugMenu.addItem(
+            withTitle: "Save Focused Session State",
+            action: #selector(saveSessionStateDebug(_:)), keyEquivalent: "s")
+        saveState.keyEquivalentModifierMask = [.command, .control]
+        saveState.target = self
+        let restoreState = debugMenu.addItem(
+            withTitle: "Restore Last Saved Session",
+            action: #selector(restoreSessionStateDebug(_:)), keyEquivalent: "r")
+        restoreState.keyEquivalentModifierMask = [.command, .control]
+        restoreState.target = self
+        debugMenu.addItem(.separator())
+        let saveLayout = debugMenu.addItem(
+            withTitle: "Save All Windows (Layout)",
+            action: #selector(saveLayoutDebug(_:)), keyEquivalent: "l")
+        saveLayout.keyEquivalentModifierMask = [.command, .control]
+        saveLayout.target = self
+        let restoreLayout = debugMenu.addItem(
+            withTitle: "Restore All Windows (Layout)",
+            action: #selector(restoreLayoutDebug(_:)), keyEquivalent: "l")
+        restoreLayout.keyEquivalentModifierMask = [.command, .control, .shift]
+        restoreLayout.target = self
+        let debugMenuItem = NSMenuItem()
+        debugMenuItem.submenu = debugMenu
+        mainMenu.addItem(debugMenuItem)
 
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(

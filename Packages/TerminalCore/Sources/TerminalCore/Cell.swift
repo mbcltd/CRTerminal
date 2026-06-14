@@ -94,3 +94,36 @@ public struct Cell: Hashable, Sendable {
 
     public static let blank = Cell(glyph: UInt32(UnicodeScalar(" ").value))
 }
+
+// MARK: - Codable (session restoration)
+//
+// `PackedColor` and `CellAttributes` are single-value wrappers over their
+// raw integers; `Cell`'s conformance is synthesized from its stored fields.
+// The snapshot codec packs cells as raw bytes (see `TerminalStateSnapshot`),
+// but these conformances keep the types usable in any `Codable` container.
+
+extension PackedColor: Codable {
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(rawValue: try container.decode(UInt32.self))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+extension CellAttributes: Codable {
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(rawValue: try container.decode(UInt16.self))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+extension Cell: Codable {}

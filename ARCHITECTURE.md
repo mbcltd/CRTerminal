@@ -499,3 +499,109 @@ deliberately fires in the focused tab too, where it is the only visible cue.
   scope.
 - **Period fonts/bezel art licensing** → only bundle assets with clear licenses;
   presets may *suggest* fonts without bundling them.
+
+# Feature plan: session restoration (iTerm2-style)
+
+On relaunch the terminal should come back the way you left it. We follow iTerm2's
+model precisely: restore the **window/tab/split layout**, repaint each session's
+**scrollback + screen as static text**, restore each session's **working
+directory**, then spawn a **fresh shell** that continues below the restored
+content. Running programs are *not* relaunched — that is unsafe (a re-run could
+repeat a destructive command), usually impossible (process state is gone), and
+surprising. Quit means stop; reopen means the screen wakes up where it was.
+
+Two design facts from the current code shape everything:
+
+- **The split layout lives only in the live view hierarchy.** `SessionTab.panes`
+  is a flat `[TerminalView]`; the tree is implicit in nested `NSSplitView`s.
+  Capturing layout means walking that hierarchy (nesting, `isVertical`, divider
+  fractions), not reading the model.
+- **The working directory is already knowable without OSC 7.**
+  `SessionInfo.workingDirectory(pid:)` reads it from the kernel
+  (`proc_pidinfo`), and shells are still alive at `applicationWillTerminate`, so
+  cwd is captured at save time. OSC 7 is a later robustness enhancement, not a
+  prerequisite.
+
+Design:
+
+- **Two-tier persistence.** Lightweight layout (window frames, tab order, split
+  tree, session UUIDs, presets, active indices) flows through
+  `NSWindowRestoration`, so it honours the macOS "Close windows when quitting an
+  app" setting and ⌘Q-vs-restart semantics natively (as Terminal.app and Ghostty
+  do — `applicationSupportsSecureRestorableState` already returns `true`). Heavy
+  per-session terminal contents (grid + scrollback, ~1–13 MB each) are written to
+  our own files in Application Support keyed by session UUID, never into the
+  restoration plist.
+- **Serialization lives in `TerminalCore`.** A versioned, `Codable`
+  `TerminalStateSnapshot` (visible grid, scrollback, cursor, SGR/colors, link
+  table, prompt marks, cwd hint) — platform-independent and unit-testable with no
+  app host, per the module rules.
+- **Restore = state injection + fresh shell.** Decode the snapshot into a new
+  `TerminalState` (scrollback + active grid + cursor), spawn a fresh `PTYSession`
+  at the saved cwd, and let the new shell's first prompt print *below* the
+  restored cursor. No initial clear is sent.
+- **Settings knob**, `SettingsStore`-backed, Ghostty-style three-way —
+  **System default / Always / Never** (default: System) — so the feature is fully
+  disableable.
+
+### Phase R0 — Snapshot codec in `TerminalCore`
+Add `TerminalStateSnapshot` (`Codable`, with a `version` field) plus
+`TerminalState.makeSnapshot()` / `init(restoring:)`. Encode `lines`,
+`lineWrapped`, `scrollback`, `scrollbackWrapped`, `columns`/`rows`, cursor
+position + pending SGR, `linkTable`, `promptMarks`, and a `workingDirectoryHint`.
+Give `Cell`, `PackedColor`, and `CellAttributes` `Codable`; use a compact binary
+container (cells as packed bytes) rather than verbose JSON, since scrollback
+dominates size.
+**Exit:** round-trip property tests in `TerminalCoreTests` (snapshot → decode →
+identical grid/scrollback/cursor); a 10k-line scrollback stays within the
+per-surface memory budget. `Scripts/test.sh core` green.
+
+### Phase R1 — Single-session restore end to end
+`SessionStateStore` (app target) writes/reads
+`<AppSupport>/CRTerminal/Restore/<uuid>.crtstate` off the main thread and prunes
+orphans. Extend `TerminalSession.init` with an optional
+`restoringFrom: TerminalStateSnapshot` that seeds the `Terminal` before the PTY
+attaches; capture cwd via `SessionInfo.workingDirectory(pid:)` at save time and
+feed it to the existing `workingDirectory` spawn parameter. Drive it from a debug
+menu item first to validate the loop before wiring lifecycle.
+**Exit:** type output, trigger save, kill + relaunch via the debug action →
+scrollback and screen reappear as static text and a fresh prompt runs in the same
+directory.
+
+### Phase R2 — Layout: split tree, tabs, multiple windows
+`LayoutSnapshot` `Codable` tree: `Window(frame, activeTabIndex, [Tab])`,
+`Tab(uuid, presetName, [SplitNode])`, where
+`SplitNode = .leaf(sessionUUID) | .split(isVertical, dividerFractions, [SplitNode])`.
+**Capture** by recursively walking each tab container's `NSSplitView`/
+`TerminalView` hierarchy (the tree isn't in `panes`). **Rebuild** by
+reconstructing nested `NSSplitView`s and `makePane`-ing each leaf with its
+restored session, then applying divider fractions after layout.
+**Exit:** a window with 3 tabs, one holding a 2×2 split, restores its layout,
+each pane's contents, and each cwd; frames restored across two windows.
+
+### Phase R3 — macOS lifecycle integration
+Give each `TerminalWindowController.window` a `restorationClass` + stable
+`identifier`; implement `encodeRestorableState` /
+`restoreWindow(withIdentifier:state:completionHandler:)` to drive `LayoutSnapshot`
++ `SessionStateStore`. Save on `applicationWillTerminate` (capture all cwds
+*before* SIGHUP) and on a coalesced significant-change debounce so a crash loses
+little. Add the **Restoration** setting (System/Always/Never) to `SettingsStore`
++ Settings UI; `Never` disables encoding and deletes stored state.
+**Exit:** with the system setting on, ⌘Q + reopen restores everything; with it off
+(or setting = Never), launches clean; no stray `.crtstate` files leak.
+
+### Phase R4 — Robustness & fidelity
+Parse **OSC 7** (add `case 7` to `TerminalState.oscDispatch`) to track cwd live,
+so restore survives a shell that moved since the last 1 Hz probe; the proc query
+stays the fallback. Add snapshot expiry/versioning (ignore states older than N
+days or from an incompatible `version`), size caps, and corruption tolerance (a
+bad file yields a clean session, never a crash). Cover restored grids via
+`Scripts/probe.sh typist`; measure `applicationWillTerminate` save latency with
+many large sessions.
+**Exit:** corrupt/old/oversized states degrade gracefully; restoration adds no
+measurable quit delay.
+
+Out of scope (matching iTerm2): relaunching running programs (fresh shells only),
+and tmux-style detached-server persistence (a different architecture). Named,
+manually-saved window arrangements are a natural follow-on, separate from
+auto-restore.

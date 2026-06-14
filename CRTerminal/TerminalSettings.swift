@@ -5,6 +5,15 @@ import CRTRendering
 /// settings for the whole app — persisted as JSON in UserDefaults via
 /// SettingsStore. (Not named `Settings.swift`: that file holds the view, and
 /// a `Settings`/`Main`-style basename collision is best avoided.)
+/// When to bring windows/tabs/splits back on relaunch (session restoration
+/// R3), Ghostty-style. `system` defers to the macOS "Close windows when
+/// quitting an app" preference (via `NSWindowRestoration`); `always` restores
+/// regardless (our own on-disk layout backstop); `never` disables encoding
+/// and deletes any stored state.
+enum RestorationMode: String, Codable, CaseIterable {
+    case system, always, never
+}
+
 struct TerminalSettings: Codable, Equatable {
     var fontSize: Double = 13
     var presetName: String = "Dark"
@@ -15,6 +24,8 @@ struct TerminalSettings: Codable, Equatable {
     var scrollbackLines: Int = 10_000
     /// Shape operator runs so font ligatures (=>, ===) apply.
     var ligatures = true
+    /// Whether relaunch restores the previous windows/sessions.
+    var restoration: RestorationMode = .system
 
     /// The typeface is fixed: everyone gets bundled Geist Mono. Only the
     /// size is configurable; system monospaced is a fallback for when
@@ -62,7 +73,7 @@ struct TerminalSettings: Codable, Equatable {
 extension TerminalSettings {
     private enum CodingKeys: String, CodingKey {
         case fontSize, presetName, shellPath,
-             workingDirectory, scrollbackLines, ligatures
+             workingDirectory, scrollbackLines, ligatures, restoration
     }
 
     /// Tolerant decoding, in an extension so the memberwise init survives:
@@ -80,6 +91,8 @@ extension TerminalSettings {
         scrollbackLines = try container.decodeIfPresent(
             Int.self, forKey: .scrollbackLines) ?? 10_000
         ligatures = try container.decodeIfPresent(Bool.self, forKey: .ligatures) ?? true
+        restoration = try container.decodeIfPresent(
+            RestorationMode.self, forKey: .restoration) ?? .system
     }
 }
 
@@ -142,6 +155,24 @@ final class SettingsStore {
         self.settings = settings
         persist()
         onChange?()
+    }
+
+    /// Change just the restoration mode (used by the Settings picker and the
+    /// lifecycle probes).
+    func setRestoration(_ mode: RestorationMode) {
+        var next = settings
+        next.restoration = mode
+        update(next)
+    }
+
+    /// Whether relaunch state should be encoded/kept at all.
+    var restorationEnabled: Bool { settings.restoration != .never }
+
+    /// Set the restoration mode for this launch only, without persisting —
+    /// used by the lifecycle probe so its env override doesn't rewrite the
+    /// user's saved settings.
+    func overrideRestoration(_ mode: RestorationMode) {
+        settings.restoration = mode
     }
 
     private func persist() {
