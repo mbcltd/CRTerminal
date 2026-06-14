@@ -57,14 +57,43 @@ extension TerminalStateSnapshot {
     /// Pack rows into a flat little-endian blob, normalising every row to
     /// exactly `columns` cells (short rows pad with blanks, long ones clip —
     /// matching resize semantics; in practice rows are already `columns` wide).
+    /// Fills one preallocated buffer (a quit can pack millions of cells — the
+    /// per-byte `Data.append` path was the dominant save cost).
     static func packCells(_ rows: [[Cell]], columns: Int) -> Data {
-        var data = Data(capacity: rows.count * columns * cellStride)
-        for row in rows {
-            for x in 0..<columns {
-                appendCell(x < row.count ? row[x] : .blank, to: &data)
+        var bytes = [UInt8](repeating: 0, count: rows.count * columns * cellStride)
+        bytes.withUnsafeMutableBufferPointer { buffer in
+            var offset = 0
+            for row in rows {
+                let count = row.count
+                for x in 0..<columns {
+                    let cell = x < count ? row[x] : .blank
+                    writeUInt32(cell.glyph, to: buffer, at: &offset)
+                    writeUInt32(cell.foreground.rawValue, to: buffer, at: &offset)
+                    writeUInt32(cell.background.rawValue, to: buffer, at: &offset)
+                    writeUInt16(cell.attributes.rawValue, to: buffer, at: &offset)
+                    writeUInt16(cell.link, to: buffer, at: &offset)
+                }
             }
         }
-        return data
+        return Data(bytes)
+    }
+
+    private static func writeUInt32(
+        _ value: UInt32, to buffer: UnsafeMutableBufferPointer<UInt8>, at offset: inout Int
+    ) {
+        buffer[offset] = UInt8(value & 0xFF)
+        buffer[offset + 1] = UInt8((value >> 8) & 0xFF)
+        buffer[offset + 2] = UInt8((value >> 16) & 0xFF)
+        buffer[offset + 3] = UInt8((value >> 24) & 0xFF)
+        offset += 4
+    }
+
+    private static func writeUInt16(
+        _ value: UInt16, to buffer: UnsafeMutableBufferPointer<UInt8>, at offset: inout Int
+    ) {
+        buffer[offset] = UInt8(value & 0xFF)
+        buffer[offset + 1] = UInt8((value >> 8) & 0xFF)
+        offset += 2
     }
 
     /// Inverse of `packCells`; tolerant of a short blob (missing cells read
@@ -99,14 +128,6 @@ extension TerminalStateSnapshot {
         }
     }
 
-    private static func appendCell(_ cell: Cell, to data: inout Data) {
-        appendUInt32(cell.glyph, to: &data)
-        appendUInt32(cell.foreground.rawValue, to: &data)
-        appendUInt32(cell.background.rawValue, to: &data)
-        appendUInt16(cell.attributes.rawValue, to: &data)
-        appendUInt16(cell.link, to: &data)
-    }
-
     private static func readCell(_ bytes: [UInt8], at offset: inout Int) -> Cell {
         let glyph = readUInt32(bytes, at: &offset)
         let foreground = PackedColor(rawValue: readUInt32(bytes, at: &offset))
@@ -116,18 +137,6 @@ extension TerminalStateSnapshot {
         return Cell(
             glyph: glyph, foreground: foreground, background: background,
             attributes: attributes, link: link)
-    }
-
-    private static func appendUInt32(_ value: UInt32, to data: inout Data) {
-        data.append(UInt8(value & 0xFF))
-        data.append(UInt8((value >> 8) & 0xFF))
-        data.append(UInt8((value >> 16) & 0xFF))
-        data.append(UInt8((value >> 24) & 0xFF))
-    }
-
-    private static func appendUInt16(_ value: UInt16, to data: inout Data) {
-        data.append(UInt8(value & 0xFF))
-        data.append(UInt8((value >> 8) & 0xFF))
     }
 
     private static func readUInt32(_ bytes: [UInt8], at offset: inout Int) -> UInt32 {

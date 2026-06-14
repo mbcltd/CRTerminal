@@ -21,6 +21,10 @@ final class TerminalView: NSView, NSTextInputClient {
     /// captured `LayoutSnapshot`. Assigned fresh on creation, or carried over
     /// from a restored leaf so re-saves overwrite the same file.
     var sessionID = UUID()
+    /// `TerminalState.generation` at the last restoration save; lets the save
+    /// path skip unchanged sessions so quitting after the screen settles
+    /// re-writes nothing (bounds quit latency, R4).
+    var lastSavedGeneration: UInt64?
 
     /// Search state (⌘F bar drives this).
     private var searchQuery: String?

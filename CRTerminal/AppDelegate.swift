@@ -98,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if let phase = ProcessInfo.processInfo.environment["CRT_LIFECYCLE_PROBE"] {
             runLifecycleProbe(phase: phase, controller: controller)
         }
+        if ProcessInfo.processInfo.environment["CRT_QUIT_LATENCY_PROBE"] != nil {
+            runQuitLatencyProbe(controller: controller)
+        }
     }
 
     /// End-to-end probe (CRT_JUMP_PROBE=1): opens the ⌘K palette over two
@@ -452,6 +455,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         exit(0)
     }
 
+    // MARK: Quit-latency probe (R4)
+
+    /// Measures the synchronous quit-time save (`saveStateForTermination`)
+    /// with several large sessions (R4 exit: restoration adds no measurable
+    /// quit delay). Reports a "cold" save (everything dirty) and a "warm"
+    /// save (nothing changed since — the realistic quit, where the debounce
+    /// already wrote the contents and the generation-skip elides every
+    /// session). Writes /tmp/crterminal-quit-latency.txt.
+    private func runQuitLatencyProbe(controller: TerminalWindowController) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            for i in 0..<6 {
+                if i > 0 { controller.addSession() }
+                // Fill the scrollback (caps at 10k) with cheap output.
+                controller.activeTab?.panes.first?.send(Array("seq 1 20000\r".utf8))
+            }
+            self.waitForQuiescence(lastTotal: 0, stableTicks: 0, ticks: 0)
+        }
+    }
+
+    private var allPanes: [TerminalView] { controllers.flatMap(\.panes) }
+
+    /// Poll until the grids stop changing (output fully drained), so the
+    /// measurement isn't polluted by in-flight `seq` output. Caps the wait so
+    /// it always reports.
+    private func waitForQuiescence(lastTotal: UInt64, stableTicks: Int, ticks: Int) {
+        let total = allPanes.reduce(UInt64(0)) { $0 + ($1.session?.snapshot.generation ?? 0) }
+        if (total == lastTotal && stableTicks >= 2) || ticks > 40 {
+            finishQuitLatencyProbe()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.waitForQuiescence(
+                lastTotal: total,
+                stableTicks: total == lastTotal ? stableTicks + 1 : 0,
+                ticks: ticks + 1)
+        }
+    }
+
+    private func finishQuitLatencyProbe() {
+        // Worst case: pretend nothing was saved yet, so every session's
+        // contents are written synchronously.
+        for pane in allPanes { pane.lastSavedGeneration = nil }
+        let full = Self.milliseconds { self.saveStateForTermination() }
+        // Realistic quit: nothing changed since the previous save, so the
+        // generation-skip elides every session.
+        let warm = Self.milliseconds { self.saveStateForTermination() }
+        let bytes = SessionStateStore.shared.totalStoredBytes()
+        let report = [
+            "=== CRT_QUIT_LATENCY REPORT ===",
+            "windows: \(controllers.count), panes/window: \(controllers.map(\.panes.count))",
+            "sessions: \(allPanes.count)",
+            "stored bytes: \(bytes / 1_000_000) MB",
+            String(format: "full save (all sessions dirty, worst case): %.1f ms", full),
+            String(format: "warm save (unchanged, models real quit): %.2f ms", warm),
+            "RESULT: \(warm < 5 ? "PASS" : "CHECK") (warm save under 5 ms)",
+            "=== END REPORT ===",
+        ].joined(separator: "\n") + "\n"
+        FileHandle.standardError.write(Data(report.utf8))
+        try? report.write(
+            toFile: "/tmp/crterminal-quit-latency.txt",
+            atomically: true, encoding: .utf8)
+        exit(0)
+    }
+
+    private static func milliseconds(_ body: () -> Void) -> Double {
+        let start = Date()
+        body()
+        return Date().timeIntervalSince(start) * 1000
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
@@ -484,6 +557,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if SettingsStore.shared.settings.restoration == .always {
             SessionStateStore.shared.saveLayoutSynchronously(captureLayoutSnapshot())
         }
+        // The generation-skip may have elided sessions whose only write was an
+        // async debounce; drain the io queue so every file is on disk before
+        // the process exits.
+        SessionStateStore.shared.flush()
     }
 
     // MARK: Coalesced restoration save (significant-change debounce)

@@ -135,6 +135,11 @@ public struct TerminalState: Sendable {
     public private(set) var modes = TerminalModes()
     public private(set) var isAlternateScreen = false
     public private(set) var title: String?
+    /// Working directory reported by the shell via OSC 7
+    /// (`file://host/path`). Tracks `cd`s live, so it's fresher than the
+    /// 1 Hz kernel probe; the app prefers it when capturing a restore cwd.
+    /// nil until a shell that emits OSC 7 reports one.
+    public private(set) var currentDirectory: String?
     /// Bumped on every visible mutation; renderers compare to skip frames.
     public private(set) var generation: UInt64 = 0
     /// Bumped on BEL; the app layer compares and beeps.
@@ -1159,6 +1164,12 @@ extension TerminalState: TerminalHandler {
         case 0, 2:
             title = String(decoding: body, as: UTF8.self)
             touch()
+        case 7:
+            // "7;file://host/path" — the shell's working directory. Keep the
+            // last good value if the payload is malformed.
+            if let path = Self.fileURLPath(String(decoding: body, as: UTF8.self)) {
+                currentDirectory = path
+            }
         case 8:
             // "8;params;uri" — empty uri ends the link span.
             if let uriStart = body.firstIndex(of: UInt8(ascii: ";")) {
@@ -1213,6 +1224,26 @@ extension TerminalState: TerminalHandler {
         let id = UInt16(linkTable.count)
         linkIds[uri] = id
         return id
+    }
+
+    /// Extract the path from an OSC 7 payload: `file://host/path`,
+    /// `file:///path`, or a bare `/path`. Percent-decoded; nil when there's
+    /// no usable absolute path (so a malformed report is ignored, not stored).
+    static func fileURLPath(_ text: String) -> String? {
+        let path: Substring
+        if let range = text.range(of: "://") {
+            // Skip the authority (host) component up to the next "/".
+            let afterAuthority = text[range.upperBound...]
+            guard let slash = afterAuthority.firstIndex(of: "/") else { return nil }
+            path = afterAuthority[slash...]
+        } else if text.hasPrefix("/") {
+            path = text[...]
+        } else {
+            return nil
+        }
+        guard !path.isEmpty else { return nil }
+        let decoded = String(path).removingPercentEncoding ?? String(path)
+        return decoded.isEmpty ? nil : decoded
     }
 
     /// The OSC 8 target for a cell's link id.

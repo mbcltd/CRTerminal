@@ -195,6 +195,42 @@ struct ShellIntegrationTests {
     }
 }
 
+struct WorkingDirectoryTests {
+    @Test func osc7TracksDirectory() {
+        var t = makeTerminal()
+        #expect(t.state.currentDirectory == nil)
+        t.feed("\u{1B}]7;file://hostname/Users/dmb/dev\u{07}")
+        #expect(t.state.currentDirectory == "/Users/dmb/dev")
+        // A later cd updates it.
+        t.feed("\u{1B}]7;file://hostname/tmp\u{07}")
+        #expect(t.state.currentDirectory == "/tmp")
+    }
+
+    @Test func osc7AcceptsEmptyHostAndPercentEncoding() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]7;file:///Users/dmb/my%20projects\u{07}")
+        #expect(t.state.currentDirectory == "/Users/dmb/my projects")
+    }
+
+    @Test func osc7IgnoresMalformedPayload() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]7;file://hostname/good\u{07}")
+        t.feed("\u{1B}]7;garbage\u{07}")          // no path → keep the last good value
+        #expect(t.state.currentDirectory == "/good")
+        t.feed("\u{1B}]7;\u{07}")                 // empty → still kept
+        #expect(t.state.currentDirectory == "/good")
+    }
+
+    @Test func fileURLPathParsing() {
+        #expect(TerminalState.fileURLPath("file://host/a/b") == "/a/b")
+        #expect(TerminalState.fileURLPath("file:///a/b") == "/a/b")
+        #expect(TerminalState.fileURLPath("/bare/path") == "/bare/path")
+        #expect(TerminalState.fileURLPath("file://host") == nil)
+        #expect(TerminalState.fileURLPath("nonsense") == nil)
+        #expect(TerminalState.fileURLPath("") == nil)
+    }
+}
+
 struct NotificationTests {
     @Test func osc9Notifies() {
         var t = makeTerminal()

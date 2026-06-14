@@ -75,7 +75,12 @@ case "$mode" in
     echo "--- never phase ---"
     open -n -W --env CRT_LIFECYCLE_PROBE=verify-never --env CRT_RESTORE_MODE=never "$app"
     cat /tmp/crterminal-lifecycle.txt ;;
+  quit-latency)
+    # R4: time the synchronous quit-time save with several large sessions.
+    rm -f /tmp/crterminal-quit-latency.txt
+    open -n -W --env CRT_QUIT_LATENCY_PROBE=1 --env CRT_RESTORE_MODE=system "$app"
+    cat /tmp/crterminal-quit-latency.txt ;;
   *)
-    echo "usage: Scripts/probe.sh typist|typist-capture|jump|jump-live|restore|layout|lifecycle [args]" >&2
+    echo "usage: Scripts/probe.sh typist|typist-capture|jump|jump-live|restore|layout|lifecycle|quit-latency [args]" >&2
     exit 64 ;;
 esac
