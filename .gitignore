@@ -13,6 +13,9 @@ build/
 crash-*
 
 
+# Scratch / working files
+tmp/
+
 # macOS
 .DS_Store
 
