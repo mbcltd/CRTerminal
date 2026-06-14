@@ -67,6 +67,28 @@ struct Phase2RenderTests {
         #expect(found)
     }
 
+    @Test func osc8LinkDrawsTightUnderline() throws {
+        guard let renderer = makeRenderer() else { return }
+        var terminal = Terminal(columns: 3, rows: 1)
+        // OSC 8 hyperlink wrapping a single space: the cell carries a link but
+        // no glyph, so any foreground pixel is the link underline itself.
+        // (Cursor lands on column 1; column 2 stays untouched.)
+        terminal.feed(Array(
+            "\u{1B}]8;;https://example.com\u{07} \u{1B}]8;;\u{07}".utf8))
+        #expect(terminal.state.lines[0][0].link != 0)
+        let image = try #require(renderer.renderImage(terminal.state))
+        let cellW = Int(renderer.cellSize.width)
+        let cellH = Int(renderer.cellSize.height)
+        // Linked cell underlines; the untouched cell stays bare.
+        var linked = false, bare = false
+        for y in 0..<cellH {
+            if pixel(image, cellW / 2, y).r > 150 { linked = true }
+            if pixel(image, cellW * 2 + cellW / 2, y).r > 150 { bare = true }
+        }
+        #expect(linked)
+        #expect(!bare)
+    }
+
     @Test func barCursorDrawsThinLine() throws {
         guard let renderer = makeRenderer() else { return }
         var terminal = Terminal(columns: 4, rows: 1)

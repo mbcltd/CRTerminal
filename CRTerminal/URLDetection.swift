@@ -11,6 +11,14 @@ enum URLDetection {
 
     /// Finds a URL or local path under `column` in a row of cells.
     static func detect(in line: [Cell], atColumn column: Int) -> URL? {
+        locate(in: line, atColumn: column)?.url
+    }
+
+    /// Resolves the URL/path under `column` together with the cell-column span
+    /// it occupies. `detect` (⌘-click) and the ⌘-hover underline share this.
+    static func locate(
+        in line: [Cell], atColumn column: Int
+    ) -> (url: URL, columns: Range<Int>)? {
         // Build row text plus a scalar→column map (wide spacers collapse).
         var scalars = String.UnicodeScalarView()
         var columnOf: [Int] = []
@@ -28,7 +36,8 @@ enum URLDetection {
             let end = start + text.unicodeScalars.distance(
                 from: range.lowerBound, to: range.upperBound)
             guard scalarIndex >= start, scalarIndex < end else { continue }
-            return token.url
+            // Map the scalar span back to cells (end-1 is the last scalar).
+            return (token.url, columnOf[start]..<(columnOf[end - 1] + 1))
         }
         return nil
     }
