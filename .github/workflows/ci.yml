@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:   # manual "Run workflow" button (runs from main)
 
+# Branch protection (configured on GitHub, not here): `main` requires the
+# "Package tests" and "App build + tests" checks below to pass before a PR can
+# merge. Renaming either job breaks the required-check match — update the
+# branch protection rule to match. Admins may bypass; direct pushes to main are
+# allowed; the release job is separately gated to main via its `if` (see below).
 jobs:
   package-tests:
     name: Package tests
