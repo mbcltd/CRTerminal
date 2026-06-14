@@ -15,7 +15,7 @@
 
 - **Opinionated defaults.**
 - **CRT mode.** 
-- **Deauss.**
+- **Degauss.**
 
 ## Built for speed
 
