@@ -420,16 +420,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             item.representedObject = preset.name
         }
         viewMenu.addItem(.separator())
-        let gallery = viewMenu.addItem(
-            withTitle: "Preset Gallery…", action: #selector(showSettings(_:)), keyEquivalent: "p")
-        gallery.keyEquivalentModifierMask = [.command, .shift]
-        gallery.target = self
-        viewMenu.addItem(.separator())
-        let degauss = viewMenu.addItem(
-            withTitle: "Degauss",
-            action: #selector(TerminalView.degauss(_:)), keyEquivalent: "d")
-        degauss.keyEquivalentModifierMask = [.command, .option]
-        viewMenu.addItem(.separator())
         let previousPrompt = viewMenu.addItem(
             withTitle: "Jump to Previous Prompt",
             action: #selector(TerminalView.jumpToPreviousPrompt(_:)),
