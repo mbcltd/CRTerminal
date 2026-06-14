@@ -119,6 +119,9 @@ jobs:
           tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP" bin/sign_update
           echo "SPARKLE_SIGN_UPDATE=$RUNNER_TEMP/bin/sign_update" >> "$GITHUB_ENV"
 
+      - name: Install dmgbuild
+        run: pipx install dmgbuild
+
       - name: Build, notarise & package
         env:
           BUILD_NUMBER:     ${{ github.run_number }}

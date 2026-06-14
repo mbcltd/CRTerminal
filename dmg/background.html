@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<!-- Source for the DMG window background (dmg/background.tiff).
+     Adapted from the "GlassTerm DMG" Claude Design mockup to crterm branding.
+     Regenerate with dmg/render-background.sh (headless Chrome → 1x + 2x → TIFF).
+     Note: the real DMG's title bar, icon labels, and icons are drawn by Finder;
+     this image is only the branded canvas behind them, sized 760×472. -->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; }
+  #canvas {
+    position: relative; width: 760px; height: 472px; overflow: hidden;
+    background: linear-gradient(152deg, #241c54 0%, #3a2f6b 28%, #5b46e0 60%, #2aa6bf 100%);
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  .blob { position: absolute; border-radius: 50%; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="canvas">
+  <!-- ambient blobs (static) -->
+  <div class="blob" style="top: -120px; left: 4%; width: 420px; height: 420px; background: radial-gradient(circle, #7b5bf0 0%, transparent 64%); opacity: 0.6; filter: blur(34px);"></div>
+  <div class="blob" style="bottom: -160px; right: 2%; width: 460px; height: 460px; background: radial-gradient(circle, #1fb6b0 0%, transparent 64%); opacity: 0.55; filter: blur(34px);"></div>
+  <div class="blob" style="top: 30%; left: 40%; width: 300px; height: 300px; background: radial-gradient(circle, rgba(255,255,255,0.14) 0%, transparent 60%); filter: blur(20px);"></div>
+  <!-- top sheen -->
+  <div style="position: absolute; left: 0; right: 0; top: 0; height: 40%; background: linear-gradient(180deg, rgba(255,255,255,0.12), transparent); pointer-events: none;"></div>
+
+  <!-- header copy -->
+  <div style="position: absolute; left: 0; right: 0; top: 30px; text-align: center;">
+    <div style="display: inline-flex; align-items: center; gap: 8px; padding: 5px 14px; border-radius: 99px; background: rgba(255,255,255,0.13); border: 1px solid rgba(255,255,255,0.22);">
+      <span style="width: 7px; height: 7px; border-radius: 50%; background: #7af0d8; box-shadow: 0 0 8px #7af0d8;"></span>
+      <span style="font-size: 11px; font-weight: 800; letter-spacing: 0.16em; color: #d8d3ff; font-family: 'JetBrains Mono', monospace;">CRTERM INSTALLER</span>
+    </div>
+    <div style="font-size: 26px; font-weight: 750; color: #ffffff; margin-top: 15px; letter-spacing: -0.015em; text-shadow: 0 2px 14px rgba(20,10,50,0.45);">Almost there — drag to install</div>
+  </div>
+
+  <!-- centre arrow (icons sit left & right of it, placed by Finder) -->
+  <div style="position: absolute; left: 0; right: 0; top: 172px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+    <div style="display: flex; align-items: center;">
+      <div style="width: 64px; height: 4px; border-radius: 99px; background-image: linear-gradient(90deg, rgba(255,255,255,0.45) 55%, transparent 0); background-size: 13px 4px; background-repeat: repeat-x;"></div>
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style="margin-left: -3px; filter: drop-shadow(0 2px 6px rgba(20,10,50,0.5));"><path d="M5 12h13M13 6l6 6-6 6" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+    </div>
+    <span style="font-size: 10px; font-weight: 800; letter-spacing: 0.14em; color: rgba(255,255,255,0.62); font-family: 'JetBrains Mono', monospace;">DROP HERE</span>
+  </div>
+
+  <!-- footer band -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 18px; background: rgba(10,7,28,0.4); border-top: 1px solid rgba(255,255,255,0.12); font-family: 'JetBrains Mono', monospace;">
+    <span style="font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.9);">crterm</span>
+    <span style="font-size: 11px; color: rgba(255,255,255,0.4);">·</span>
+    <span style="font-size: 11px; color: rgba(255,255,255,0.7);">Apple Silicon</span>
+    <div style="flex: 1;"></div>
+    <span style="font-size: 11px; color: rgba(255,255,255,0.7);">macOS 26+</span>
+    <span style="font-size: 11px; color: rgba(255,255,255,0.4);">·</span>
+    <span style="font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.9);">Apache-2.0</span>
+  </div>
+</div>
+</body>
+</html>

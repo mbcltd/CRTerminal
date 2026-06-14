@@ -65,13 +65,18 @@ xcodebuild -exportArchive \
 APP="$EXPORT/$APP_NAME.app"
 [ -d "$APP" ] || { echo "error: export produced no $APP" >&2; ls -la "$EXPORT" >&2; exit 1; }
 
-echo "==> Building DMG"
-STAGE=$(mktemp -d)
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"   # drag-to-install affordance
+echo "==> Building styled DMG"
+command -v dmgbuild >/dev/null 2>&1 || {
+  echo "error: dmgbuild not found — install with 'pip install dmgbuild'" >&2; exit 1; }
 DMG="$OUT/$DMG_NAME.dmg"
-hdiutil create -volname "$DMG_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$STAGE"
+rm -f "$DMG"
+# Branded window layout lives in dmg/settings.py + dmg/background.tiff. The
+# volume name ("crterm") shows in the Finder title bar; the asset filename stays
+# CRTerminal.dmg for the stable Sparkle download URL.
+dmgbuild -s dmg/settings.py \
+  -D app="$APP" \
+  -D bg="$PWD/dmg/background.tiff" \
+  "crterm" "$DMG"
 
 echo "==> Notarising"
 if [ -n "${NOTARY_PROFILE:-}" ]; then
