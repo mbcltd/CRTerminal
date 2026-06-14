@@ -280,6 +280,13 @@ public struct CRTPreset: Codable, Equatable, Sendable {
     /// titlebar button; the menu command still works.
     public var degaussButton: Bool
 
+    /// Multiplier applied to the user's configured font size when this
+    /// preset is worn. 1.0 leaves the size untouched; the Commodore 1702
+    /// runs at 1.5 so its chunky composite glyphs read at the same on-tube
+    /// presence the real monitor had. The renderer scales its glyph atlas
+    /// to match, so the cell grid grows with the type.
+    public var fontSizeScale: Double
+
     /// Points reserved between the window edge and the cell grid: the
     /// bezel when effects are on, a small breathing margin for the plain
     /// screen so text doesn't sit flush against the edge.
@@ -297,7 +304,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         mask: Mask = Mask(), scanlines: Scanlines = Scanlines(),
         bloom: Bloom = Bloom(), artifacts: Artifacts = Artifacts(), bezel: Bezel = Bezel(),
         colors: Palette? = nil, bottomBar: BottomBar? = nil,
-        degaussButton: Bool = true
+        degaussButton: Bool = true, fontSizeScale: Double = 1
     ) {
         self.name = name
         self.year = year
@@ -314,6 +321,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         self.colors = colors
         self.bottomBar = bottomBar
         self.degaussButton = degaussButton
+        self.fontSizeScale = fontSizeScale
     }
 
     /// Sections may be omitted in JSON; they default to "off".
@@ -334,6 +342,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         colors = try container.decodeIfPresent(Palette.self, forKey: .colors)
         bottomBar = try container.decodeIfPresent(BottomBar.self, forKey: .bottomBar)
         degaussButton = try container.decodeIfPresent(Bool.self, forKey: .degaussButton) ?? true
+        fontSizeScale = try container.decodeIfPresent(Double.self, forKey: .fontSizeScale) ?? 1
     }
 
     /// Everything off — the lean modern terminal, dark scheme.

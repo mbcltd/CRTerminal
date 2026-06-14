@@ -31,7 +31,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private(set) var tabs: [SessionTab] = []
     private(set) var activeTabIndex = 0
     private var settings: TerminalSettings
-    private var sharedRenderer: TerminalRenderer?
+    /// One renderer (and glyph atlas) per distinct font scale. Panes
+    /// sharing a preset's `fontSizeScale` share an atlas; a 1.5× preset
+    /// like the Commodore 1702 gets its own larger one alongside the 1.0×
+    /// sessions in the same window.
+    private var sharedRenderers: [Double: TerminalRenderer] = [:]
     private let rootView = NSView()
     /// The area right of the sidebar; hosts tab containers + search bar.
     private let contentHost = NSView()
@@ -134,12 +138,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Renderer (shared across the window's panes)
 
-    private func rendererForPane() -> TerminalRenderer? {
-        if let sharedRenderer { return sharedRenderer }
+    private func rendererForPane(scale: Double) -> TerminalRenderer? {
+        if let existing = sharedRenderers[scale] { return existing }
         let renderer = TerminalRenderer(
-            font: settings.font, scale: window?.backingScaleFactor ?? 2)
+            font: settings.font(scale: scale), scale: window?.backingScaleFactor ?? 2)
         renderer?.setLigatures(settings.ligatures)
-        sharedRenderer = renderer
+        sharedRenderers[scale] = renderer
         return renderer
     }
 
@@ -234,7 +238,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// on creation and again when a dragged session is adopted from
     /// another window.
     private func wire(pane: TerminalView) {
-        pane.rendererProvider = { [weak self] in self?.rendererForPane() }
+        pane.rendererProvider = { [weak self, weak pane] in
+            self?.rendererForPane(scale: pane?.preset.fontSizeScale ?? 1)
+        }
         guard let session = pane.session else { return }
         session.onExit = { [weak self, weak pane] _ in
             guard let pane else { return }
@@ -687,12 +693,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         let fontChanged = settings.font != self.settings.font
         self.settings = settings
         if fontChanged {
-            sharedRenderer = nil
+            sharedRenderers.removeAll()
             for pane in panes {
                 pane.resetRenderer()
             }
         }
-        sharedRenderer?.setLigatures(settings.ligatures)
+        for renderer in sharedRenderers.values {
+            renderer.setLigatures(settings.ligatures)
+        }
         applyChrome(preset: activePreset)
     }
 

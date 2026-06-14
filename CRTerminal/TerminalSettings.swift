@@ -19,13 +19,21 @@ struct TerminalSettings: Codable, Equatable {
     /// The typeface is fixed: everyone gets bundled Geist Mono. Only the
     /// size is configurable; system monospaced is a fallback for when
     /// registration failed (or a test host without the bundle).
-    var font: NSFont {
-        let size = CGFloat(max(6, min(fontSize, 72)))
+    ///
+    /// `scale` multiplies the configured size for presets that ask for it
+    /// (a preset's `fontSizeScale` — the Commodore 1702 renders 50%
+    /// larger). The clamp applies after scaling.
+    func font(scale: Double = 1) -> NSFont {
+        let size = CGFloat(max(6, min(fontSize * scale, 72)))
         if let geist = NSFont(name: BundledFonts.geistMono, size: size) {
             return geist
         }
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
+
+    /// The unscaled font (scale 1): the baseline the settings comparison
+    /// and new, untouched presets use.
+    var font: NSFont { font(scale: 1) }
 
     func preset(in presets: [CRTPreset]) -> CRTPreset {
         presets.first { $0.name == presetName } ?? .darkStandard

@@ -94,6 +94,12 @@ final class TerminalView: NSView, NSTextInputClient {
     /// with a bezel shrink the cell grid (the bezel is part of the view).
     var preset: CRTPreset = .darkStandard {
         didSet {
+            // A preset with a different font scale needs the window's
+            // renderer for that scale (its own glyph atlas), so swap the
+            // renderer before re-laying-out the grid against the new cells.
+            if preset.fontSizeScale != oldValue.fontSizeScale {
+                resetRenderer()
+            }
             renderLoop?.setPreset(preset)
             updateGridSize()
             updateBottomBar()
