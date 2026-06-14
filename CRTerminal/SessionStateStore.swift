@@ -39,6 +39,14 @@ final class SessionStateStore: Sendable {
             .appendingPathExtension(Self.fileExtension)
     }
 
+    /// Block until all queued disk I/O has completed. Used by tests for a
+    /// deterministic barrier (the async `save`/`discard`/`pruneOrphans`
+    /// otherwise race a fixed sleep). Safe from any thread — the io queue
+    /// never calls back to the caller.
+    nonisolated func flush() {
+        io.sync {}
+    }
+
     // MARK: Encode / decode
 
     private static func makeEncoder() -> PropertyListEncoder {

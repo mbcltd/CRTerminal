@@ -85,7 +85,7 @@ struct SessionStateStoreTests {
         #expect(store.load(for: id) == nil)
     }
 
-    @Test func pruneOrphansKeepsOnlyLiveSessions() async {
+    @Test func pruneOrphansKeepsOnlyLiveSessions() {
         let (store, directory) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         let keep = UUID()
@@ -94,8 +94,7 @@ struct SessionStateStoreTests {
         store.saveSynchronously(sampleSnapshot(), for: drop)
 
         store.pruneOrphans(keeping: [keep])
-        // Pruning runs on the io queue; let it drain.
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        store.flush() // pruning runs on the io queue; wait for it to drain.
 
         #expect(store.load(for: keep) != nil)
         #expect(store.load(for: drop) == nil)
@@ -130,13 +129,13 @@ struct SessionStateStoreTests {
         #expect(store.loadLayout() == nil)
     }
 
-    @Test func discardRemovesState() async {
+    @Test func discardRemovesState() {
         let (store, directory) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         let id = UUID()
         store.saveSynchronously(sampleSnapshot(), for: id)
         store.discard(id: id)
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        store.flush()
         #expect(store.load(for: id) == nil)
     }
 }
