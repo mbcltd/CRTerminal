@@ -2,6 +2,8 @@
 
 > A beautifully opinionated terminal emulator with a modern approach to navigating tabs.
 
+![crterm in light mode](screenshots/light.png)
+
 ## Navigating
 
 - **⌘K** Search palette over all sessions 
@@ -11,11 +13,15 @@
 - **Vertical tab rail** Live titles, preview and bell attention badges.
 - **Move by keyboard.** ⌘⇧] / ⌘⇧[ to step through sessions, ⌘1–9 to leap to one.
 
+![⌘K search palette](screenshots/search.png)
+
 ## Looks
 
 - **Opinionated defaults**
 - **CRT mode** 
 - **Degauss**
+
+![crterm in CRT mode](screenshots/vt220.png)
 
 ## Built for speed
 
