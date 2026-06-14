@@ -14,12 +14,26 @@ final class SessionStateStore: Sendable {
 
     static let fileExtension = "crtstate"
 
+    /// Stored state older than this is ignored — a fortnight-old terminal is
+    /// rarely worth resurrecting, and it's overwritten on the next save.
+    static let defaultMaxAge: TimeInterval = 14 * 24 * 60 * 60
+    /// Hard ceiling on a single state file; anything larger is treated as
+    /// corrupt and yields a clean session, defending the memory budget.
+    static let defaultMaxBytes = 128 * 1024 * 1024
+
     private let directory: URL
+    private let maxAge: TimeInterval
+    private let maxBytes: Int
     private let io = DispatchQueue(label: "crterminal.restore.io", qos: .utility)
     private let log = Logger(subsystem: "mbcltd.crterminal", category: "restore")
 
-    /// `directory` is injectable so tests can use a scratch path.
-    init(directory: URL? = nil) {
+    /// `directory` and the caps are injectable so tests can use a scratch
+    /// path and exercise the expiry/size gates with small thresholds.
+    init(
+        directory: URL? = nil,
+        maxAge: TimeInterval = SessionStateStore.defaultMaxAge,
+        maxBytes: Int = SessionStateStore.defaultMaxBytes
+    ) {
         if let directory {
             self.directory = directory
         } else {
@@ -30,8 +44,29 @@ final class SessionStateStore: Sendable {
                 .appendingPathComponent("CRTerminal", isDirectory: true)
                 .appendingPathComponent("Restore", isDirectory: true)
         }
+        self.maxAge = maxAge
+        self.maxBytes = maxBytes
         try? FileManager.default.createDirectory(
             at: self.directory, withIntermediateDirectories: true)
+    }
+
+    /// Read a state file's bytes, rejecting it (returns nil) when it's larger
+    /// than the size cap or older than the age cap. The actual decode + a
+    /// version check happen in the callers; a decode failure also yields nil,
+    /// so a corrupt/old/oversized file always degrades to a clean session.
+    private func validatedData(at url: URL) -> Data? {
+        let values = try? url.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey])
+        if let size = values?.fileSize, size > maxBytes {
+            log.error("ignoring oversized state \(url.lastPathComponent, privacy: .public): \(size) bytes")
+            return nil
+        }
+        if let modified = values?.contentModificationDate,
+           Date().timeIntervalSince(modified) > maxAge {
+            log.info("ignoring expired state \(url.lastPathComponent, privacy: .public)")
+            return nil
+        }
+        return try? Data(contentsOf: url)
     }
 
     func url(for id: UUID) -> URL {
@@ -90,17 +125,23 @@ final class SessionStateStore: Sendable {
 
     // MARK: Read
 
-    /// Decode the snapshot for a session id, or nil if absent/unreadable.
-    /// A corrupt file never throws to the caller — it reads as "no state"
-    /// (full corruption hardening lands in R4).
+    /// Decode the snapshot for a session id, or nil when it's absent,
+    /// corrupt, from an incompatible version, expired, or oversized — every
+    /// such case degrades to a clean session rather than throwing or crashing.
     func load(for id: UUID) -> TerminalStateSnapshot? {
         decode(at: url(for: id))
     }
 
     private func decode(at url: URL) -> TerminalStateSnapshot? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = validatedData(at: url) else { return nil }
         do {
-            return try PropertyListDecoder().decode(TerminalStateSnapshot.self, from: data)
+            let snapshot = try PropertyListDecoder().decode(
+                TerminalStateSnapshot.self, from: data)
+            guard snapshot.version == TerminalStateSnapshot.currentVersion else {
+                log.info("ignoring state \(url.lastPathComponent, privacy: .public): version \(snapshot.version)")
+                return nil
+            }
+            return snapshot
         } catch {
             log.error("decode \(url.lastPathComponent, privacy: .public) failed: \(error, privacy: .public)")
             return nil
@@ -149,8 +190,10 @@ final class SessionStateStore: Sendable {
     }
 
     func loadLayout() -> LayoutSnapshot? {
-        guard let data = try? Data(contentsOf: layoutURL) else { return nil }
-        return try? PropertyListDecoder().decode(LayoutSnapshot.self, from: data)
+        guard let data = validatedData(at: layoutURL),
+              let layout = try? PropertyListDecoder().decode(LayoutSnapshot.self, from: data),
+              layout.version == LayoutSnapshot.currentVersion else { return nil }
+        return layout
     }
 
     /// Delete every stored file — session contents and the layout — when the
@@ -183,6 +226,16 @@ final class SessionStateStore: Sendable {
             for entry in files where !liveIDs.contains(entry.id) {
                 try? FileManager.default.removeItem(at: entry.url)
             }
+        }
+    }
+
+    /// Total bytes of all stored state + layout files (probe/diagnostics).
+    func totalStoredBytes() -> Int {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles])) ?? []
+        return urls.reduce(0) { sum, url in
+            sum + ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
         }
     }
 

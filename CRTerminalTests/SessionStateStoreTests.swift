@@ -85,6 +85,49 @@ struct SessionStateStoreTests {
         #expect(store.load(for: id) == nil)
     }
 
+    @Test func incompatibleVersionIsIgnored() {
+        let (store, directory) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = UUID()
+        var snapshot = sampleSnapshot()
+        snapshot.version = TerminalStateSnapshot.currentVersion + 1
+        store.saveSynchronously(snapshot, for: id)
+        #expect(store.load(for: id) == nil)
+    }
+
+    @Test func expiredStateIsIgnored() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("crtstate-test-" + UUID().uuidString)
+        let store = SessionStateStore(directory: directory, maxAge: 60) // 1 minute
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = UUID()
+        store.saveSynchronously(sampleSnapshot(), for: id)
+        // Backdate the file well past the cap.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -3600)],
+            ofItemAtPath: store.url(for: id).path)
+        #expect(store.load(for: id) == nil)
+    }
+
+    @Test func oversizedStateIsIgnored() {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("crtstate-test-" + UUID().uuidString)
+        let store = SessionStateStore(directory: directory, maxBytes: 16) // tiny cap
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = UUID()
+        store.saveSynchronously(sampleSnapshot(), for: id) // far exceeds 16 bytes
+        #expect(store.load(for: id) == nil)
+    }
+
+    @Test func incompatibleLayoutVersionIsIgnored() {
+        let (store, directory) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var layout = LayoutSnapshot(windows: [])
+        layout.version = LayoutSnapshot.currentVersion + 1
+        store.saveLayoutSynchronously(layout)
+        #expect(store.loadLayout() == nil)
+    }
+
     @Test func pruneOrphansKeepsOnlyLiveSessions() {
         let (store, directory) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }

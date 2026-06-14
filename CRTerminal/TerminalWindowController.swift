@@ -515,13 +515,22 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// before the shells are SIGHUP'd and the process dies.
     func saveContents(of pane: TerminalView, synchronously: Bool = false) {
         guard let session = pane.session else { return }
-        let cwd = SessionInfo.workingDirectory(of: session.shellProcessID)
-        let snapshot = session.snapshot.makeSnapshot(workingDirectoryHint: cwd)
+        let state = session.snapshot
+        // Nothing visible changed since the last save → the file on disk is
+        // still current; skip the encode + write. This is what keeps a quit
+        // after the screen settles from re-writing every session.
+        if pane.lastSavedGeneration == state.generation { return }
+        // Prefer the shell's live OSC 7 report (survives a cd since the last
+        // 1 Hz probe); fall back to the kernel query.
+        let cwd = state.currentDirectory
+            ?? SessionInfo.workingDirectory(of: session.shellProcessID)
+        let snapshot = state.makeSnapshot(workingDirectoryHint: cwd)
         if synchronously {
             SessionStateStore.shared.saveSynchronously(snapshot, for: pane.sessionID)
         } else {
             SessionStateStore.shared.save(snapshot, for: pane.sessionID)
         }
+        pane.lastSavedGeneration = state.generation
     }
 
     /// Persist every pane in this window (called before capturing layout).

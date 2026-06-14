@@ -143,3 +143,28 @@ Same hardware/method. Latency held steady with the full Phase 2 feature set
 |---|---|---|---|
 | zsh echo | 5.83 ms | 5.41 ms | 12.39 ms |
 | vim editing session | 5.70 ms | 3.48 ms | 11.75 ms |
+
+## Phase R4 — session restoration: quit-latency (2026-06-14)
+
+Debug build, Apple M3 Max, macOS 26.4. Measures the synchronous quit-time
+save (`applicationWillTerminate` → `saveStateForTermination`), the concern
+behind R4's "restoration adds no measurable quit delay". Reproduce with
+`CRT_QUIT_LATENCY_PROBE=1`: 6 sessions each filled to the 10k-line scrollback
+cap (~25 MB snapshot each, ~150 MB total), then two timed saves.
+
+| Save | Time |
+|---|---|
+| warm (unchanged since last save — the realistic quit) | 0.03 ms |
+| full (all 6 sessions dirty, 150 MB — pathological worst case) | 1.2 s |
+
+The realistic quit is effectively free: the coalesced significant-change
+debounce writes contents during the session, and a per-session
+generation-skip elides any session whose grid hasn't changed since, so
+quitting after the screen settles re-writes nothing.
+
+The worst case (quit immediately after a heavy output burst in every session,
+with no structural change to trip the debounce) is bounded by the cell-pack +
+binary-plist write. Packing fills one preallocated buffer rather than
+per-byte `Data.append`, which cut that worst case ~4× (4.9 s → 1.2 s for
+150 MB). Load-side, a 128 MB-per-file cap rejects anything larger as corrupt,
+so restored state can't blow the per-surface memory budget.
