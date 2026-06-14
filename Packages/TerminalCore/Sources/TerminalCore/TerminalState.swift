@@ -1254,11 +1254,14 @@ extension TerminalState: TerminalHandler {
         case 0:
             eraseInLine(cursor.y, cursor.x..<columns)
             for y in (cursor.y + 1)..<rows { eraseInLine(y, 0..<columns) }
+            removeImagePlacements(intersectingScreenRows: cursor.y...(rows - 1))
         case 1:
             for y in 0..<cursor.y { eraseInLine(y, 0..<columns) }
             eraseInLine(cursor.y, 0..<(cursor.x + 1))
+            removeImagePlacements(intersectingScreenRows: 0...cursor.y)
         case 2:
             for y in 0..<rows { eraseInLine(y, 0..<columns) }
+            removeImagePlacements(intersectingScreenRows: 0...(rows - 1))
         case 3:
             evictedLineCount += scrollback.count
             scrollback.removeAll()

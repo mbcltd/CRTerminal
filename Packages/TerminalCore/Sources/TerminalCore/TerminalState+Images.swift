@@ -62,6 +62,21 @@ extension TerminalState {
         imagePlacements.removeAll { $0.row + $0.rows <= cutoff }
     }
 
+    /// Remove active-screen placements whose rows intersect a screen-row range
+    /// (in on-screen coordinates). Erase-in-display calls this so `clear` and
+    /// full-screen redraws take their images with them, matching kitty/wezterm.
+    mutating func removeImagePlacements(intersectingScreenRows range: ClosedRange<Int>) {
+        guard !imagePlacements.isEmpty else { return }
+        let lo = absoluteScreenTop + range.lowerBound
+        let hi = absoluteScreenTop + range.upperBound
+        let alt = isAlternateScreen
+        imagePlacements.removeAll { placement in
+            placement.onAlternateScreen == alt
+                && placement.row <= hi
+                && placement.row + placement.rows - 1 >= lo
+        }
+    }
+
     private func cells(_ pixels: Int, per cellPixels: Int) -> Int {
         max(1, (max(0, pixels) + cellPixels - 1) / cellPixels)
     }

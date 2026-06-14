@@ -171,6 +171,26 @@ struct ImageEvictionTests {
         #expect(t.state.imagePlacements.isEmpty)
     }
 
+    @Test func clearRemovesOnScreenImages() {
+        var t = makeTerminal(columns: 20, rows: 10)
+        let pixels = [UInt8](repeating: 0, count: 4)
+        t.feed(Array("\u{1B}_Gf=32,s=1,v=1,a=T,i=1;\(base64(pixels))\u{1B}\\".utf8))
+        #expect(t.state.imagePlacements.count == 1)
+        // ED(2) — what `clear` emits — must take the image with it.
+        t.feed(Array("\u{1B}[2J".utf8))
+        #expect(t.state.imagePlacements.isEmpty)
+    }
+
+    @Test func eraseBelowCursorKeepsImageAboveCursor() {
+        var t = makeTerminal(columns: 20, rows: 10)
+        let pixels = [UInt8](repeating: 0, count: 4)
+        // Image at row 0; cursor advances to row 1.
+        t.feed(Array("\u{1B}_Gf=32,s=1,v=1,a=T,i=1;\(base64(pixels))\u{1B}\\".utf8))
+        // Move to row 5, then ED(0) erases from there down — image stays.
+        t.feed(Array("\u{1B}[6;1H\u{1B}[0J".utf8))
+        #expect(t.state.imagePlacements.count == 1)
+    }
+
     @Test func reportsCellSizeForCSI16t() {
         var t = makeTerminal()
         t.setCellPixelSize(width: 9, height: 18)
