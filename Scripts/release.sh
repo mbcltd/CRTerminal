@@ -100,8 +100,10 @@ xcrun stapler validate "$DMG"
 if [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
   echo "==> Signing for Sparkle + writing appcast"
   SIGN_UPDATE=${SPARKLE_SIGN_UPDATE:-sign_update}
-  # Prints e.g.:  sparkle:edSignature="BASE64==" length="12345"
-  SIG_ATTRS=$("$SIGN_UPDATE" -s "$SPARKLE_PRIVATE_KEY" "$DMG")
+  # Feed the key via stdin (`--ed-key-file -`); the old `-s <key>` argument form
+  # was removed by Sparkle ("Specifying private key as an argument is no longer
+  # supported"). Prints e.g.:  sparkle:edSignature="BASE64==" length="12345"
+  SIG_ATTRS=$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - "$DMG")
   FEED_URL=${SPARKLE_FEED_URL:-https://github.com/mbcltd/CRTerminal/releases/latest/download/appcast.xml}
   DL_URL=${SPARKLE_DOWNLOAD_URL:-https://github.com/mbcltd/CRTerminal/releases/latest/download/$DMG_NAME.dmg}
   MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist" 2>/dev/null || echo 26.0)

@@ -5,6 +5,8 @@
      GENERATE_INFOPLIST_FILE=YES). These are the Sparkle auto-update settings. -->
 <plist version="1.0">
 <dict>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
 	<key>SUFeedURL</key>
 	<string>https://github.com/mbcltd/CRTerminal/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
