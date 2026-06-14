@@ -212,7 +212,7 @@ public final class TerminalRenderer {
                 guard var surfaces = context.surfaces else { return }
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                                markedText: markedText, in: buffer, to: surfaces.terminal,
-                               appearance: frame.preset.appearance)
+                               scheme: resolveScheme(for: frame.preset))
                 effectPipeline.encode(
                     into: buffer, surfaces: &surfaces, output: target,
                     uniforms: frame.uniforms(width: target.width, height: target.height, scale: scale),
@@ -228,7 +228,7 @@ public final class TerminalRenderer {
                 // unpadded — the margin is window layout, not content).
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                                markedText: markedText, in: buffer, to: target,
-                               appearance: frame.preset.appearance,
+                               scheme: resolveScheme(for: frame.preset),
                                padPx: Int((CGFloat(frame.preset.contentInsetPt) * scale)
                                    .rounded()))
             }
@@ -421,7 +421,7 @@ public final class TerminalRenderer {
             surfaces.persistenceValid = false
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                            markedText: markedText, in: buffer, to: surfaces.terminal,
-                           appearance: preset.appearance)
+                           scheme: resolveScheme(for: preset))
             effectPipeline.encode(
                 into: buffer, surfaces: &surfaces, output: texture,
                 uniforms: CRTUniforms(
@@ -437,7 +437,7 @@ public final class TerminalRenderer {
         } else {
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                            markedText: markedText, in: buffer, to: texture,
-                           appearance: preset?.appearance ?? .dark)
+                           scheme: resolveScheme(for: preset))
             buffer.commit()
             buffer.waitUntilCompleted()
         }
@@ -491,6 +491,14 @@ public final class TerminalRenderer {
     /// renders straight to the drawable, which is inset-larger than the
     /// grid); the pass clears the whole texture, so the pad shows the
     /// scheme background.
+    /// The terminal color scheme for a preset: an explicit palette wins;
+    /// otherwise `appearance` picks the light or the (renderer-default) dark
+    /// scheme.
+    private func resolveScheme(for preset: CRTPreset?) -> ColorScheme {
+        if let palette = preset?.colors { return ColorScheme(palette: palette) }
+        return preset?.appearance == .light ? .light : baseScheme
+    }
+
     private func encodeCellPass(
         _ state: TerminalState,
         scrollOffset: Int,
@@ -498,14 +506,14 @@ public final class TerminalRenderer {
         markedText: String? = nil,
         in buffer: MTLCommandBuffer,
         to texture: MTLTexture,
-        appearance: CRTPreset.Appearance = .dark,
+        scheme resolvedScheme: ColorScheme = .default,
         padPx: Int = 0
     ) {
         encodeLock.lock()
         defer { encodeLock.unlock() }
-        // Pick the light/dark scheme for this pass while holding the lock so
-        // the encode-path readers (resolveColors, emitShapedRuns) are stable.
-        scheme = appearance == .light ? .light : baseScheme
+        // Adopt the pass's scheme while holding the lock so the encode-path
+        // readers (resolveColors, emitShapedRuns) are stable.
+        scheme = resolvedScheme
         let cellW = Float(cellSize.width * scale)
         let cellH = Float(cellSize.height * scale)
         let baselineOffset = Float(ascent * scale)

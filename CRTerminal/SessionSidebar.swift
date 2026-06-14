@@ -39,7 +39,7 @@ struct SidebarTheme: Equatable {
     /// `surface` preset — the active session — while the accent hue comes
     /// from this row's own `accent` preset.
     init(surface: CRTPreset, accent accentPreset: CRTPreset) {
-        let mode: Mode = surface.appearance == .light ? .light : .dark
+        let mode: Mode = Self.isLightSurface(surface) ? .light : .dark
         self.mode = mode
 
         // Surface: near-black or near-paper, faintly tinted by the active
@@ -87,9 +87,21 @@ struct SidebarTheme: Equatable {
     /// dark standard, a dark slate for the light one.
     private static func identityColor(for preset: CRTPreset) -> NSColor {
         if preset.effects { return NSColor(preset.phosphor.color) }
+        // A custom palette identifies itself by its accent hue (the bright
+        // red of the "Danger" theme), so the rail wears its colour too.
+        if let colors = preset.colors { return NSColor(colors.red ?? colors.foreground) }
         return preset.appearance == .light
             ? NSColor(srgbRed: 0.20, green: 0.22, blue: 0.28, alpha: 1)
             : NSColor(srgbRed: 0.91, green: 0.92, blue: 0.96, alpha: 1)
+    }
+
+    /// Whether a preset's surface reads as light: a custom palette decides by
+    /// its background luminance, otherwise `appearance` says so directly.
+    private static func isLightSurface(_ preset: CRTPreset) -> Bool {
+        if let colors = preset.colors {
+            return relativeLuminance(NSColor(colors.background)) > 0.5
+        }
+        return preset.appearance == .light
     }
 
     // MARK: Contrast

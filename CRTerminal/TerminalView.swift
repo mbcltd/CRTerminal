@@ -55,6 +55,36 @@ final class TerminalView: NSView, NSTextInputClient {
         bellFlashLayer.add(flash, forKey: "bellFlash")
     }
 
+    /// A thick accent stripe hugging the bottom edge, shown for presets that
+    /// opt in (the "Danger" theme's production warning). A CALayer above the
+    /// Metal surface, like the bell flash, so it shows on every preset.
+    private let bottomBarLayer = CALayer()
+
+    /// The bar's hue when the preset doesn't specify one: a custom palette's
+    /// red, a tube's phosphor, else red.
+    private var accentBarColor: NSColor {
+        if let colors = preset.colors { return NSColor(colors.red ?? colors.foreground) }
+        if preset.effects { return NSColor(preset.phosphor.color) }
+        return .systemRed
+    }
+
+    private func updateBottomBar() {
+        guard let layer else { return }
+        guard let bar = preset.bottomBar else {
+            bottomBarLayer.removeFromSuperlayer()
+            return
+        }
+        if bottomBarLayer.superlayer == nil { layer.addSublayer(bottomBarLayer) }
+        // No implicit fade/slide as the pane resizes or re-themes.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let thickness = CGFloat(bar.thicknessPt)
+        bottomBarLayer.frame = CGRect(
+            x: 0, y: bounds.height - thickness, width: bounds.width, height: thickness)
+        bottomBarLayer.backgroundColor = (bar.color.map(NSColor.init) ?? accentBarColor).cgColor
+        CATransaction.commit()
+    }
+
     /// The CRT preset for this pane; per-pane because sidebar sessions
     /// theme independently while sharing the window's renderer. Presets
     /// with a bezel shrink the cell grid (the bezel is part of the view).
@@ -62,6 +92,7 @@ final class TerminalView: NSView, NSTextInputClient {
         didSet {
             renderLoop?.setPreset(preset)
             updateGridSize()
+            updateBottomBar()
         }
     }
 
@@ -69,6 +100,15 @@ final class TerminalView: NSView, NSTextInputClient {
     /// margin when effects are off.
     private var contentInset: CGFloat {
         CGFloat(preset.contentInsetPt)
+    }
+
+    /// Extra space reserved below the grid for the bottom warning bar, so the
+    /// grid keeps a full `contentInset` gap above the bar (the bar sits flush
+    /// at the bottom edge) rather than overlapping the last rows. The grid is
+    /// anchored at the top inset, so reserving height here lands the bar in
+    /// the gap below it. Zero when the preset has no bar.
+    private var bottomBarReserve: CGFloat {
+        preset.bottomBar.map { CGFloat($0.thicknessPt) } ?? 0
     }
 
     /// Menu/titlebar-button entry point (nil-target action).
@@ -218,6 +258,7 @@ final class TerminalView: NSView, NSTextInputClient {
         if size.width > 0, size.height > 0 {
             metalLayer.drawableSize = size
         }
+        updateBottomBar()
         renderLoop?.poke(force: true)
     }
 
@@ -235,9 +276,10 @@ final class TerminalView: NSView, NSTextInputClient {
 
     private func updateGridSize() {
         guard let renderer, let session else { return }
-        let inset = contentInset * 2
-        let columns = max(2, Int((bounds.width - inset) / renderer.cellSize.width))
-        let rows = max(2, Int((bounds.height - inset) / renderer.cellSize.height))
+        let columns = max(2, Int(
+            (bounds.width - contentInset * 2) / renderer.cellSize.width))
+        let rows = max(2, Int(
+            (bounds.height - contentInset * 2 - bottomBarReserve) / renderer.cellSize.height))
         session.resize(columns: columns, rows: rows)
     }
 
@@ -247,7 +289,8 @@ final class TerminalView: NSView, NSTextInputClient {
         guard let renderer else { return NSSize(width: 800, height: 540) }
         return NSSize(
             width: CGFloat(columns) * renderer.cellSize.width + contentInset * 2,
-            height: CGFloat(rows) * renderer.cellSize.height + contentInset * 2)
+            height: CGFloat(rows) * renderer.cellSize.height + contentInset * 2
+                + bottomBarReserve)
     }
 
     private func observeKeyWindow() {

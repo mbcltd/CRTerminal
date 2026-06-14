@@ -6,7 +6,7 @@ struct CRTPresetTests {
     @Test func launchSetLoadsInGalleryOrder() {
         let names = CRTPresetLibrary.builtIn.map(\.name)
         #expect(names == [
-            "Dark", "Light",
+            "Dark", "Light", "Danger",
             "IBM 5151", "DEC VT220", "Amdek 310A", "Commodore 1702",
         ])
     }
@@ -31,6 +31,36 @@ struct CRTPresetTests {
         }
     }
 
+    @Test func dangerCarriesACrimsonPalette() throws {
+        let danger = try #require(CRTPresetLibrary.preset(named: "Danger"))
+        #expect(!danger.effects)
+        #expect(danger.appearance == .dark)
+        let bar = try #require(danger.bottomBar)              // the warning stripe
+        #expect(bar.thicknessPt == 12)
+        #expect(bar.color == HexColor(0x6E, 0x14, 0x23))     // darker burgundy
+        let colors = try #require(danger.colors)
+        #expect(colors.red == HexColor(0xFF, 0x5D, 0x62))     // the red prompt
+        #expect(colors.background == HexColor(0x2A, 0x0A, 0x0F))
+
+        // The explicit palette becomes the scheme: foreground/background and
+        // the overridden ANSI red flow through, untouched slots keep xterm.
+        let scheme = ColorScheme(palette: colors)
+        #expect(scheme.foreground == ColorScheme.pack(0xFF, 0xE6, 0xE3))
+        #expect(scheme.background == ColorScheme.pack(0x2A, 0x0A, 0x0F))
+        #expect(scheme.palette[1] == ColorScheme.pack(0xFF, 0x5D, 0x62)) // ANSI red
+        // 256-cube entry the palette never touches stays the xterm default.
+        #expect(scheme.palette[196] == ColorScheme.pack(0xFF, 0x00, 0x00))
+    }
+
+    @Test func paletteOmissionsFallBackToXterm() {
+        // Only background/foreground specified: every ANSI slot stays xterm.
+        let bare = CRTPreset.Palette(
+            background: HexColor(0x10, 0x10, 0x10), foreground: HexColor(0xEE, 0xEE, 0xEE))
+        let scheme = ColorScheme(palette: bare)
+        #expect(scheme.palette == ColorScheme.default.palette)
+        #expect(scheme.foreground == ColorScheme.pack(0xEE, 0xEE, 0xEE))
+    }
+
     @Test func minimalJSONGetsDefaults() throws {
         let json = #"{ "name": "Bare" }"#
         let preset = try JSONDecoder().decode(CRTPreset.self, from: Data(json.utf8))
@@ -40,6 +70,8 @@ struct CRTPresetTests {
         #expect(preset.mask.type == .none)
         #expect(preset.bezel.widthPt == 0)
         #expect(!preset.artifacts.isAnimated)
+        #expect(preset.colors == nil)
+        #expect(preset.bottomBar == nil)
         #expect(preset.degaussButton)
     }
 

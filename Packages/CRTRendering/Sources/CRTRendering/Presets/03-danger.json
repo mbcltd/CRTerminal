@@ -1,0 +1,28 @@
+{
+  "name": "Danger",
+  "blurb": "A crimson production palette: a bright red prompt and warm ANSI hues, so the tab you're SSH'd into prod is never the one you mistake for local.",
+  "effects": false,
+  "appearance": "dark",
+  "bottomBar": { "thicknessPt": 12, "color": "#6E1423" },
+  "colors": {
+    "background": "#2A0A0F",
+    "foreground": "#FFE6E3",
+    "selection": "#5C2B30",
+    "black": "#2A1416",
+    "red": "#FF5D62",
+    "green": "#7FD98C",
+    "yellow": "#F5B342",
+    "blue": "#6DB3F2",
+    "magenta": "#D39BF0",
+    "cyan": "#56D4D0",
+    "white": "#F3D8D6",
+    "brightBlack": "#7D595D",
+    "brightRed": "#FF8A90",
+    "brightGreen": "#97E6A2",
+    "brightYellow": "#FFC866",
+    "brightBlue": "#8CC6F7",
+    "brightMagenta": "#E0B3F5",
+    "brightCyan": "#76E0DC",
+    "brightWhite": "#FFF2F0"
+  }
+}

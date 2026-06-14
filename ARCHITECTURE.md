@@ -248,13 +248,21 @@ Design rules for the pipeline:
 
 A preset is a declarative JSON document in the bundle (user presets in Application
 Support): identity (name, year, blurb), phosphor, geometry, mask, bloom, artifacts,
-bezel asset, suggested font and palette. Launch set, chosen to span the design space:
+bezel asset, suggested font and palette. A preset's `appearance` (dark/light) picks
+the terminal color scheme; a preset may instead carry an explicit `colors` palette
+(background, foreground, selection, the 16 ANSI hues — omitted slots fall back to
+xterm) that overrides the appearance-derived scheme, and an optional `bottomBar`
+(thickness + colour) that draws a thick stripe along the pane's bottom edge (a
+CALayer above the Metal surface, like the bell flash). Launch set, chosen to span
+the design space:
 
 - **IBM 5151** — green P39 phosphor, heavy persistence, no mask (monochrome)
 - **DEC VT220** — white or amber, fast phosphor, gentle curvature
 - **Amdek 310A** — amber classic
 - **Commodore 1702** — composite color, strong mask and bleed
-- **"Museum off"** — all effects disabled; the modern terminal
+- **Dark / Light** — all effects disabled; the modern terminal, dark or light
+- **Danger** — a crimson "you're in production" palette (custom `colors`) with a
+  thick burgundy bottom warning stripe; effects off
 
 The settings UI renders presets as a gallery with live previews (each preview is just
 the same pipeline at thumbnail size).

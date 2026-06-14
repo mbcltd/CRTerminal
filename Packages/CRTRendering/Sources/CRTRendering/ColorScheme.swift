@@ -33,6 +33,30 @@ public struct ColorScheme: Sendable {
         selectionBackground: pack(0xB3, 0xD4, 0xFF),
         palette: xterm256())
 
+    /// A scheme from an explicit preset palette: the standard xterm 256-color
+    /// table with the 16 ANSI slots overridden by whichever hues the palette
+    /// specifies, plus its own foreground, background and selection.
+    public init(palette: CRTPreset.Palette) {
+        var colors = Self.xterm256()
+        let ansi: [HexColor?] = [
+            palette.black, palette.red, palette.green, palette.yellow,
+            palette.blue, palette.magenta, palette.cyan, palette.white,
+            palette.brightBlack, palette.brightRed, palette.brightGreen, palette.brightYellow,
+            palette.brightBlue, palette.brightMagenta, palette.brightCyan, palette.brightWhite,
+        ]
+        for (index, hex) in ansi.enumerated() {
+            if let hex { colors[index] = Self.pack(hex.red, hex.green, hex.blue) }
+        }
+        let fg = palette.foreground, bg = palette.background
+        let selection = palette.selection
+        self.init(
+            foreground: Self.pack(fg.red, fg.green, fg.blue),
+            background: Self.pack(bg.red, bg.green, bg.blue),
+            selectionBackground: selection.map { Self.pack($0.red, $0.green, $0.blue) }
+                ?? Self.pack(0x33, 0x4E, 0x6E),
+            palette: colors)
+    }
+
     public func resolve(_ color: PackedColor, isForeground: Bool, bold: Bool) -> UInt32 {
         if color.isDefault {
             return isForeground ? foreground : background

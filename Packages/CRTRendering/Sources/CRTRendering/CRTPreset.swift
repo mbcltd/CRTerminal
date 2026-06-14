@@ -202,6 +202,67 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         }
     }
 
+    /// A thick accent stripe along the pane's bottom edge.
+    public struct BottomBar: Codable, Equatable, Sendable {
+        /// Bar thickness in points.
+        public var thicknessPt: Double
+        /// Bar colour; nil uses the theme's accent (the palette's red, a
+        /// tube's phosphor, else the foreground).
+        public var color: HexColor?
+
+        public init(thicknessPt: Double = 4, color: HexColor? = nil) {
+            self.thicknessPt = thicknessPt
+            self.color = color
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            thicknessPt = try c.decodeIfPresent(Double.self, forKey: .thicknessPt)
+                ?? BottomBar().thicknessPt
+            color = try c.decodeIfPresent(HexColor.self, forKey: .color)
+        }
+    }
+
+    /// An explicit terminal color scheme carried by the preset. When present
+    /// it overrides the dark/light scheme that `appearance` would otherwise
+    /// pick, letting a preset ship a full palette (the "Danger" theme is a
+    /// crimson production scheme) rather than only choosing light or dark.
+    /// Background and foreground are required; any omitted ANSI hue falls back
+    /// to the standard xterm color. `appearance` still drives the surrounding
+    /// chrome's light/dark mode.
+    public struct Palette: Codable, Equatable, Sendable {
+        public var background: HexColor
+        public var foreground: HexColor
+        public var selection: HexColor?
+
+        // The 8 standard ANSI hues and their bright counterparts; nil keeps
+        // the xterm default for that slot.
+        public var black, red, green, yellow, blue, magenta, cyan, white: HexColor?
+        public var brightBlack, brightRed, brightGreen, brightYellow: HexColor?
+        public var brightBlue, brightMagenta, brightCyan, brightWhite: HexColor?
+
+        public init(
+            background: HexColor, foreground: HexColor, selection: HexColor? = nil,
+            black: HexColor? = nil, red: HexColor? = nil, green: HexColor? = nil,
+            yellow: HexColor? = nil, blue: HexColor? = nil, magenta: HexColor? = nil,
+            cyan: HexColor? = nil, white: HexColor? = nil,
+            brightBlack: HexColor? = nil, brightRed: HexColor? = nil,
+            brightGreen: HexColor? = nil, brightYellow: HexColor? = nil,
+            brightBlue: HexColor? = nil, brightMagenta: HexColor? = nil,
+            brightCyan: HexColor? = nil, brightWhite: HexColor? = nil
+        ) {
+            self.background = background
+            self.foreground = foreground
+            self.selection = selection
+            self.black = black; self.red = red; self.green = green; self.yellow = yellow
+            self.blue = blue; self.magenta = magenta; self.cyan = cyan; self.white = white
+            self.brightBlack = brightBlack; self.brightRed = brightRed
+            self.brightGreen = brightGreen; self.brightYellow = brightYellow
+            self.brightBlue = brightBlue; self.brightMagenta = brightMagenta
+            self.brightCyan = brightCyan; self.brightWhite = brightWhite
+        }
+    }
+
     public var phosphor: Phosphor
     public var geometry: Geometry
     public var mask: Mask
@@ -209,6 +270,11 @@ public struct CRTPreset: Codable, Equatable, Sendable {
     public var bloom: Bloom
     public var artifacts: Artifacts
     public var bezel: Bezel
+    /// An explicit color scheme; nil derives the scheme from `appearance`.
+    public var colors: Palette?
+    /// A thick accent stripe along the pane's bottom edge — the "Danger"
+    /// theme's production warning. nil draws no bar.
+    public var bottomBar: BottomBar?
     /// Whether the monitor sports a manual degauss button. Sets without
     /// one (the Commodore 1702 degaussed itself at power-on) hide the
     /// titlebar button; the menu command still works.
@@ -230,6 +296,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         phosphor: Phosphor = Phosphor(), geometry: Geometry = Geometry(),
         mask: Mask = Mask(), scanlines: Scanlines = Scanlines(),
         bloom: Bloom = Bloom(), artifacts: Artifacts = Artifacts(), bezel: Bezel = Bezel(),
+        colors: Palette? = nil, bottomBar: BottomBar? = nil,
         degaussButton: Bool = true
     ) {
         self.name = name
@@ -244,6 +311,8 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         self.bloom = bloom
         self.artifacts = artifacts
         self.bezel = bezel
+        self.colors = colors
+        self.bottomBar = bottomBar
         self.degaussButton = degaussButton
     }
 
@@ -262,6 +331,8 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         bloom = try container.decodeIfPresent(Bloom.self, forKey: .bloom) ?? Bloom()
         artifacts = try container.decodeIfPresent(Artifacts.self, forKey: .artifacts) ?? Artifacts()
         bezel = try container.decodeIfPresent(Bezel.self, forKey: .bezel) ?? Bezel()
+        colors = try container.decodeIfPresent(Palette.self, forKey: .colors)
+        bottomBar = try container.decodeIfPresent(BottomBar.self, forKey: .bottomBar)
         degaussButton = try container.decodeIfPresent(Bool.self, forKey: .degaussButton) ?? true
     }
 
