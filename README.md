@@ -5,17 +5,17 @@
 ## Navigating
 
 - **⌘K** Search palette over all sessions 
-- **Splits.** Divide any session right (⌘D) or down (⌘⇧D) and close panes with ⌘W.
-- **Tear-off windows.** Drag a session out of the sidebar to pop it into its own
+- **Splits** Divide any session right (⌘D) or down (⌘⇧D) and close panes with ⌘W.
+- **Tear-off windows** Drag a session out of the sidebar to pop it into its own
   window; drag it back to recombine.
-- **Vertical tab rail.** live titles, preview and bell attention badges.
+- **Vertical tab rail** Live titles, preview and bell attention badges.
 - **Move by keyboard.** ⌘⇧] / ⌘⇧[ to step through sessions, ⌘1–9 to leap to one.
 
 ## Looks
 
-- **Opinionated defaults.**
-- **CRT mode.** 
-- **Degauss.**
+- **Opinionated defaults**
+- **CRT mode** 
+- **Degauss**
 
 ## Built for speed
 
@@ -27,11 +27,11 @@ kept fast enough to keep up with the noisiest output. Performance numbers live i
 
 ## Install
 
-Requires **macOS 26 (Tahoe)** or later, Apple Silicon.
+Requires **MacOS 26 (Tahoe)** or later, Apple Silicon.
 
 Download the latest signed, notarised build:
 
-**[⬇︎ CRTerminal.dmg](https://github.com/mbcltd/CRTerminal/releases/latest/download/CRTerminal.dmg)**
+**[CRTerminal.dmg](https://github.com/mbcltd/CRTerminal/releases/latest/download/CRTerminal.dmg)**
 
 Open the disk image and drag **crterm** to Applications. The app updates itself
 in place via [Sparkle](https://sparkle-project.org) — or check manually from

@@ -416,7 +416,7 @@
 				DEVELOPMENT_TEAM = 6JY7V42XFZ;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = CRTerminal-Info.plist;
+				INFOPLIST_FILE = "CRTerminal-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Morgan Brown Consultancy Ltd";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -457,7 +457,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = CRTerminal-Info.plist;
+				INFOPLIST_FILE = "CRTerminal-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Morgan Brown Consultancy Ltd";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
