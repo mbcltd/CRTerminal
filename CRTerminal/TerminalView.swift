@@ -199,7 +199,7 @@ final class TerminalView: NSView, NSTextInputClient {
         renderLoop?.setOccluded(occluded)
     }
 
-    /// Profile font changed: drop the renderer and pick up the new shared
+    /// Settings font changed: drop the renderer and pick up the new shared
     /// one from the provider.
     func resetRenderer() {
         renderLoop?.invalidate()

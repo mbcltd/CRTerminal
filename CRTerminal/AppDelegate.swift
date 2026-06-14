@@ -21,7 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Before any Profile.font resolution: nil fontName means Geist Mono.
+        // Before any TerminalSettings.font resolution: the font is always
+        // the bundled Geist Mono, so register it first.
         BundledFonts.register()
         // Start the updater before building the menu so the "Check for Updates…"
         // item can target it. `startingUpdater: true` also schedules the
@@ -30,8 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         NSApp.mainMenu = makeMainMenu()
         NotificationPoster.shared.activate()
-        ProfileStore.shared.onChange = { [weak self] in
-            self?.profilesChanged()
+        SettingsStore.shared.onChange = { [weak self] in
+            self?.settingsChanged()
         }
         AlertSettings.shared.onChange = { [weak self] in
             guard let self else { return }
@@ -109,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func makeWindowController(spawnInitialSession: Bool = true) -> TerminalWindowController {
         let controller = TerminalWindowController(
-            profile: ProfileStore.shared.defaultProfile,
+            settings: SettingsStore.shared.settings,
             spawnInitialSession: spawnInitialSession)
         controller.onClose = { [weak self] closed in
             self?.controllers.removeAll { $0 === closed }
@@ -223,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard !targets.isEmpty else { return }
         let theme = SidebarTheme(
             preset: keyController?.activePreset
-                ?? ProfileStore.shared.defaultProfile.preset(in: PresetCatalog.all))
+                ?? SettingsStore.shared.settings.preset(in: PresetCatalog.all))
         let menu = JumpMenuController(targets: targets, theme: theme) { [weak self] target in
             self?.jump(to: target)
         }
@@ -250,10 +251,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller.selectTab(index)
     }
 
-    private func profilesChanged() {
-        let profile = ProfileStore.shared.defaultProfile
+    private func settingsChanged() {
+        let settings = SettingsStore.shared.settings
         for controller in controllers {
-            controller.apply(profile: profile)
+            controller.apply(settings: settings)
         }
     }
 
@@ -263,11 +264,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let name = sender.representedObject as? String,
               let preset = PresetCatalog.all.first(where: { $0.name == name })
         else { return }
+        // Themes the active session only; the default theme (for new
+        // sessions and windows) is set in Settings, not by this switch.
         keyController?.apply(preset: preset)
-        // Remember the choice in the default profile.
-        var profile = ProfileStore.shared.defaultProfile
-        profile.presetName = preset.name
-        ProfileStore.shared.update(profile)
     }
 
     @objc private func showSettings(_ sender: Any?) {
@@ -302,7 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(selectPreset(_:)) {
             let current = keyController?.currentPresetName
-                ?? ProfileStore.shared.defaultProfile.presetName
+                ?? SettingsStore.shared.settings.presetName
             menuItem.state = (menuItem.representedObject as? String) == current
                 ? .on : .off
         }

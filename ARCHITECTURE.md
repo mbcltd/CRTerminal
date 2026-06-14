@@ -189,7 +189,7 @@ minimum.
   adjacent cells tile seamlessly (font glyphs don't fill the rounded-up cell and
   fallback fonts have foreign metrics, both of which leave background seams).
 - **Shaping.** The fast path maps one cell → one glyph via the font's cmap, no shaping.
-  When ligatures are enabled (per profile, default on), only maximal same-style runs of
+  When ligatures are enabled (a global setting, default on), only maximal same-style runs of
   *operator characters* (`=<>!&|:+-*/~%?.^#_`) are shaped with Core Text, so prose and
   log output never pay for shaping; results are cached by run text — `=>` costs one
   CTLine, then it's a dictionary hit. Runs split at a block cursor (its cell must keep
@@ -198,9 +198,9 @@ minimum.
   symbols) uses CTFontCreateForString with a per-codepoint fallback cache.
 - **Bundled fonts.** Geist Mono (Regular/Bold/Italic/BoldItalic) and Departure Mono
   ship inside CRTRendering's resources (both SIL OFL 1.1; license texts sit beside the
-  files) and are registered with process scope at launch. Geist Mono is the default
-  font (a profile's nil fontName); it is ligature-capable, which is what made the
-  shaping path verifiable.
+  files) and are registered with process scope at launch. Geist Mono is the fixed
+  terminal font (only its size is configurable); it is ligature-capable, which is
+  what made the shaping path verifiable.
 - **Draw.** Three instanced draws into an offscreen `terminalTexture`:
   background quads, glyph quads, then decorations (cursor, selection, underlines,
   IME marked-text). A full screen of cells is two-digit-thousands of instances —
@@ -287,17 +287,20 @@ the same pipeline at thumbnail size).
   draw (the renderer's stored preset is only a fallback; phosphor history resets
   when a pane's preset changes, tracked on its `SurfaceContext`). Sidebar rows
   render in their own session's theme; the window chrome (titlebar cluster,
-  sidebar rail) follows the active session. The profile's preset is just the
-  default that new sessions start from.
+  sidebar rail) follows the active session. The titlebar/menu theme switchers
+  re-theme only the active session and do not change the default. The global
+  settings preset ("Default theme") is the one every new session and window
+  starts from, and is changed only in Settings.
 - **Titlebar controls** (same handoff): a trailing control cluster with a theme
   switcher — one chip showing a phosphor-colored dot plus the active preset name,
   opening a dropdown where each row is styled in its own preset's look with a
   live-pipeline thumbnail — and the degauss button, drawn as a skeuomorphic
   graphite front-panel button (engraved label, pressed-in state) that only
   appears while the active preset has effects enabled.
-- **Settings** — profiles (font, palette, preset, shell, scrollback), live-preview
-  preset gallery, written as declarative SwiftUI hosted in a settings window; settings
-  persist via `UserDefaults`-backed codable models.
+- **Settings** — one global set of terminal settings (font, palette, preset, shell,
+  scrollback), a live-preview preset gallery, and alerts, in a single scrolling pane
+  written as declarative SwiftUI hosted in a settings window; settings persist via
+  `UserDefaults`-backed codable models (`SettingsStore`).
 - **Accessibility** — the grid is exposed through `NSAccessibility` as static text
   lines so VoiceOver can read the screen; effects never affect the accessibility tree.
 - **Shell integration** — optional shipped shell snippets emit prompt marks
@@ -373,7 +376,7 @@ effect throttling.
 idle-power assertion still passes with effects enabled but quiescent.
 
 ### Phase 5 — Feature depth
-Tabs and split panes, profiles + full settings UI, scrollback search, URL/path
+Tabs and split panes, global settings UI, scrollback search, URL/path
 detection + OSC 8 links, shell integration (OSC 133 marks, prompt jumping), IME
 polish, kitty keyboard protocol, resize reflow, notifications (OSC 9/777),
 accessibility pass.
@@ -437,7 +440,7 @@ lookup), and selects the tab. OSC 9/777 notifications gain the same jump.
 clicking it lands on that session.
 
 ### Phase F — Alert settings + visual bell
-Global "Alerts" settings group (UserDefaults-backed, `ProfileStore` pattern): bell
+Global "Alerts" settings group (UserDefaults-backed, `SettingsStore` pattern): bell
 sound, sidebar badges, dock badge, bounce, notifications, visual bell. Visual bell =
 ~150 ms phosphor-tinted overlay flash on the bell pane (a CALayer above the Metal
 surface, not a pipeline uniform, so it works on every preset including museum off);
