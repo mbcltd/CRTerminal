@@ -85,9 +85,29 @@ jobs:
       - name: Stage App Store Connect API key
         env:
           AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+          AC_API_KEY_ID:        ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID:     ${{ secrets.AC_API_ISSUER_ID }}
         run: |
-          echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/ac_api_key.p8"
-          echo "AC_API_KEY_PATH=$RUNNER_TEMP/ac_api_key.p8" >> "$GITHUB_ENV"
+          KEY="$RUNNER_TEMP/ac_api_key.p8"
+          # Accept either a base64-encoded .p8 (recommended) or the raw PEM text
+          # pasted straight into the secret. Decode; if that isn't a PEM, assume
+          # the secret already *is* the PEM.
+          printf '%s' "$AC_API_KEY_P8_BASE64" | base64 --decode > "$KEY" 2>/dev/null || true
+          if ! head -1 "$KEY" | grep -q "BEGIN PRIVATE KEY"; then
+            echo "Decoded value is not a PEM; treating the secret as raw PEM text."
+            printf '%s' "$AC_API_KEY_P8_BASE64" > "$KEY"
+          fi
+          # Diagnostics — these don't leak the private key. A failure here points
+          # straight at the bad credential behind the notary 401.
+          echo "p8 first line: $(head -1 "$KEY")"
+          if openssl pkey -in "$KEY" -noout 2>/dev/null; then
+            echo "p8: parses as a valid private key ✓"
+          else
+            echo "p8: DOES NOT parse — the AC_API_KEY_P8_BASE64 secret is wrong/corrupt ✗"
+          fi
+          echo "Key ID length: ${#AC_API_KEY_ID} (expected 10)"
+          echo "Issuer ID length: ${#AC_API_ISSUER_ID} (expected 36, UUID)"
+          echo "AC_API_KEY_PATH=$KEY" >> "$GITHUB_ENV"
 
       - name: Fetch Sparkle signing tool
         if: env.SPARKLE_PRIVATE_KEY != ''
