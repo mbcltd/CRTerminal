@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:   # manual "Run workflow" button (runs from main)
 
 jobs:
   package-tests:
@@ -36,3 +37,84 @@ jobs:
           -destination 'platform=macOS'
           -skip-testing:CRTerminalUITests
           CODE_SIGNING_ALLOWED=NO
+
+  # Notarised Developer ID release, gated on the test jobs above. Only runs for
+  # main (push or manual dispatch) — never on PRs. Marketing version comes from
+  # marketing_version.txt; the build number is the monotonic run number, which
+  # Sparkle uses to tell whether a newer build is available.
+  release:
+    name: Release
+    needs: [package-tests, app]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: macos-26
+    # Signing/notary secrets live in the `release` environment, which is locked
+    # to the main branch via a deployment branch policy — so the Developer ID
+    # cert is only reachable from this job on main.
+    environment: release
+    permissions:
+      contents: write   # create the GitHub Release + tag
+    env:
+      # Exposed at job scope so steps can gate on it via `if: env.* != ''`.
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        run: |
+          echo "VERSION=$(tr -d ' \t\n\r' < marketing_version.txt)" >> "$GITHUB_ENV"
+
+      - name: Import Developer ID certificate
+        env:
+          CERT_P12_BASE64:   ${{ secrets.DEVID_CERT_P12_BASE64 }}
+          CERT_PASSWORD:     ${{ secrets.DEVID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # Make the temp keychain searchable alongside the login keychain.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            "$HOME/Library/Keychains/login.keychain-db"
+
+      - name: Stage App Store Connect API key
+        env:
+          AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+        run: |
+          echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/ac_api_key.p8"
+          echo "AC_API_KEY_PATH=$RUNNER_TEMP/ac_api_key.p8" >> "$GITHUB_ENV"
+
+      - name: Fetch Sparkle signing tool
+        if: env.SPARKLE_PRIVATE_KEY != ''
+        env:
+          SPARKLE_VERSION: 2.6.4
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP" bin/sign_update
+          echo "SPARKLE_SIGN_UPDATE=$RUNNER_TEMP/bin/sign_update" >> "$GITHUB_ENV"
+
+      - name: Build, notarise & package
+        env:
+          BUILD_NUMBER:     ${{ github.run_number }}
+          AC_API_KEY_ID:    ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          # AC_API_KEY_PATH and SPARKLE_SIGN_UPDATE come from $GITHUB_ENV above.
+          # SPARKLE_PRIVATE_KEY is inherited from job env.
+        run: Scripts/release.sh
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}-${{ github.run_number }}
+          name: CRTerminal ${{ env.VERSION }} (build ${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            build/release/CRTerminal.dmg
+            build/release/appcast.xml

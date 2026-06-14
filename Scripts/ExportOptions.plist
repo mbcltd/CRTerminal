@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Developer ID export for direct (non-App Store) distribution.
+     Signs with the team's Developer ID Application cert + hardened runtime,
+     which is what the notary service requires. -->
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>developer-id</string>
+  <key>teamID</key>
+  <string>6JY7V42XFZ</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+</dict>
+</plist>
