@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CRTerminal is a macOS terminal emulator (AppKit, Swift) intended to be high-performance and GPU accelerated, with optional retro CRT screen appearance — including pre-configured presets matching historic monitors and a degauss button. The project is currently a fresh Xcode app template; the terminal functionality described in README.md is not yet implemented.
+CRTerminal (ships as **crterm**) is a macOS terminal emulator (AppKit, Swift) that is high-performance and GPU accelerated, with optional retro CRT screen appearance — including pre-configured presets matching historic monitors and a degauss button. It is a working, shipping terminal: signed/notarised DMG with Sparkle auto-updates, macOS 26 (Tahoe)+, Apple Silicon.
 
-See ARCHITECTURE.md for the detailed design (module layout, concurrency model, render pipeline, performance budgets) and the phased implementation plan. Follow it when implementing features, and update it when the design changes.
+The features in README.md are implemented. In broad strokes:
+- **Emulation** — table-driven VT500 parser, grid/scrollback with damage tracking, selection/search, key/mouse encoders, and inline image protocols (kitty, sixel, iTerm2), all in `Packages/TerminalCore`.
+- **Rendering** — Metal renderer with a CoreText glyph atlas and ligature shaping, plus the CRT effect pipeline (persistence, bloom, scanlines, barrel/masks/aberration/vignette) and a preset library, in `Packages/CRTRendering`.
+- **App** — live login shell over a PTY, IME input, a vertical session sidebar, split panes (⌘D / ⌘⇧D), the ⌘K jump palette, per-session presets, the degauss button, bell/notification attention model, and full session restoration (grid + scrollback + layout + cwd).
+
+See ARCHITECTURE.md for the detailed design (module layout, concurrency model, render pipeline, performance budgets) and the phased implementation plan — the core build-out (Phases 0–6), the attention/notification work (Phases A–F), and session restoration (Phases R0–R4) are all landed. Follow it when implementing features, and update it when the design changes.
 
 ## Commands
 
