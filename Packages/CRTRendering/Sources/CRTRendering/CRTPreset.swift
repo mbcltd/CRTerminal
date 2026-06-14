@@ -267,12 +267,12 @@ public struct CRTPreset: Codable, Equatable, Sendable {
 
     /// Everything off — the lean modern terminal, dark scheme.
     public static let darkStandard = CRTPreset(
-        name: "Dark Standard", blurb: "All effects disabled; the modern terminal.",
+        name: "Dark", blurb: "All effects disabled; the modern terminal.",
         effects: false)
 
     /// Everything off — the lean modern terminal, light scheme.
     public static let lightStandard = CRTPreset(
-        name: "Light Standard", blurb: "All effects disabled; a light scheme.",
+        name: "Light", blurb: "All effects disabled; a light scheme.",
         effects: false, appearance: .light)
 }
 

@@ -7,7 +7,7 @@ import CRTRendering
 /// a `Settings`/`Main`-style basename collision is best avoided.)
 struct TerminalSettings: Codable, Equatable {
     var fontSize: Double = 13
-    var presetName: String = "Dark Standard"
+    var presetName: String = "Dark"
     /// nil = the user's login shell ($SHELL).
     var shellPath: String?
     /// Where new shells start; nil = the home folder. "~" is expanded.
@@ -62,7 +62,7 @@ extension TerminalSettings {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 13
         presetName = try container.decodeIfPresent(String.self, forKey: .presetName)
-            ?? "Dark Standard"
+            ?? "Dark"
         shellPath = try container.decodeIfPresent(String.self, forKey: .shellPath)
         workingDirectory = try container.decodeIfPresent(
             String.self, forKey: .workingDirectory)

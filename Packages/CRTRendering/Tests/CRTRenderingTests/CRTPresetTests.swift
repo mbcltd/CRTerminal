@@ -6,16 +6,16 @@ struct CRTPresetTests {
     @Test func launchSetLoadsInGalleryOrder() {
         let names = CRTPresetLibrary.builtIn.map(\.name)
         #expect(names == [
-            "Dark Standard", "Light Standard",
+            "Dark", "Light",
             "IBM 5151", "DEC VT220", "Amdek 310A", "Commodore 1702",
         ])
     }
 
     @Test func standardPresetsDisableEffects() throws {
-        let dark = try #require(CRTPresetLibrary.preset(named: "Dark Standard"))
+        let dark = try #require(CRTPresetLibrary.preset(named: "Dark"))
         #expect(!dark.effects)
         #expect(dark.appearance == .dark)
-        let light = try #require(CRTPresetLibrary.preset(named: "Light Standard"))
+        let light = try #require(CRTPresetLibrary.preset(named: "Light"))
         #expect(!light.effects)
         #expect(light.appearance == .light)
     }

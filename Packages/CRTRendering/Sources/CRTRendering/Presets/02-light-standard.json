@@ -1,5 +1,5 @@
 {
-  "name": "Light Standard",
+  "name": "Light",
   "blurb": "All effects disabled; a light scheme.",
   "effects": false,
   "appearance": "light"

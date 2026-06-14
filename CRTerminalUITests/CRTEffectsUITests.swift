@@ -31,7 +31,7 @@ final class CRTEffectsUITests: XCTestCase {
             settings.buttons.matching(
                 NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
         }
-        for name in ["Dark Standard", "Light Standard",
+        for name in ["Dark", "Light",
                      "IBM 5151", "DEC VT220", "Amdek 310A", "Commodore 1702"] {
             XCTAssertTrue(card(name).exists, "\(name) missing from gallery")
         }
@@ -40,7 +40,7 @@ final class CRTEffectsUITests: XCTestCase {
 
         // Switching from the View menu (radio items) keeps the app alive,
         // including the bezel preset which resizes the cell grid.
-        for name in ["Commodore 1702", "Light Standard", "Dark Standard", "DEC VT220"] {
+        for name in ["Commodore 1702", "Light", "Dark", "DEC VT220"] {
             app.menuBars.menuBarItems["View"].click()
             app.menuBars.menuItems[name].click()
         }
