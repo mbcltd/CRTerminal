@@ -282,9 +282,9 @@ public struct CRTPreset: Codable, Equatable, Sendable {
 
     /// Multiplier applied to the user's configured font size when this
     /// preset is worn. 1.0 leaves the size untouched; the Commodore 1702
-    /// runs at 1.5 so its chunky composite glyphs read at the same on-tube
-    /// presence the real monitor had. The renderer scales its glyph atlas
-    /// to match, so the cell grid grows with the type.
+    /// runs at 1.25 so its chunky composite glyphs read at the same
+    /// on-tube presence the real monitor had. The renderer scales its
+    /// glyph atlas to match, so the cell grid grows with the type.
     public var fontSizeScale: Double
 
     /// PostScript name of the typeface this preset renders with; nil keeps

@@ -23,7 +23,7 @@ struct TerminalSettings: Codable, Equatable {
     /// `name` is the PostScript face — a preset's `fontName`, or the
     /// bundled Geist Mono default. `scale` multiplies the configured size
     /// for presets that ask for it (a preset's `fontSizeScale` — the
-    /// Commodore 1702 renders 50% larger in the bundled C64 face). The
+    /// Commodore 1702 renders 25% larger in the bundled C64 face). The
     /// clamp applies after scaling; an unresolvable name falls back to the
     /// system monospaced font.
     func font(name: String = BundledFonts.geistMono, scale: Double = 1) -> NSFont {
