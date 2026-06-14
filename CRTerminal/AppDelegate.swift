@@ -1,5 +1,6 @@
 import AppKit
 import CRTRendering
+import Sparkle
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
@@ -10,6 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var previewRenderer: PresetPreviewRenderer?
     private var probe: TypistProbe?
 
+    /// Sparkle auto-updater. Started at launch; checks the SUFeedURL appcast
+    /// declared in Info.plist and backs the "Check for Updates…" menu item.
+    private var updaterController: SPUStandardUpdaterController?
+
     override init() {
         super.init()
         AppDelegate.shared = self
@@ -18,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Before any Profile.font resolution: nil fontName means Geist Mono.
         BundledFonts.register()
+        // Start the updater before building the menu so the "Check for Updates…"
+        // item can target it. `startingUpdater: true` also schedules the
+        // background check governed by SUEnableAutomaticChecks.
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         NSApp.mainMenu = makeMainMenu()
         NotificationPoster.shared.activate()
         ProfileStore.shared.onChange = { [weak self] in
@@ -316,6 +326,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             action: #selector(showAboutPanel(_:)),
             keyEquivalent: "")
         about.target = self
+        let updates = appMenu.addItem(
+            withTitle: "Check for Updates…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: "")
+        updates.target = updaterController
         appMenu.addItem(.separator())
         let settings = appMenu.addItem(
             withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")

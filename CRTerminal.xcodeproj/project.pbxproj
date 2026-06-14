@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		CB10000000000000000000A1 /* TerminalCore in Frameworks */ = {isa = PBXBuildFile; productRef = CB10000000000000000000B1 /* TerminalCore */; };
 		CB10000000000000000000A2 /* CRTRendering in Frameworks */ = {isa = PBXBuildFile; productRef = CB10000000000000000000B2 /* CRTRendering */; };
+		CB10000000000000000000A3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = CB10000000000000000000B3 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 			files = (
 				CB10000000000000000000A1 /* TerminalCore in Frameworks */,
 				CB10000000000000000000A2 /* CRTRendering in Frameworks */,
+				CB10000000000000000000A3 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,6 +123,7 @@
 			packageProductDependencies = (
 				CB10000000000000000000B1 /* TerminalCore */,
 				CB10000000000000000000B2 /* CRTRendering */,
+				CB10000000000000000000B3 /* Sparkle */,
 			);
 			productName = CRTerminal;
 			productReference = 86CB176C2FDAB54E00C699F7 /* crterm.app */;
@@ -207,6 +210,7 @@
 			packageReferences = (
 				CB10000000000000000000C1 /* XCLocalSwiftPackageReference "Packages/TerminalCore" */,
 				CB10000000000000000000C2 /* XCLocalSwiftPackageReference "Packages/CRTRendering" */,
+				CB10000000000000000000C3 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 86CB176D2FDAB54E00C699F7 /* Products */;
@@ -412,6 +416,7 @@
 				DEVELOPMENT_TEAM = 6JY7V42XFZ;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CRTerminal-Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Morgan Brown Consultancy Ltd";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -452,6 +457,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CRTerminal-Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Morgan Brown Consultancy Ltd";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -606,6 +612,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		CB10000000000000000000C3 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		CB10000000000000000000B1 /* TerminalCore */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -614,6 +631,11 @@
 		CB10000000000000000000B2 /* CRTRendering */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = CRTRendering;
+		};
+		CB10000000000000000000B3 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CB10000000000000000000C3 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
