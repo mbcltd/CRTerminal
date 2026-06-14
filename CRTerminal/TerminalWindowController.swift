@@ -89,6 +89,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         sidebar.frame = NSRect(
             x: 0, y: 0, width: SessionSidebarView.width, height: rootView.bounds.height)
         sidebar.autoresizingMask = [.height]
+        // Hidden until a second session exists; `updateSidebarVisibility`
+        // reveals it and reclaims the content inset then.
+        sidebar.isHidden = true
         sidebar.onSelect = { [weak self] index in self?.selectTab(index) }
         sidebar.onClose = { [weak self] index in self?.closeSession(at: index) }
         sidebar.onNewSession = { [weak self] in self?.addSession() }
@@ -110,10 +113,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
         rootView.addSubview(sidebar)
 
-        contentHost.frame = NSRect(
-            x: SessionSidebarView.width, y: 0,
-            width: rootView.bounds.width - SessionSidebarView.width,
-            height: rootView.bounds.height)
+        // Full width to start: the lone startup session has no sidebar.
+        contentHost.frame = rootView.bounds
         contentHost.autoresizingMask = [.width, .height]
         rootView.addSubview(contentHost)
 
@@ -196,8 +197,25 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
         activeTab?.unseenBells = 0
         hideHoverCard()
+        updateSidebarVisibility()
         applyChrome(preset: activePreset)
         refreshSessionMetadata()
+    }
+
+    /// The session sidebar only earns its space once there's a choice to
+    /// make: a lone session uses the full window width and the pane tree
+    /// reflows to fill whatever the sidebar leaves behind. Called from
+    /// `selectTab`, the chokepoint every session add/close/move passes
+    /// through.
+    private func updateSidebarVisibility() {
+        let showSidebar = tabs.count > 1
+        guard sidebar.isHidden == showSidebar else { return }
+        sidebar.isHidden = !showSidebar
+        let inset = showSidebar ? SessionSidebarView.width : 0
+        contentHost.frame = NSRect(
+            x: inset, y: 0,
+            width: rootView.bounds.width - inset,
+            height: rootView.bounds.height)
     }
 
     @objc func nextSession(_ sender: Any?) {
@@ -334,8 +352,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     func sizeWindowToGrid(columns: Int, rows: Int) {
         guard let window, let pane = activeTab?.panes.first else { return }
         let size = pane.sizeForGrid(columns: columns, rows: rows)
+        // Only reserve the sidebar rail when it's actually showing.
+        let sidebarWidth = sidebar.isHidden ? 0 : SessionSidebarView.width
         window.setContentSize(NSSize(
-            width: size.width + SessionSidebarView.width, height: size.height))
+            width: size.width + sidebarWidth, height: size.height))
         if let renderer = pane.renderer {
             window.contentResizeIncrements = renderer.cellSize
         }
