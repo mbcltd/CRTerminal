@@ -6,7 +6,7 @@ import TerminalCore
 
 struct BundledFontTests {
     @Test func bundledFontsRegisterAndResolve() {
-        BundledFonts.register()
+        RenderTestSupport.ready()
         for name in [BundledFonts.geistMono, BundledFonts.departureMono, BundledFonts.c64] {
             // CTFontCreateWithName falls back silently; the PostScript
             // name only matches when registration actually worked.
@@ -18,7 +18,7 @@ struct BundledFontTests {
 
 struct LigatureTests {
     private func makeAtlas() -> GlyphAtlas? {
-        BundledFonts.register()
+        RenderTestSupport.ready()
         guard let device = MTLCreateSystemDefaultDevice() else { return nil }
         let font = CTFontCreateWithName(BundledFonts.geistMono as CFString, 12, nil)
         return GlyphAtlas(
@@ -27,10 +27,7 @@ struct LigatureTests {
     }
 
     private func makeRenderer() -> TerminalRenderer? {
-        BundledFonts.register()
-        return TerminalRenderer(
-            font: CTFontCreateWithName(BundledFonts.geistMono as CFString, 12, nil),
-            scale: 1)
+        RenderTestSupport.geistMono()
     }
 
     @Test func shapingSubstitutesArrowGlyphs() throws {

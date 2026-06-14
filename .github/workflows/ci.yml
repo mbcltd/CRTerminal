@@ -15,16 +15,22 @@ jobs:
   package-tests:
     name: Package tests
     runs-on: macos-26
+    # A CoreText wedge would otherwise hang at 0% CPU until the 6h default;
+    # the script self-heals (watchdog + retry), this is the hard backstop.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+      # Routed through the script so CI matches local exactly: CRTRendering runs
+      # --no-parallel (avoids the fontd race) and both get the hang watchdog.
       - name: TerminalCore tests
-        run: swift test --package-path Packages/TerminalCore
+        run: Scripts/test.sh core
       - name: CRTRendering tests
-        run: swift test --package-path Packages/CRTRendering
+        run: Scripts/test.sh rendering
 
   app:
     name: App build + tests
     runs-on: macos-26
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: Build
