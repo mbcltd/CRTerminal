@@ -611,6 +611,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         identifier: NSUserInterfaceItemIdentifier, state: NSCoder,
         completionHandler: @escaping (NSWindow?, (any Error)?) -> Void
     ) {
+        // The lifecycle probe drives restore from our own layout file and
+        // asserts exact window counts; ignore AppKit's parallel attempt (whose
+        // saved state races `open -n` instances) so the probe is deterministic.
+        if ProcessInfo.processInfo.environment["CRT_LIFECYCLE_PROBE"] != nil {
+            completionHandler(nil, nil)
+            return
+        }
         guard SettingsStore.shared.restorationEnabled else {
             completionHandler(nil, nil)
             return

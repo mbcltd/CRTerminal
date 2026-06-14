@@ -24,6 +24,16 @@ set -euo pipefail
 app=$(ls -d ~/Library/Developer/Xcode/DerivedData/CRTerminal-*/Build/Products/Debug/crterm.app 2>/dev/null | head -1)
 [ -n "$app" ] || { echo "No Debug build found — run Scripts/build.sh first" >&2; exit 1; }
 
+# The restoration probes (lifecycle, quit-latency) launch restorable windows
+# and exit(0), so AppKit periodically flushes saved window state to disk.
+# Left around, it gets replayed on the next `open -n` *on top of* the probe's
+# fresh sessions, inflating the window/session count. Clear it before those
+# probes so repeated runs are deterministic. (This is a probe-harness quirk of
+# repeated `open -n` instances, not something normal launches hit.)
+clear_saved_state() {
+  rm -rf "$HOME/Library/Saved Application State/mbcltd.CRTerminal.savedState" 2>/dev/null || true
+}
+
 mode="${1:?usage: Scripts/probe.sh typist|typist-capture|jump [args]}"
 case "$mode" in
   typist|typist-capture)
@@ -65,18 +75,25 @@ case "$mode" in
   lifecycle)
     # Cross-process R3 check: save → relaunch+restore (Always) → relaunch
     # clean (Never). Each phase is its own launch sharing the on-disk store.
+    # Restore here is driven by our own layout file, so clear AppKit's saved
+    # state before each launch — otherwise the save phase's flushed window
+    # state replays as extra windows and the count checks misfire.
     rm -f /tmp/crterminal-lifecycle.txt /tmp/crterminal-lifecycle-manifest.json
     echo "--- save phase ---"
+    clear_saved_state
     open -n -W --env CRT_LIFECYCLE_PROBE=save --env CRT_RESTORE_MODE=always "$app"
     cat /tmp/crterminal-lifecycle.txt
     echo "--- restore phase ---"
+    clear_saved_state
     open -n -W --env CRT_LIFECYCLE_PROBE=restore --env CRT_RESTORE_MODE=always "$app"
     cat /tmp/crterminal-lifecycle.txt
     echo "--- never phase ---"
+    clear_saved_state
     open -n -W --env CRT_LIFECYCLE_PROBE=verify-never --env CRT_RESTORE_MODE=never "$app"
     cat /tmp/crterminal-lifecycle.txt ;;
   quit-latency)
     # R4: time the synchronous quit-time save with several large sessions.
+    clear_saved_state
     rm -f /tmp/crterminal-quit-latency.txt
     open -n -W --env CRT_QUIT_LATENCY_PROBE=1 --env CRT_RESTORE_MODE=system "$app"
     cat /tmp/crterminal-quit-latency.txt ;;
