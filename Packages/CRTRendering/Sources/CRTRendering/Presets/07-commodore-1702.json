@@ -10,5 +10,6 @@
   "artifacts": { "noise": 0.04, "humBar": 0.02, "jitter": 0.15, "convergenceMM": 0.12, "aberration": 0.35 },
   "bezel": { "widthPt": 18, "color": "#3A342C" },
   "degaussButton": false,
-  "fontSizeScale": 1.5
+  "fontSizeScale": 1.5,
+  "fontName": "C64-Regular"
 }

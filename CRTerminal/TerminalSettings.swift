@@ -20,20 +20,23 @@ struct TerminalSettings: Codable, Equatable {
     /// size is configurable; system monospaced is a fallback for when
     /// registration failed (or a test host without the bundle).
     ///
-    /// `scale` multiplies the configured size for presets that ask for it
-    /// (a preset's `fontSizeScale` — the Commodore 1702 renders 50%
-    /// larger). The clamp applies after scaling.
-    func font(scale: Double = 1) -> NSFont {
+    /// `name` is the PostScript face — a preset's `fontName`, or the
+    /// bundled Geist Mono default. `scale` multiplies the configured size
+    /// for presets that ask for it (a preset's `fontSizeScale` — the
+    /// Commodore 1702 renders 50% larger in the bundled C64 face). The
+    /// clamp applies after scaling; an unresolvable name falls back to the
+    /// system monospaced font.
+    func font(name: String = BundledFonts.geistMono, scale: Double = 1) -> NSFont {
         let size = CGFloat(max(6, min(fontSize * scale, 72)))
-        if let geist = NSFont(name: BundledFonts.geistMono, size: size) {
-            return geist
+        if let resolved = NSFont(name: name, size: size) {
+            return resolved
         }
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    /// The unscaled font (scale 1): the baseline the settings comparison
-    /// and new, untouched presets use.
-    var font: NSFont { font(scale: 1) }
+    /// The default font (Geist Mono, scale 1): the baseline the settings
+    /// comparison and new, untouched presets use.
+    var font: NSFont { font() }
 
     func preset(in presets: [CRTPreset]) -> CRTPreset {
         presets.first { $0.name == presetName } ?? .darkStandard

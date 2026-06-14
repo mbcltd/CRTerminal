@@ -287,6 +287,14 @@ public struct CRTPreset: Codable, Equatable, Sendable {
     /// to match, so the cell grid grows with the type.
     public var fontSizeScale: Double
 
+    /// PostScript name of the typeface this preset renders with; nil keeps
+    /// the user's configured default (bundled Geist Mono). The Commodore
+    /// 1702 names the bundled C64 PETSCII face so its text wears the real
+    /// machine's letterforms, not just its tube. The renderer keeps a
+    /// separate glyph atlas per font, so presets with different fonts
+    /// coexist in one window.
+    public var fontName: String?
+
     /// Points reserved between the window edge and the cell grid: the
     /// bezel when effects are on, a small breathing margin for the plain
     /// screen so text doesn't sit flush against the edge.
@@ -304,7 +312,8 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         mask: Mask = Mask(), scanlines: Scanlines = Scanlines(),
         bloom: Bloom = Bloom(), artifacts: Artifacts = Artifacts(), bezel: Bezel = Bezel(),
         colors: Palette? = nil, bottomBar: BottomBar? = nil,
-        degaussButton: Bool = true, fontSizeScale: Double = 1
+        degaussButton: Bool = true, fontSizeScale: Double = 1,
+        fontName: String? = nil
     ) {
         self.name = name
         self.year = year
@@ -322,6 +331,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         self.bottomBar = bottomBar
         self.degaussButton = degaussButton
         self.fontSizeScale = fontSizeScale
+        self.fontName = fontName
     }
 
     /// Sections may be omitted in JSON; they default to "off".
@@ -343,6 +353,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         bottomBar = try container.decodeIfPresent(BottomBar.self, forKey: .bottomBar)
         degaussButton = try container.decodeIfPresent(Bool.self, forKey: .degaussButton) ?? true
         fontSizeScale = try container.decodeIfPresent(Double.self, forKey: .fontSizeScale) ?? 1
+        fontName = try container.decodeIfPresent(String.self, forKey: .fontName)
     }
 
     /// Everything off — the lean modern terminal, dark scheme.

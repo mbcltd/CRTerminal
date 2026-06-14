@@ -7,7 +7,7 @@ import TerminalCore
 struct BundledFontTests {
     @Test func bundledFontsRegisterAndResolve() {
         BundledFonts.register()
-        for name in [BundledFonts.geistMono, BundledFonts.departureMono] {
+        for name in [BundledFonts.geistMono, BundledFonts.departureMono, BundledFonts.c64] {
             // CTFontCreateWithName falls back silently; the PostScript
             // name only matches when registration actually worked.
             let font = CTFontCreateWithName(name as CFString, 13, nil)

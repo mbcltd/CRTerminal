@@ -31,11 +31,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private(set) var tabs: [SessionTab] = []
     private(set) var activeTabIndex = 0
     private var settings: TerminalSettings
-    /// One renderer (and glyph atlas) per distinct font scale. Panes
-    /// sharing a preset's `fontSizeScale` share an atlas; a 1.5× preset
-    /// like the Commodore 1702 gets its own larger one alongside the 1.0×
-    /// sessions in the same window.
-    private var sharedRenderers: [Double: TerminalRenderer] = [:]
+    /// One renderer (and glyph atlas) per distinct face + scale. Panes
+    /// with the same preset font and `fontSizeScale` share an atlas; a
+    /// preset like the Commodore 1702 (1.5× in the C64 face) gets its own
+    /// alongside the default sessions in the same window.
+    private struct FontKey: Hashable {
+        let name: String
+        let scale: Double
+    }
+    private var sharedRenderers: [FontKey: TerminalRenderer] = [:]
     private let rootView = NSView()
     /// The area right of the sidebar; hosts tab containers + search bar.
     private let contentHost = NSView()
@@ -138,12 +142,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Renderer (shared across the window's panes)
 
-    private func rendererForPane(scale: Double) -> TerminalRenderer? {
-        if let existing = sharedRenderers[scale] { return existing }
+    private func rendererForPane(name: String, scale: Double) -> TerminalRenderer? {
+        let key = FontKey(name: name, scale: scale)
+        if let existing = sharedRenderers[key] { return existing }
         let renderer = TerminalRenderer(
-            font: settings.font(scale: scale), scale: window?.backingScaleFactor ?? 2)
+            font: settings.font(name: name, scale: scale),
+            scale: window?.backingScaleFactor ?? 2)
         renderer?.setLigatures(settings.ligatures)
-        sharedRenderers[scale] = renderer
+        sharedRenderers[key] = renderer
         return renderer
     }
 
@@ -239,7 +245,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// another window.
     private func wire(pane: TerminalView) {
         pane.rendererProvider = { [weak self, weak pane] in
-            self?.rendererForPane(scale: pane?.preset.fontSizeScale ?? 1)
+            let preset = pane?.preset
+            return self?.rendererForPane(
+                name: preset?.fontName ?? BundledFonts.geistMono,
+                scale: preset?.fontSizeScale ?? 1)
         }
         guard let session = pane.session else { return }
         session.onExit = { [weak self, weak pane] _ in
