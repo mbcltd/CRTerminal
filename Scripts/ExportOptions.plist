@@ -9,7 +9,11 @@
   <string>developer-id</string>
   <key>teamID</key>
   <string>6JY7V42XFZ</string>
+  <!-- Manual signing so export re-signs with the imported Developer ID cert on a
+       CI runner without an Apple-account login. No provisioning profile needed. -->
   <key>signingStyle</key>
-  <string>automatic</string>
+  <string>manual</string>
+  <key>signingCertificate</key>
+  <string>Developer ID Application</string>
 </dict>
 </plist>

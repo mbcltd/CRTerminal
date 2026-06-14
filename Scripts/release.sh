@@ -42,11 +42,19 @@ rm -rf "$ARCHIVE" "$EXPORT" "$OUT"
 mkdir -p "$OUT"
 
 echo "==> Archiving CRTerminal $MARKETING_VERSION (build $BUILD_NUMBER)"
+# Sign the archive manually with Developer ID. The target defaults to automatic
+# signing, which on a CI runner demands a "Mac Development" cert + Apple-account
+# login that isn't present — only the Developer ID Application cert is imported.
+# A Developer ID app needs no provisioning profile.
 xcodebuild -project CRTerminal.xcodeproj -scheme "$SCHEME" \
   -configuration Release -destination 'platform=macOS' \
   -archivePath "$ARCHIVE" archive \
   MARKETING_VERSION="$MARKETING_VERSION" \
-  CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_IDENTITY="Developer ID Application" \
+  DEVELOPMENT_TEAM="$TEAM_ID" \
+  PROVISIONING_PROFILE_SPECIFIER=""
 
 echo "==> Exporting (Developer ID)"
 xcodebuild -exportArchive \
