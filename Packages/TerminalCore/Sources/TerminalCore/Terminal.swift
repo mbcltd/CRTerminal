@@ -7,6 +7,14 @@ public struct Terminal: Sendable {
         state = TerminalState(columns: columns, rows: rows)
     }
 
+    /// Seed a terminal from a restored snapshot (session restoration). The
+    /// grid/scrollback come back as static text; the parser starts fresh, so
+    /// the next PTY bytes (a new shell's first prompt) print below the
+    /// restored cursor. See ARCHITECTURE.md "session restoration".
+    public init(restoring snapshot: TerminalStateSnapshot) {
+        state = TerminalState(restoring: snapshot)
+    }
+
     public var scrollbackLimit: Int {
         get { state.scrollbackLimit }
         set { state.scrollbackLimit = newValue }

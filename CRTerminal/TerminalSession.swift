@@ -20,15 +20,22 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// Called on the main queue with OSC 9/777 desktop notifications.
     var onNotification: (@MainActor (TerminalNotification) -> Void)?
 
+    /// `restoringFrom` seeds the terminal with a saved snapshot before the
+    /// PTY attaches, so the restored grid/scrollback paint as static text and
+    /// the fresh shell's first prompt prints below them (ARCHITECTURE.md
+    /// "session restoration"). The PTY is sized to the restored grid so the
+    /// shell's winsize matches what the user sees until the view reflows.
     init(columns: Int, rows: Int, shell: String? = nil,
-         workingDirectory: String? = nil, scrollbackLines: Int = 10_000) throws {
-        terminal = OSAllocatedUnfairLock(initialState: {
-            var t = Terminal(columns: columns, rows: rows)
-            t.scrollbackLimit = max(0, scrollbackLines)
-            return t
-        }())
+         workingDirectory: String? = nil, scrollbackLines: Int = 10_000,
+         restoringFrom snapshot: TerminalStateSnapshot? = nil) throws {
+        var seeded = snapshot.map(Terminal.init(restoring:))
+            ?? Terminal(columns: columns, rows: rows)
+        seeded.scrollbackLimit = max(0, scrollbackLines)
+        let ptyColumns = seeded.state.columns
+        let ptyRows = seeded.state.rows
+        terminal = OSAllocatedUnfairLock(initialState: seeded)
         pty = try PTYSession(
-            columns: columns, rows: rows, shell: shell,
+            columns: ptyColumns, rows: ptyRows, shell: shell,
             workingDirectory: workingDirectory)
         pty.onData = { [weak self] data in
             self?.ingest(data)

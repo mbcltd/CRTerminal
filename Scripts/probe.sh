@@ -11,6 +11,14 @@
 #   Scripts/probe.sh jump [query]
 #       Opens the ⌘K palette over two sessions, applies [query], snapshots
 #       to /tmp/crterminal-jump.png, report: /tmp/crterminal-jump.txt.
+#   Scripts/probe.sh restore
+#       Session restoration R1: types output, saves the session to disk,
+#       reopens it restored, and checks the static text + cwd came back.
+#       Report: /tmp/crterminal-restore.txt.
+#   Scripts/probe.sh layout
+#       Session restoration R2: builds two windows (one with 3 tabs incl a
+#       2×2 split), saves layout + contents, rebuilds from disk, and checks
+#       the tree, frames, contents, and cwds. Report: /tmp/crterminal-layout.txt.
 set -euo pipefail
 
 app=$(ls -d ~/Library/Developer/Xcode/DerivedData/CRTerminal-*/Build/Products/Debug/crterm.app 2>/dev/null | head -1)
@@ -46,7 +54,28 @@ case "$mode" in
     cat /tmp/crterminal-jump.txt
     echo
     echo "panel: /tmp/crterminal-jump.png" ;;
+  restore)
+    rm -f /tmp/crterminal-restore.txt
+    open -n -W --env CRT_RESTORE_PROBE=1 "$app"
+    cat /tmp/crterminal-restore.txt ;;
+  layout)
+    rm -f /tmp/crterminal-layout.txt
+    open -n -W --env CRT_LAYOUT_PROBE=1 "$app"
+    cat /tmp/crterminal-layout.txt ;;
+  lifecycle)
+    # Cross-process R3 check: save → relaunch+restore (Always) → relaunch
+    # clean (Never). Each phase is its own launch sharing the on-disk store.
+    rm -f /tmp/crterminal-lifecycle.txt /tmp/crterminal-lifecycle-manifest.json
+    echo "--- save phase ---"
+    open -n -W --env CRT_LIFECYCLE_PROBE=save --env CRT_RESTORE_MODE=always "$app"
+    cat /tmp/crterminal-lifecycle.txt
+    echo "--- restore phase ---"
+    open -n -W --env CRT_LIFECYCLE_PROBE=restore --env CRT_RESTORE_MODE=always "$app"
+    cat /tmp/crterminal-lifecycle.txt
+    echo "--- never phase ---"
+    open -n -W --env CRT_LIFECYCLE_PROBE=verify-never --env CRT_RESTORE_MODE=never "$app"
+    cat /tmp/crterminal-lifecycle.txt ;;
   *)
-    echo "usage: Scripts/probe.sh typist|typist-capture|jump [args]" >&2
+    echo "usage: Scripts/probe.sh typist|typist-capture|jump|jump-live|restore|layout|lifecycle [args]" >&2
     exit 64 ;;
 esac

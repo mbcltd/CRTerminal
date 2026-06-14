@@ -55,6 +55,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     /// Set by the AppDelegate so closed windows are released.
     var onClose: ((TerminalWindowController) -> Void)?
+    /// Fired when the layout changes in a way worth persisting (sessions
+    /// added/closed/split/reordered, active tab switched). The AppDelegate
+    /// debounces these into a coalesced restoration save (R3).
+    var onSignificantChange: (() -> Void)?
+
+    private func noteSignificantChange() {
+        window?.invalidateRestorableState()
+        onSignificantChange?()
+    }
 
     /// All live panes across every session (probe, teardown, settings apply).
     var panes: [TerminalView] {
@@ -79,6 +88,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window.title = "crterm"
         // Sessions live in the sidebar; native tabbing would duplicate them.
         window.tabbingMode = .disallowed
+        // macOS state restoration (R3): a stable identifier + our restoration
+        // class let AppKit bring this window back per the system "Close
+        // windows when quitting" preference. `Never` flips `isRestorable` off.
+        window.identifier = NSUserInterfaceItemIdentifier(UUID().uuidString)
+        window.restorationClass = WindowRestoration.self
+        window.isRestorable = SettingsStore.shared.restorationEnabled
         super.init(window: window)
         window.delegate = self
 
@@ -171,15 +186,21 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         addSession()
     }
 
-    func addSession() {
+    /// Spawns a session, optionally seeding it from a restored snapshot
+    /// (session restoration R1): the saved grid/scrollback repaint as static
+    /// text and a fresh shell runs below them, in the snapshot's cwd.
+    @discardableResult
+    func addSession(restoringFrom snapshot: TerminalStateSnapshot? = nil) -> SessionTab? {
         let tab = SessionTab(preset: currentPreset())
-        guard let pane = makePane(in: tab) else { return }
+        guard let pane = makePane(in: tab, restoringFrom: snapshot) else { return nil }
         tab.container.frame = contentHost.bounds
         tab.container.autoresizingMask = [.width, .height]
         contentHost.addSubview(tab.container)
         tabs.append(tab)
         install(pane, in: tab.container)
         selectTab(tabs.count - 1)
+        noteSignificantChange()
+        return tab
     }
 
     func selectTab(_ index: Int) {
@@ -200,6 +221,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         updateSidebarVisibility()
         applyChrome(preset: activePreset)
         refreshSessionMetadata()
+        noteSignificantChange()
     }
 
     /// The session sidebar only earns its space once there's a choice to
@@ -230,14 +252,20 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Panes
 
-    private func makePane(in tab: SessionTab) -> TerminalView? {
+    private func makePane(
+        in tab: SessionTab, restoringFrom snapshot: TerminalStateSnapshot? = nil,
+        sessionID: UUID? = nil
+    ) -> TerminalView? {
         let session: TerminalSession
         do {
             session = try TerminalSession(
                 columns: 80, rows: 24,
                 shell: settings.shellPath,
-                workingDirectory: settings.resolvedWorkingDirectory,
-                scrollbackLines: settings.scrollbackLines)
+                // Restore in the saved directory; fall back to the setting.
+                workingDirectory: snapshot?.workingDirectoryHint
+                    ?? settings.resolvedWorkingDirectory,
+                scrollbackLines: settings.scrollbackLines,
+                restoringFrom: snapshot)
         } catch {
             let alert = NSAlert()
             alert.messageText = "Could not start shell"
@@ -246,6 +274,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             return nil
         }
         let pane = TerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        // A restored leaf carries its session UUID forward so re-saves
+        // overwrite the same `.crtstate` file.
+        if let sessionID { pane.sessionID = sessionID }
         pane.preset = tab.preset
         pane.session = session
         session.onClipboard = { text in
@@ -397,6 +428,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         splitView.addArrangedSubview(newPane)
         splitView.adjustSubviews()
         window?.makeFirstResponder(newPane)
+        noteSignificantChange()
     }
 
     private func tab(owning pane: TerminalView) -> SessionTab? {
@@ -408,6 +440,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     func close(pane: TerminalView) {
         pane.session?.terminate()
         pane.renderLoop?.invalidate()
+        // An explicitly closed pane won't come back — drop its stored state so
+        // it doesn't leak as a stray `.crtstate` file.
+        SessionStateStore.shared.discard(id: pane.sessionID)
         guard let tab = tab(owning: pane),
               let tabIndex = tabs.firstIndex(where: { $0 === tab }) else { return }
         tab.panes.removeAll { $0 === pane }
@@ -450,6 +485,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             window?.makeFirstResponder(next)
         }
         refreshSessionMetadata()
+        noteSignificantChange()
     }
 
     /// Closes a whole sidebar session — every pane in it (the row's ✕).
@@ -457,6 +493,170 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         guard tabs.indices.contains(index) else { return }
         for pane in tabs[index].panes {
             close(pane: pane)
+        }
+    }
+
+    // MARK: Session restoration (R1: debug-driven, single session)
+
+    /// Snapshot the focused session and persist it, keyed by its owning tab's
+    /// UUID, capturing the shell's live cwd now (the shell is alive at save
+    /// time, so `proc_pidinfo` answers without OSC 7 — that's an R4
+    /// robustness add). Returns the tab id that was saved.
+    @discardableResult
+    func saveFocusedSessionState() -> UUID? {
+        guard let pane = focusedPane else { return nil }
+        saveContents(of: pane)
+        return pane.sessionID
+    }
+
+    /// Snapshot one pane's terminal contents (grid + scrollback) and persist
+    /// it keyed by the pane's session UUID, capturing the shell's live cwd.
+    /// `synchronously` is for the quit path, where the write must finish
+    /// before the shells are SIGHUP'd and the process dies.
+    func saveContents(of pane: TerminalView, synchronously: Bool = false) {
+        guard let session = pane.session else { return }
+        let cwd = SessionInfo.workingDirectory(of: session.shellProcessID)
+        let snapshot = session.snapshot.makeSnapshot(workingDirectoryHint: cwd)
+        if synchronously {
+            SessionStateStore.shared.saveSynchronously(snapshot, for: pane.sessionID)
+        } else {
+            SessionStateStore.shared.save(snapshot, for: pane.sessionID)
+        }
+    }
+
+    /// Persist every pane in this window (called before capturing layout).
+    func saveAllContents(synchronously: Bool = false) {
+        for pane in panes { saveContents(of: pane, synchronously: synchronously) }
+    }
+
+    /// All session UUIDs alive in this window (for orphan-file pruning).
+    var liveSessionIDs: [UUID] { panes.map(\.sessionID) }
+
+    /// Open a new session restoring the given snapshot and select it.
+    @discardableResult
+    func restoreSession(from snapshot: TerminalStateSnapshot) -> SessionTab? {
+        addSession(restoringFrom: snapshot)
+    }
+
+    // MARK: Layout capture / rebuild (R2)
+
+    /// Capture this window's full layout — frame, active tab, and each tab's
+    /// split tree — by walking the live view hierarchy (the tree isn't in
+    /// `panes`, only the flattened pane list is).
+    func captureLayout() -> WindowNode {
+        let tabNodes = tabs.compactMap { tab -> TabNode? in
+            guard let rootView = tab.container.subviews.first,
+                  let root = Self.captureSplitNode(from: rootView) else { return nil }
+            return TabNode(uuid: tab.id, presetName: tab.preset.name, root: root)
+        }
+        return WindowNode(
+            frame: window?.frame ?? .zero,
+            activeTabIndex: activeTabIndex,
+            tabs: tabNodes)
+    }
+
+    private static func captureSplitNode(from view: NSView) -> SplitNode? {
+        if let pane = view as? TerminalView {
+            return .leaf(sessionID: pane.sessionID)
+        }
+        if let split = view as? NSSplitView {
+            let children = split.arrangedSubviews.compactMap(captureSplitNode(from:))
+            guard !children.isEmpty else { return nil }
+            return .split(
+                isVertical: split.isVertical,
+                dividerFractions: dividerFractions(of: split),
+                children: children)
+        }
+        return nil
+    }
+
+    /// Cumulative divider positions as a fraction of the split's length,
+    /// one per divider (children − 1). Flip-independent: built from pane
+    /// sizes along the split axis.
+    private static func dividerFractions(of split: NSSplitView) -> [Double] {
+        let vertical = split.isVertical
+        let total = vertical ? split.bounds.width : split.bounds.height
+        let subs = split.arrangedSubviews
+        guard total > 0, subs.count > 1 else { return [] }
+        var fractions: [Double] = []
+        var cumulative: CGFloat = 0
+        for i in 0..<(subs.count - 1) {
+            cumulative += vertical ? subs[i].frame.width : subs[i].frame.height
+            fractions.append(Double(cumulative / total))
+            cumulative += split.dividerThickness
+        }
+        return fractions
+    }
+
+    /// Rebuild this (initially empty) window from a captured node: recreate
+    /// the tabs and their nested `NSSplitView`s, `makePane`-ing each leaf with
+    /// its restored session, then apply divider fractions after layout.
+    func restoreLayout(_ node: WindowNode, contents: SessionStateStore) {
+        if let window, node.frame.width > 1, node.frame.height > 1 {
+            window.setFrame(node.frame, display: false)
+        }
+        var roots: [(SplitNode, NSView)] = []
+        for tabNode in node.tabs {
+            let preset = PresetCatalog.all.first { $0.name == tabNode.presetName }
+                ?? currentPreset()
+            let tab = SessionTab(preset: preset)
+            tab.container.frame = contentHost.bounds
+            tab.container.autoresizingMask = [.width, .height]
+            contentHost.addSubview(tab.container)
+            tabs.append(tab)
+            guard let rootView = buildSplitNode(tabNode.root, in: tab, contents: contents)
+            else { continue }
+            rootView.frame = tab.container.bounds
+            rootView.autoresizingMask = [.width, .height]
+            tab.container.addSubview(rootView)
+            roots.append((tabNode.root, rootView))
+        }
+        guard !tabs.isEmpty else { return }
+        selectTab(min(max(0, node.activeTabIndex), tabs.count - 1))
+        // Sizes are settled now (window frame + sidebar inset applied), so
+        // divider fractions land where they were captured.
+        contentHost.layoutSubtreeIfNeeded()
+        for (node, view) in roots {
+            Self.applyDividers(node, to: view)
+        }
+    }
+
+    private func buildSplitNode(
+        _ node: SplitNode, in tab: SessionTab, contents: SessionStateStore
+    ) -> NSView? {
+        switch node {
+        case .leaf(let sessionID):
+            let snapshot = contents.load(for: sessionID)
+            return makePane(in: tab, restoringFrom: snapshot, sessionID: sessionID)
+        case .split(let isVertical, _, let children):
+            let split = NSSplitView()
+            split.isVertical = isVertical
+            split.dividerStyle = .thin
+            for child in children {
+                guard let childView = buildSplitNode(child, in: tab, contents: contents)
+                else { continue }
+                childView.autoresizingMask = [.width, .height]
+                split.addArrangedSubview(childView)
+            }
+            guard !split.arrangedSubviews.isEmpty else { return nil }
+            split.adjustSubviews()
+            return split
+        }
+    }
+
+    private static func applyDividers(_ node: SplitNode, to view: NSView) {
+        guard case .split(let vertical, let fractions, let children) = node,
+              let split = view as? NSSplitView else { return }
+        let total = vertical ? split.bounds.width : split.bounds.height
+        if total > 0 {
+            for (i, fraction) in fractions.enumerated()
+            where i < split.arrangedSubviews.count - 1 {
+                split.setPosition(CGFloat(fraction) * total, ofDividerAt: i)
+            }
+        }
+        // Inner splits resized by the positions above; apply theirs now.
+        for (child, childView) in zip(children, split.arrangedSubviews) {
+            applyDividers(child, to: childView)
         }
     }
 
@@ -476,6 +676,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             activeTabIndex = index
         }
         refreshSessionMetadata()
+        noteSignificantChange()
         return true
     }
 
@@ -513,6 +714,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             pane.resetRenderer()
         }
         selectTab(index)
+        noteSignificantChange()
     }
 
     /// ⌘W: close the focused pane (the window when it's the only one).
@@ -792,6 +994,36 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
         tabs.removeAll()
         onClose?(self)
+    }
+
+    // MARK: State restoration (R3)
+
+    /// NSCoder key under which this window's `WindowNode` layout rides in the
+    /// `NSWindowRestoration` archive.
+    static let restorationStateKey = "crt.layout"
+
+    /// AppKit asks the window's delegate to contribute to its restorable
+    /// state: we stash the layout tree in the coder and persist the heavy
+    /// contents to our own files (two-tier persistence). `Never` opts out.
+    func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
+        guard SettingsStore.shared.restorationEnabled else { return }
+        if let data = try? PropertyListEncoder().encode(captureLayout()) {
+            state.encode(data as NSData, forKey: Self.restorationStateKey)
+        }
+        saveAllContents()
+    }
+
+    /// Decode the layout AppKit handed back and rebuild this window's tabs and
+    /// splits, restoring each pane's contents. Returns false when there was no
+    /// usable layout in the archive (caller then seeds a default session).
+    @discardableResult
+    func restoreState(from state: NSCoder) -> Bool {
+        guard let data = state.decodeObject(of: NSData.self, forKey: Self.restorationStateKey)
+            as Data? else { return false }
+        guard let node = try? PropertyListDecoder().decode(WindowNode.self, from: data)
+        else { return false }
+        restoreLayout(node, contents: SessionStateStore.shared)
+        return !tabs.isEmpty
     }
 }
 

@@ -56,6 +56,8 @@ public struct PromptMark: Sendable, Equatable {
     }
 }
 
+extension PromptMark: Codable {}
+
 /// OSC 9 / OSC 777;notify desktop notification, drained by the app.
 public struct TerminalNotification: Sendable, Equatable {
     public var title: String
@@ -229,6 +231,90 @@ public struct TerminalState: Sendable {
 
     private static func defaultTabStops(columns: Int) -> Set<Int> {
         Set(stride(from: 8, to: columns, by: 8))
+    }
+
+    // MARK: Session restoration
+
+    /// Capture the visible state (grid, scrollback, cursor, pending SGR, link
+    /// table, prompt marks) for persistence. The renderer-only and
+    /// protocol-transient bits — images, saved cursors, charsets, in-flight
+    /// transfers — are deliberately not serialized: restore repaints static
+    /// text and starts a fresh shell (ARCHITECTURE.md "session restoration").
+    public func makeSnapshot(workingDirectoryHint: String? = nil) -> TerminalStateSnapshot {
+        TerminalStateSnapshot(
+            version: TerminalStateSnapshot.currentVersion,
+            columns: columns,
+            rows: rows,
+            cells: TerminalStateSnapshot.packCells(lines, columns: columns),
+            wrapped: TerminalStateSnapshot.packBits(lineWrapped),
+            scrollbackCount: scrollback.count,
+            scrollbackCells: TerminalStateSnapshot.packCells(scrollback, columns: columns),
+            scrollbackWrapped: TerminalStateSnapshot.packBits(scrollbackWrapped),
+            evictedLineCount: evictedLineCount,
+            cursorX: cursor.x,
+            cursorY: cursor.y,
+            cursorStyle: Self.encode(cursorStyle),
+            brushForeground: brush.foreground.rawValue,
+            brushBackground: brush.background.rawValue,
+            brushAttributes: brush.attributes.rawValue,
+            linkTable: linkTable,
+            promptMarks: promptMarks,
+            workingDirectoryHint: workingDirectoryHint)
+    }
+
+    /// Rebuild a state from a snapshot. Sets up a default state at the saved
+    /// dimensions (tab stops, margins, blank row) and overlays the restored
+    /// contents. Cursor and scrollback are clamped to the dimensions so a
+    /// malformed snapshot yields a sane grid, never an out-of-range crash.
+    public init(restoring snapshot: TerminalStateSnapshot) {
+        self.init(columns: snapshot.columns, rows: snapshot.rows)
+
+        var grid = TerminalStateSnapshot.unpackCells(
+            [UInt8](snapshot.cells), rowCount: rows, columns: columns)
+        var wrapped = TerminalStateSnapshot.unpackBits([UInt8](snapshot.wrapped), count: rows)
+        // Force exactly `rows` rows regardless of what the blob held.
+        if grid.count > rows { grid.removeLast(grid.count - rows) }
+        while grid.count < rows { grid.append(blankRow); wrapped.append(false) }
+        lines = grid
+        lineWrapped = wrapped
+
+        let sbCount = max(0, snapshot.scrollbackCount)
+        scrollback = TerminalStateSnapshot.unpackCells(
+            [UInt8](snapshot.scrollbackCells), rowCount: sbCount, columns: columns)
+        scrollbackWrapped = TerminalStateSnapshot.unpackBits(
+            [UInt8](snapshot.scrollbackWrapped), count: sbCount)
+        evictedLineCount = max(0, snapshot.evictedLineCount)
+
+        cursor = Cursor(
+            x: min(max(0, snapshot.cursorX), columns - 1),
+            y: min(max(0, snapshot.cursorY), rows - 1))
+        cursorStyle = Self.decodeCursorStyle(snapshot.cursorStyle)
+        brush = Brush(
+            foreground: PackedColor(rawValue: snapshot.brushForeground),
+            background: PackedColor(rawValue: snapshot.brushBackground),
+            attributes: CellAttributes(rawValue: snapshot.brushAttributes))
+
+        linkTable = snapshot.linkTable
+        for (index, uri) in linkTable.enumerated() {
+            linkIds[uri] = UInt16(index + 1)
+        }
+        promptMarks = snapshot.promptMarks
+    }
+
+    private static func encode(_ style: CursorStyle) -> Int {
+        switch style {
+        case .block: return 0
+        case .underline: return 1
+        case .bar: return 2
+        }
+    }
+
+    private static func decodeCursorStyle(_ value: Int) -> CursorStyle {
+        switch value {
+        case 1: return .underline
+        case 2: return .bar
+        default: return .block
+        }
     }
 
     /// Row text with trailing blanks trimmed and wide spacers skipped.

@@ -16,6 +16,11 @@ final class TerminalView: NSView, NSTextInputClient {
     var session: TerminalSession? {
         didSet { wireSession() }
     }
+    /// Stable identity for this pane's session, used to key its persisted
+    /// terminal contents (`SessionStateStore`) and to name the leaf in a
+    /// captured `LayoutSnapshot`. Assigned fresh on creation, or carried over
+    /// from a restored leaf so re-saves overwrite the same file.
+    var sessionID = UUID()
 
     /// Search state (⌘F bar drives this).
     private var searchQuery: String?

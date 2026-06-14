@@ -59,6 +59,18 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Restore windows on relaunch") {
+                Picker("When reopening crterm", selection: settings.restoration) {
+                    Text("System default").tag(RestorationMode.system)
+                    Text("Always").tag(RestorationMode.always)
+                    Text("Never").tag(RestorationMode.never)
+                }
+                .pickerStyle(.segmented)
+                Text(restorationBlurb(settings.wrappedValue.restoration))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             alertSections
         }
         .formStyle(.grouped)
@@ -81,6 +93,17 @@ struct SettingsView: View {
                 Toggle("Post a notification", isOn: alert(\.notifications))
                 Toggle("Bounce the Dock icon", isOn: alert(\.dockBounce))
             }
+        }
+    }
+
+    private func restorationBlurb(_ mode: RestorationMode) -> String {
+        switch mode {
+        case .system:
+            return "Follow the macOS “Close windows when quitting an app” setting."
+        case .always:
+            return "Reopen your windows, tabs, splits and scrollback every launch."
+        case .never:
+            return "Always start fresh; no session state is written to disk."
         }
     }
 
