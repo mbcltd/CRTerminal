@@ -23,6 +23,13 @@ struct GlyphInstance {
     uint color;
 };
 
+struct ImageInstance {
+    float2 origin;
+    float2 size;
+    float2 uvOrigin;
+    float2 uvSize;
+};
+
 struct VSOut {
     float4 position [[position]];
     float2 uv;
@@ -77,5 +84,25 @@ fragment float4 color_glyph_fragment(VSOut in [[stage_in]],
                                      texture2d<float> atlas [[texture(0)]]) {
     constexpr sampler s(coord::normalized, filter::linear);
     return atlas.sample(s, in.uv);
+}
+
+// Inline images (kitty / sixel / iTerm2): premultiplied RGBA, one texture per
+// placement, sampled with the source-crop UVs from the instance.
+vertex VSOut image_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
+                          const device ImageInstance *instances [[buffer(0)]],
+                          constant Uniforms &u [[buffer(1)]]) {
+    ImageInstance inst = instances[iid];
+    float2 corner = float2(vid & 1u, vid >> 1u);
+    VSOut out;
+    out.position = toNDC(inst.origin + corner * inst.size, u.viewport);
+    out.uv = inst.uvOrigin + corner * inst.uvSize;
+    out.color = float4(1.0);
+    return out;
+}
+
+fragment float4 image_fragment(VSOut in [[stage_in]],
+                               texture2d<float> image [[texture(0)]]) {
+    constexpr sampler s(coord::normalized, filter::linear, address::clamp_to_edge);
+    return image.sample(s, in.uv);
 }
 """

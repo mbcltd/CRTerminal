@@ -68,4 +68,28 @@ struct TerminalRendererTests {
         #expect(renderer.cellSize.width > 4)
         #expect(renderer.cellSize.height > 8)
     }
+
+    @Test func rendersKittyImage() throws {
+        guard let renderer = makeRenderer() else { return }
+        var terminal = Terminal(columns: 6, rows: 4)
+        let cpw = Int((renderer.cellSize.width * renderer.scale).rounded())
+        let cph = Int((renderer.cellSize.height * renderer.scale).rounded())
+        terminal.setCellPixelSize(width: cpw, height: cph)
+
+        // A solid-red RGBA image covering 2×2 cells, transmitted and displayed.
+        let w = cpw * 2, h = cph * 2
+        var px = [UInt8]()
+        px.reserveCapacity(w * h * 4)
+        for _ in 0..<(w * h) { px.append(contentsOf: [255, 0, 0, 255]) }
+        let b64 = Data(px).base64EncodedString()
+        terminal.feed(Array("\u{1B}_Gf=32,s=\(w),v=\(h),a=T,i=1;\(b64)\u{1B}\\".utf8))
+        #expect(terminal.state.imagePlacements.count == 1)
+
+        let image = try #require(renderer.renderImage(terminal.state))
+        let cellW = Int(renderer.cellSize.width)
+        let cellH = Int(renderer.cellSize.height)
+        // The image occupies the top-left 2×2 cells; sample the middle of it.
+        let p = pixel(image, cellW, cellH)
+        #expect(p.r > 150 && p.g < 80 && p.b < 80)
+    }
 }

@@ -9,6 +9,12 @@ public protocol TerminalHandler {
     mutating func escapeDispatch(final: UInt8, intermediates: [UInt8])
     mutating func csiDispatch(_ sequence: CSISequence)
     mutating func oscDispatch(_ payload: [UInt8])
+    /// DCS string payload (everything between `ESC P` and ST), including the
+    /// leading params and the final byte — sixel arrives here as `…q<data>`.
+    mutating func dcsDispatch(_ payload: [UInt8])
+    /// APC string payload (everything between `ESC _` and ST) — the kitty
+    /// graphics protocol arrives here as `G<control data>;<base64>`.
+    mutating func apcDispatch(_ payload: [UInt8])
 }
 
 extension TerminalHandler {
@@ -17,6 +23,8 @@ extension TerminalHandler {
             printScalar(Unicode.Scalar(byte))
         }
     }
+    public mutating func dcsDispatch(_ payload: [UInt8]) {}
+    public mutating func apcDispatch(_ payload: [UInt8]) {}
 }
 
 public struct CSISequence: Sendable, Equatable {
@@ -56,12 +64,24 @@ public struct VTParser: Sendable {
         case csiIntermediate
         case csiIgnore
         case oscString
-        /// DCS/SOS/PM/APC: consumed and discarded until ST.
+        /// DCS/SOS/PM/APC: captured until ST. DCS (sixel) and APC (kitty
+        /// graphics) are dispatched; SOS/PM are discarded.
         case otherString
     }
 
+    /// Which string-terminated control we're inside, so `otherString` knows
+    /// where to route the captured payload on ST.
+    private enum StringKind: Sendable {
+        case dcs
+        case apc
+        case ignored // SOS / PM
+    }
+
     private static let maxParams = 32
-    private static let maxOSCBytes = 4096
+    /// Cap on accumulated OSC / DCS / APC payloads. Generous because inline
+    /// image protocols (iTerm2 OSC 1337, kitty APC, sixel DCS) ship whole
+    /// images in one string; still a hard guard against unterminated streams.
+    private static let maxStringBytes = 16 * 1024 * 1024
 
     private var state = State.ground
 
@@ -76,8 +96,9 @@ public struct VTParser: Sendable {
     private var currentParam: Int?
     private var intermediates: [UInt8] = []
 
-    // OSC accumulation.
+    // OSC / DCS / APC accumulation (states are mutually exclusive).
     private var oscBuffer: [UInt8] = []
+    private var stringKind = StringKind.ignored
     /// Saw ESC inside a string state; the next byte decides ST vs. abort.
     private var stringEscape = false
 
@@ -197,6 +218,12 @@ public struct VTParser: Sendable {
         case 0x50, 0x58, 0x5E, 0x5F: // DCS, SOS, PM, APC
             state = .otherString
             stringEscape = false
+            oscBuffer = []
+            switch byte {
+            case 0x50: stringKind = .dcs
+            case 0x5F: stringKind = .apc
+            default: stringKind = .ignored // SOS / PM
+            }
         case 0x20...0x2F:
             intermediates = [byte]
             state = .escapeIntermediate
@@ -319,7 +346,7 @@ public struct VTParser: Sendable {
             oscBuffer = []
             state = .ground
         default:
-            if oscBuffer.count < Self.maxOSCBytes {
+            if oscBuffer.count < Self.maxStringBytes {
                 oscBuffer.append(byte)
             }
         }
@@ -328,21 +355,38 @@ public struct VTParser: Sendable {
     private mutating func otherString(_ byte: UInt8, _ handler: inout some TerminalHandler) {
         if stringEscape {
             stringEscape = false
-            if byte == 0x5C {
+            if byte == 0x5C { // ESC \ = ST
+                dispatchString(&handler)
                 state = .ground
             } else {
+                oscBuffer = []
                 enterEscape()
                 escape(byte, &handler)
             }
             return
         }
         switch byte {
+        case 0x07: // BEL also terminates (lenient, matches xterm for strings)
+            dispatchString(&handler)
+            state = .ground
         case 0x1B:
             stringEscape = true
-        case 0x18, 0x1A:
+        case 0x18, 0x1A: // CAN / SUB abort without dispatch
+            oscBuffer = []
             state = .ground
         default:
-            break
+            if oscBuffer.count < Self.maxStringBytes {
+                oscBuffer.append(byte)
+            }
         }
+    }
+
+    private mutating func dispatchString(_ handler: inout some TerminalHandler) {
+        switch stringKind {
+        case .dcs: handler.dcsDispatch(oscBuffer)
+        case .apc: handler.apcDispatch(oscBuffer)
+        case .ignored: break
+        }
+        oscBuffer = []
     }
 }

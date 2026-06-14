@@ -24,6 +24,12 @@ public struct Terminal: Sendable {
         state.resize(columns: columns, rows: rows)
     }
 
+    /// Cell size in device pixels (points × backing scale), from the
+    /// renderer. Drives inline-image pixel↔cell math and CSI 14/16 t.
+    public mutating func setCellPixelSize(width: Int, height: Int) {
+        state.setCellPixelSize(width: width, height: height)
+    }
+
     /// Bytes the terminal wants written back to the PTY (DSR/DA responses).
     public mutating func drainResponses() -> [UInt8] {
         defer { state.responses.removeAll(keepingCapacity: true) }

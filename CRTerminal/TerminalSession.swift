@@ -55,6 +55,12 @@ nonisolated final class TerminalSession: @unchecked Sendable {
         pty.send(bytes)
     }
 
+    /// Device-pixel cell size from the renderer; lets the graphics protocols
+    /// map image pixels to cells and answer CSI 14/16 t.
+    func setCellPixelSize(width: Int, height: Int) {
+        terminal.withLock { $0.setCellPixelSize(width: width, height: height) }
+    }
+
     func resize(columns: Int, rows: Int) {
         let changed = terminal.withLock { terminal in
             let before = (terminal.state.columns, terminal.state.rows)

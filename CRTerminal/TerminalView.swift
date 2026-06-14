@@ -292,6 +292,9 @@ final class TerminalView: NSView, NSTextInputClient {
             (bounds.width - contentInset * 2) / renderer.cellSize.width))
         let rows = max(2, Int(
             (bounds.height - contentInset * 2 - bottomBarReserve) / renderer.cellSize.height))
+        session.setCellPixelSize(
+            width: Int((renderer.cellSize.width * renderer.scale).rounded()),
+            height: Int((renderer.cellSize.height * renderer.scale).rounded()))
         session.resize(columns: columns, rows: rows)
     }
 
