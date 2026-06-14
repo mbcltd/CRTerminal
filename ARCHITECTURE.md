@@ -121,6 +121,36 @@ clip/extend on the alternate screen, matching user expectations from iTerm2/Ghos
 Height-only changes pull rows back out of scrollback when growing and evict to
 scrollback when shrinking.
 
+### Inline images (graphics protocols)
+
+Three protocols feed one image model. Transmitted images are stored by an
+internal monotonic *serial* (the renderer's texture-cache key — re-transmitting
+a kitty image reuses its client id but gets a fresh serial, so stale textures
+fall out automatically). *Placements* record where an image shows, anchored to an
+absolute row like `PromptMark`, so they scroll with the text and are evicted with
+the scrollback; display extent is in cells, the source crop in pixels.
+
+- **kitty graphics protocol** — APC strings (`ESC _ G <keys> ; <base64> ESC \`),
+  dispatched from the parser's new `apcDispatch`. Transmit (direct and
+  file/temp-file media), RGBA/RGB/PNG formats, chunked transmission, zlib
+  (`o=z`, via `Compression`), display/put with source crop, cell extent,
+  z-index and placement ids, delete, and query — with APC responses on the
+  PTY-bound response channel.
+- **sixel** — DCS strings (`ESC P … q … ESC \`), dispatched from `dcsDispatch`;
+  a two-pass decoder (measure, then rasterize) handles palette select/define
+  (RGB and HLS), RLE, and the transparency flag, producing RGBA.
+- **iTerm2 inline images** — `OSC 1337 ; File=… : <base64>`; size tokens in
+  cells, pixels, percent, or auto, with aspect preservation.
+
+Pixel↔cell math and the `CSI 14/16 t` size reports need the device-pixel cell
+size, which `TerminalCore` doesn't otherwise know; the app pushes it from the
+renderer's metrics via `Terminal.setCellPixelSize`. Decoding to GPU textures
+happens in `CRTRendering`'s `ImageTextureCache` (ImageIO for encoded formats,
+direct upload for raw), kept per-pane on the `SurfaceContext`. Images are drawn
+into the cell texture (under or over the glyphs by z-index), so they pass
+through the CRT effect chain like everything else. The core stays free of
+CoreGraphics: it reads pixel dimensions straight from PNG/JPEG/GIF/BMP headers.
+
 ### Input encoding
 
 `KeyEncoder` and `MouseEncoder` are pure functions in `TerminalCore`:
@@ -463,7 +493,9 @@ deliberately fires in the focused tab too, where it is the only visible cue.
   from the first view implementation, not retrofitted.
 - **Effect power draw** → animated effects gated by visibility/battery from the first
   shader, enforced by the idle-power test.
-- **Scope creep on protocols** (sixel, kitty graphics) → explicitly out of scope for
-  1.0; the offscreen-texture design leaves room to add image protocols later.
+- **Scope creep on protocols** (sixel, kitty graphics) → now implemented (see
+  "Inline images" below); the offscreen-texture design left the room the original
+  plan anticipated. Animation frames and shared-memory transmission remain out of
+  scope.
 - **Period fonts/bezel art licensing** → only bundle assets with clear licenses;
   presets may *suggest* fonts without bundling them.

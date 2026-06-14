@@ -25,7 +25,11 @@ case "${1:-all}" in
   core)
     swift test --package-path Packages/TerminalCore ${2:+--filter "$2"} ;;
   rendering)
-    swift test --package-path Packages/CRTRendering ${2:+--filter "$2"} ;;
+    # --no-parallel: these tests hit CoreText/Metal, and parallel font
+    # lookups race the bundled-font registration's fontd XPC connection,
+    # which wedges every later CTFontCreateWithName at 0% CPU (see CLAUDE.md).
+    # Serial keeps the whole suite to a few seconds with no hang.
+    swift test --package-path Packages/CRTRendering --no-parallel ${2:+--filter "$2"} ;;
   app)
     if [ -n "${2:-}" ]; then
       app_tests -skip-testing:CRTerminalUITests "-only-testing:$2"

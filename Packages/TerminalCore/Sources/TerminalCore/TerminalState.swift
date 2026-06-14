@@ -163,6 +163,30 @@ public struct TerminalState: Sendable {
     private var kittyFlagsStack: [KittyKeyboardFlags] = []
     private static let maxKittyStack = 32
 
+    // MARK: Inline images (kitty graphics / sixel / iTerm2)
+
+    /// Transmitted images by internal serial — the renderer's texture-cache
+    /// key. Distinct from a kitty client image id.
+    public internal(set) var images: [UInt32: TerminalImage] = [:]
+    /// Image placements, anchored to absolute rows (scrollback-stable).
+    public internal(set) var imagePlacements: [ImagePlacement] = []
+    /// Device-pixel cell size, set by the app from the renderer. Drives the
+    /// pixel→cell math for image extents and the CSI 14/16 t reports.
+    public internal(set) var cellPixelWidth = 10
+    public internal(set) var cellPixelHeight = 20
+    var nextImageSerial: UInt32 = 1
+    var nextPlacementSerial: UInt32 = 1
+    var totalImageBytes = 0
+    /// kitty client image id (i=) → internal serial.
+    var kittyImageSerials: [UInt32: UInt32] = [:]
+    /// kitty image number (I=) → internal serial (newest wins).
+    var kittyImageNumbers: [UInt32: UInt32] = [:]
+    /// In-flight chunked kitty transmission (m=1), keyed nowhere — kitty
+    /// allows only one at a time.
+    var kittyTransfer: KittyTransfer?
+    static let maxImages = 256
+    static let maxImageBytes = 320 * 1024 * 1024
+
     var brush = Brush.initial
     var pendingWrap = false
     /// Scroll region (DECSTBM), inclusive.
@@ -468,6 +492,32 @@ public struct TerminalState: Sendable {
         generation &+= 1
     }
 
+    // MARK: Image helpers reachable from the protocol-parsing extensions
+    // (those live in other files and so can't touch the private cursor/scroll
+    // machinery directly).
+
+    /// Absolute row of the cursor — where a fresh image placement anchors.
+    var imageAnchorRow: Int { absoluteScreenTop + cursor.y }
+
+    /// Mark the screen dirty after an image-only change (no cursor move).
+    mutating func markImagesChanged() { touch() }
+
+    /// Queue bytes for the application (kitty graphics responses).
+    mutating func appendResponse(_ bytes: [UInt8]) {
+        responses.append(contentsOf: bytes)
+    }
+
+    /// Move the cursor below a just-placed image, scrolling the buffer (and
+    /// feeding scrollback) so the image's rows are committed and a following
+    /// prompt lands beneath it. Shared by all three protocols; kitty's
+    /// "don't move" (C=1) simply skips calling this.
+    mutating func advanceCursorBelowImage(rows: Int, startColumn: Int) {
+        pendingWrap = false
+        for _ in 0..<max(0, rows) { index() }
+        cursor.x = min(max(0, startColumn), columns - 1)
+        touch()
+    }
+
     private func blankLines(_ count: Int) -> [[Cell]] {
         Array(repeating: blankRow, count: count)
     }
@@ -513,6 +563,7 @@ public struct TerminalState: Sendable {
         } else if !promptMarks.isEmpty {
             promptMarks.removeAll()
         }
+        pruneEvictedImagePlacements()
     }
 
     private mutating func eraseInLine(_ y: Int, _ range: Range<Int>) {
@@ -594,6 +645,7 @@ public struct TerminalState: Sendable {
         kittyFlagsStack.removeAll()
         promptMarks.removeAll()
         progress = nil
+        clearAllImages()
         touch()
     }
 
@@ -628,6 +680,8 @@ public struct TerminalState: Sendable {
         lines = clear ? blankLines(rows) : blankLines(rows)
         lineWrapped = Array(repeating: false, count: rows)
         isAlternateScreen = true
+        // Alternate-screen images start fresh; stale ones can't be valid.
+        imagePlacements.removeAll { $0.onAlternateScreen }
         pendingWrap = false
         touch()
     }
@@ -639,6 +693,8 @@ public struct TerminalState: Sendable {
         savedPrimaryLines = nil
         savedPrimaryWrapped = nil
         isAlternateScreen = false
+        // Drop alternate-screen images; primary placements resume.
+        imagePlacements.removeAll { $0.onAlternateScreen }
         pendingWrap = false
         touch()
     }
@@ -968,14 +1024,21 @@ extension TerminalState: TerminalHandler {
             touch()
         case UInt8(ascii: "m"): applySGR(seq.params)
         case UInt8(ascii: "n"): deviceStatusReport(seq.param(0), private: false)
-        case UInt8(ascii: "c"): respond("\u{1B}[?62;22c") // primary DA: VT220 + color
+        case UInt8(ascii: "c"): respond("\u{1B}[?62;4;22c") // primary DA: VT220 + sixel + color
         case UInt8(ascii: "r"): // DECSTBM
             setScrollRegion(top: seq.param(0), bottom: seq.param(1))
         case UInt8(ascii: "s"): saveCursorState()
         case UInt8(ascii: "u"): restoreCursorState()
         case UInt8(ascii: "t"): // XTWINOPS
-            if seq.param(0) == 18 {
+            switch seq.param(0) {
+            case 14: // report text-area size in pixels (graphics clients)
+                respond("\u{1B}[4;\(rows * cellPixelHeight);\(columns * cellPixelWidth)t")
+            case 16: // report cell size in pixels
+                respond("\u{1B}[6;\(cellPixelHeight);\(cellPixelWidth)t")
+            case 18: // report text-area size in cells
                 respond("\u{1B}[8;\(rows);\(columns)t")
+            default:
+                break
             }
         default:
             break
@@ -1035,6 +1098,8 @@ extension TerminalState: TerminalHandler {
                     touch()
                 }
             }
+        case 1337:
+            handleITerm1337(body)
         case 133:
             handleShellIntegration(body)
         case 777:
@@ -1189,16 +1254,20 @@ extension TerminalState: TerminalHandler {
         case 0:
             eraseInLine(cursor.y, cursor.x..<columns)
             for y in (cursor.y + 1)..<rows { eraseInLine(y, 0..<columns) }
+            removeImagePlacements(intersectingScreenRows: cursor.y...(rows - 1))
         case 1:
             for y in 0..<cursor.y { eraseInLine(y, 0..<columns) }
             eraseInLine(cursor.y, 0..<(cursor.x + 1))
+            removeImagePlacements(intersectingScreenRows: 0...cursor.y)
         case 2:
             for y in 0..<rows { eraseInLine(y, 0..<columns) }
+            removeImagePlacements(intersectingScreenRows: 0...(rows - 1))
         case 3:
             evictedLineCount += scrollback.count
             scrollback.removeAll()
             scrollbackWrapped.removeAll()
             promptMarks.removeAll { $0.row < evictedLineCount }
+            pruneEvictedImagePlacements()
         default:
             return
         }

@@ -26,6 +26,7 @@ public final class TerminalRenderer {
     private let bgPipeline: MTLRenderPipelineState
     private let glyphPipeline: MTLRenderPipelineState
     private let colorGlyphPipeline: MTLRenderPipelineState
+    private let imagePipeline: MTLRenderPipelineState
     private let atlas: GlyphAtlas
     private let ascent: CGFloat
     private let effectPipeline: EffectPipeline
@@ -108,6 +109,13 @@ public final class TerminalRenderer {
         var color: UInt32
     }
 
+    private struct ImageInstance {
+        var origin: SIMD2<Float>
+        var size: SIMD2<Float>
+        var uvOrigin: SIMD2<Float>
+        var uvSize: SIMD2<Float>
+    }
+
     public init?(font: CTFont, scale: CGFloat, scheme: ColorScheme = .default) {
         // Monospace cell metrics from the font — computed before the atlas,
         // which needs them to synthesize exact-cell box/block glyphs.
@@ -172,6 +180,21 @@ public final class TerminalRenderer {
             colorAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
             colorAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
             colorGlyphPipeline = try device.makeRenderPipelineState(descriptor: colorDescriptor)
+
+            // Inline images: premultiplied RGBA, same blend as color glyphs.
+            let imageDescriptor = MTLRenderPipelineDescriptor()
+            imageDescriptor.vertexFunction = library.makeFunction(name: "image_vertex")
+            imageDescriptor.fragmentFunction = library.makeFunction(name: "image_fragment")
+            let imageAttachment = imageDescriptor.colorAttachments[0]!
+            imageAttachment.pixelFormat = .bgra8Unorm
+            imageAttachment.isBlendingEnabled = true
+            imageAttachment.rgbBlendOperation = .add
+            imageAttachment.alphaBlendOperation = .add
+            imageAttachment.sourceRGBBlendFactor = .one
+            imageAttachment.sourceAlphaBlendFactor = .one
+            imageAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            imageAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            imagePipeline = try device.makeRenderPipelineState(descriptor: imageDescriptor)
         } catch {
             return nil
         }
@@ -199,6 +222,11 @@ public final class TerminalRenderer {
             let frame = beginFrame(
                 at: time, contentChanged: contentChanged, context: context,
                 preset: preset)
+            let imageCache = context.imageCache ?? {
+                let cache = ImageTextureCache(device: device)
+                context.imageCache = cache
+                return cache
+            }()
             guard let buffer = commandQueue.makeCommandBuffer() else { return }
             if frame.preset.effects {
                 let bezel = Int(frame.uniforms(width: target.width, height: target.height,
@@ -212,7 +240,8 @@ public final class TerminalRenderer {
                 guard var surfaces = context.surfaces else { return }
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                                markedText: markedText, in: buffer, to: surfaces.terminal,
-                               scheme: resolveScheme(for: frame.preset))
+                               scheme: resolveScheme(for: frame.preset),
+                               imageCache: imageCache)
                 effectPipeline.encode(
                     into: buffer, surfaces: &surfaces, output: target,
                     uniforms: frame.uniforms(width: target.width, height: target.height, scale: scale),
@@ -230,7 +259,8 @@ public final class TerminalRenderer {
                                markedText: markedText, in: buffer, to: target,
                                scheme: resolveScheme(for: frame.preset),
                                padPx: Int((CGFloat(frame.preset.contentInsetPt) * scale)
-                                   .rounded()))
+                                   .rounded()),
+                               imageCache: imageCache)
             }
             attachLatencySample(to: buffer)
             buffer.present(drawable)
@@ -421,7 +451,8 @@ public final class TerminalRenderer {
             surfaces.persistenceValid = false
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                            markedText: markedText, in: buffer, to: surfaces.terminal,
-                           scheme: resolveScheme(for: preset))
+                           scheme: resolveScheme(for: preset),
+                           imageCache: ImageTextureCache(device: device))
             effectPipeline.encode(
                 into: buffer, surfaces: &surfaces, output: texture,
                 uniforms: CRTUniforms(
@@ -437,7 +468,8 @@ public final class TerminalRenderer {
         } else {
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                            markedText: markedText, in: buffer, to: texture,
-                           scheme: resolveScheme(for: preset))
+                           scheme: resolveScheme(for: preset),
+                           imageCache: ImageTextureCache(device: device))
             buffer.commit()
             buffer.waitUntilCompleted()
         }
@@ -507,7 +539,8 @@ public final class TerminalRenderer {
         in buffer: MTLCommandBuffer,
         to texture: MTLTexture,
         scheme resolvedScheme: ColorScheme = .default,
-        padPx: Int = 0
+        padPx: Int = 0,
+        imageCache: ImageTextureCache? = nil
     ) {
         encodeLock.lock()
         defer { encodeLock.unlock() }
@@ -667,6 +700,36 @@ public final class TerminalRenderer {
             }
         }
 
+        // Inline images (kitty / sixel / iTerm2): one premultiplied-RGBA
+        // texture per placement, positioned by absolute row so it scrolls with
+        // the text. Negative z draws under the glyphs, ≥0 over them. Drawn into
+        // the cell texture, so images get the CRT treatment like everything else.
+        var underImages: [(texture: MTLTexture, instance: ImageInstance)] = []
+        var overImages: [(texture: MTLTexture, instance: ImageInstance)] = []
+        if let imageCache, !state.imagePlacements.isEmpty {
+            imageCache.purge(keeping: Set(state.images.keys))
+            let placements = state.imagePlacements
+                .filter { $0.onAlternateScreen == state.isAlternateScreen }
+                .sorted { $0.zIndex < $1.zIndex }
+            for placement in placements {
+                let screenRow = placement.row - viewportTop
+                guard screenRow + placement.rows > 0, screenRow < state.rows else { continue }
+                guard let image = state.images[placement.imageID],
+                      let tex = imageCache.texture(for: image) else { continue }
+                let pw = Float(max(1, image.pixelWidth))
+                let ph = Float(max(1, image.pixelHeight))
+                let sw = placement.sourceWidth > 0 ? Float(placement.sourceWidth) : pw
+                let sh = placement.sourceHeight > 0 ? Float(placement.sourceHeight) : ph
+                let instance = ImageInstance(
+                    origin: SIMD2(Float(placement.column) * cellW, Float(screenRow) * cellH),
+                    size: SIMD2(Float(placement.columns) * cellW, Float(placement.rows) * cellH),
+                    uvOrigin: SIMD2(Float(placement.sourceX) / pw, Float(placement.sourceY) / ph),
+                    uvSize: SIMD2(sw / pw, sh / ph))
+                if placement.zIndex < 0 { underImages.append((tex, instance)) }
+                else { overImages.append((tex, instance)) }
+            }
+        }
+
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = texture
         pass.colorAttachments[0].loadAction = .clear
@@ -690,6 +753,20 @@ public final class TerminalRenderer {
         var uniforms = Uniforms(viewport: SIMD2(
             Float(texture.width - 2 * pad), Float(texture.height - 2 * pad)))
 
+        func drawImages(_ images: [(texture: MTLTexture, instance: ImageInstance)]) {
+            guard !images.isEmpty else { return }
+            encoder.setRenderPipelineState(imagePipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            for image in images {
+                var instance = image.instance
+                encoder.setVertexBytes(
+                    &instance, length: MemoryLayout<ImageInstance>.stride, index: 0)
+                encoder.setFragmentTexture(image.texture, index: 0)
+                encoder.drawPrimitives(
+                    type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+            }
+        }
+
         // setVertexBytes caps at 4 KiB; instance arrays go in real buffers.
         if !bgInstances.isEmpty,
            let instanceBuffer = device.makeBuffer(
@@ -703,6 +780,7 @@ public final class TerminalRenderer {
                 type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                 instanceCount: bgInstances.count)
         }
+        drawImages(underImages)
         if !glyphInstances.isEmpty,
            let instanceBuffer = device.makeBuffer(
             bytes: glyphInstances,
@@ -729,6 +807,7 @@ public final class TerminalRenderer {
                 type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                 instanceCount: colorGlyphInstances.count)
         }
+        drawImages(overImages)
         if !overlayInstances.isEmpty,
            let instanceBuffer = device.makeBuffer(
             bytes: overlayInstances,

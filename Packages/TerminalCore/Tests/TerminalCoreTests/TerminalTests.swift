@@ -274,7 +274,7 @@ struct ModeAndReportTests {
     @Test func primaryDeviceAttributes() {
         var t = makeTerminal()
         t.feed("\u{1B}[c")
-        #expect(t.drainResponses() == Array("\u{1B}[?62;22c".utf8))
+        #expect(t.drainResponses() == Array("\u{1B}[?62;4;22c".utf8))
     }
 
     @Test func titleViaBELAndST() {

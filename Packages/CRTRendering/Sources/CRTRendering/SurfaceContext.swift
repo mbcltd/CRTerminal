@@ -12,6 +12,9 @@ public final class SurfaceContext {
     /// Presets are per-pane (sidebar sessions can each wear their own);
     /// nil forces a persistence reset on the first frame.
     var lastPreset: CRTPreset?
+    /// Inline-image GPU textures for this pane's session, keyed by image
+    /// serial. Lazily created so panes without graphics pay nothing.
+    var imageCache: ImageTextureCache?
 
     public init() {}
 }
