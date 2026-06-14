@@ -12,6 +12,8 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         var scrollOffset = 0
         var selection: Selection?
         var markedText: String?
+        /// Cell span of the URL/path currently ⌘-hovered (drawn underlined).
+        var hoveredLink: Selection?
     }
 
     private struct Shared {
@@ -91,10 +93,14 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         link.isPaused = false
     }
 
-    func setViewState(scrollOffset: Int, selection: Selection?, markedText: String? = nil) {
+    func setViewState(
+        scrollOffset: Int, selection: Selection?, markedText: String? = nil,
+        hoveredLink: Selection? = nil
+    ) {
         let blocked = shared.withLock { shared in
             shared.viewState = ViewState(
-                scrollOffset: scrollOffset, selection: selection, markedText: markedText)
+                scrollOffset: scrollOffset, selection: selection,
+                markedText: markedText, hoveredLink: hoveredLink)
             return shared.invalidated || shared.occluded
         }
         guard !blocked else { return }
@@ -181,6 +187,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
             scrollOffset: viewState.scrollOffset,
             selection: viewState.selection,
             markedText: viewState.markedText,
+            hoveredLink: viewState.hoveredLink,
             contentChanged: contentChanged,
             at: now,
             preset: preset,

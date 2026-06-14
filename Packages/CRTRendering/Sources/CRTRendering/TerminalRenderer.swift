@@ -211,6 +211,7 @@ public final class TerminalRenderer {
         scrollOffset: Int = 0,
         selection: Selection? = nil,
         markedText: String? = nil,
+        hoveredLink: Selection? = nil,
         contentChanged: Bool = true,
         at time: CFTimeInterval = CACurrentMediaTime(),
         preset: CRTPreset? = nil,
@@ -239,7 +240,8 @@ public final class TerminalRenderer {
                 }
                 guard var surfaces = context.surfaces else { return }
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                               markedText: markedText, in: buffer, to: surfaces.terminal,
+                               markedText: markedText, hoveredLink: hoveredLink,
+                               in: buffer, to: surfaces.terminal,
                                scheme: resolveScheme(for: frame.preset),
                                imageCache: imageCache)
                 effectPipeline.encode(
@@ -256,7 +258,8 @@ public final class TerminalRenderer {
                 // the cell pass to match (offscreen renderImage stays
                 // unpadded — the margin is window layout, not content).
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                               markedText: markedText, in: buffer, to: target,
+                               markedText: markedText, hoveredLink: hoveredLink,
+                               in: buffer, to: target,
                                scheme: resolveScheme(for: frame.preset),
                                padPx: Int((CGFloat(frame.preset.contentInsetPt) * scale)
                                    .rounded()),
@@ -536,6 +539,7 @@ public final class TerminalRenderer {
         scrollOffset: Int,
         selection: Selection?,
         markedText: String? = nil,
+        hoveredLink: Selection? = nil,
         in buffer: MTLCommandBuffer,
         to texture: MTLTexture,
         scheme resolvedScheme: ColorScheme = .default,
@@ -643,6 +647,19 @@ public final class TerminalRenderer {
                 if cell.attributes.contains(.struckThrough) {
                     overlayInstances.append(BgInstance(
                         origin: SIMD2(origin.x, origin.y + cellH * 0.5),
+                        size: SIMD2(cellSpan, lineThickness),
+                        color: fg))
+                }
+                // Links: OSC 8 hyperlinks always, plain-text URLs while
+                // ⌘-hovered. A tight hairline pixel-snapped onto the baseline
+                // (descenders cross it) — distinct from the looser SGR
+                // underline above, which an app's own styling keeps.
+                if !cell.attributes.contains(.underlined),
+                   !cell.attributes.contains(.wideSpacer),
+                   cell.link != 0
+                    || (hoveredLink?.contains(row: viewportTop + y, column: x) ?? false) {
+                    overlayInstances.append(BgInstance(
+                        origin: SIMD2(origin.x, (origin.y + baselineOffset).rounded()),
                         size: SIMD2(cellSpan, lineThickness),
                         color: fg))
                 }

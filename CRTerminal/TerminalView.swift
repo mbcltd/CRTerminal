@@ -146,6 +146,11 @@ final class TerminalView: NSView, NSTextInputClient {
     private var selectionAnchor: SelectionPoint?
     private var lastReportedDragCell: (x: Int, y: Int)?
     private var keyWindowObservers: [NSObjectProtocol] = []
+    /// Cell span of the URL/path under the pointer while ⌘ is held; drives
+    /// the hover underline and the pointing-hand cursor.
+    private var hoveredLink: Selection?
+    private var linkCursorShown = false
+    private var linkTrackingArea: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -225,6 +230,20 @@ final class TerminalView: NSView, NSTextInputClient {
         updateLayerGeometry()
     }
 
+    /// A whole-view tracking area so ⌘-hover over a URL can underline it and
+    /// switch to the link cursor (cursor rects can't see modifier keys).
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let linkTrackingArea { removeTrackingArea(linkTrackingArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited,
+                      .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        linkTrackingArea = area
+    }
+
     private func setUpRendererIfNeeded() {
         guard renderer == nil, window != nil, let metalLayer, let session,
               let renderer = rendererProvider?() ?? Self.makeFallbackRenderer(for: window)
@@ -276,7 +295,8 @@ final class TerminalView: NSView, NSTextInputClient {
 
     private func pushViewStateToRenderLoop() {
         renderLoop?.setViewState(
-            scrollOffset: scrollOffset, selection: selection, markedText: markedText)
+            scrollOffset: scrollOffset, selection: selection,
+            markedText: markedText, hoveredLink: hoveredLink)
     }
 
     private func wireSession() {
@@ -453,8 +473,12 @@ final class TerminalView: NSView, NSTextInputClient {
     // MARK: Mouse
 
     private func cellPosition(of event: NSEvent) -> (x: Int, y: Int) {
+        cellPosition(at: event.locationInWindow)
+    }
+
+    private func cellPosition(at locationInWindow: NSPoint) -> (x: Int, y: Int) {
         guard let renderer else { return (0, 0) }
-        let point = convert(event.locationInWindow, from: nil)
+        let point = convert(locationInWindow, from: nil)
         let inset = contentInset
         let x = min(max(0, Int((point.x - inset) / renderer.cellSize.width)),
                     (session?.snapshot.columns ?? 1) - 1)
@@ -560,6 +584,23 @@ final class TerminalView: NSView, NSTextInputClient {
         }
     }
 
+    override func mouseMoved(with event: NSEvent) {
+        updateHoveredLink(
+            at: event.locationInWindow,
+            commandHeld: event.modifierFlags.contains(.command))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        clearHoveredLink()
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        updateHoveredLink(
+            at: event.locationInWindow,
+            commandHeld: event.modifierFlags.contains(.command))
+    }
+
     override func rightMouseDown(with event: NSEvent) {
         _ = reportMouse(.press, button: .right, event: event)
     }
@@ -618,6 +659,64 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     // MARK: Links
+
+    /// Recomputes the ⌘-hover underline for the cell under `locationInWindow`.
+    /// OSC 8 cells underline regardless (the renderer handles that); this adds
+    /// plain-text URLs/paths on ⌘, plus the pointing-hand cursor for both.
+    private func updateHoveredLink(at locationInWindow: NSPoint, commandHeld: Bool) {
+        guard commandHeld, let state = session?.snapshot else {
+            clearHoveredLink()
+            return
+        }
+        let cell = cellPosition(at: locationInWindow)
+        let row = state.absoluteScreenTop - scrollOffset + cell.y
+        guard let line = state.absoluteLine(row), cell.x < line.count else {
+            clearHoveredLink()
+            return
+        }
+        let columns: Range<Int>?
+        if line[cell.x].link != 0 {
+            columns = osc8Columns(in: line, atColumn: cell.x)
+        } else {
+            columns = URLDetection.locate(in: line, atColumn: cell.x)?.columns
+        }
+        guard let columns, !columns.isEmpty else {
+            clearHoveredLink()
+            return
+        }
+        let span = Selection(
+            anchor: SelectionPoint(row: row, column: columns.lowerBound),
+            head: SelectionPoint(row: row, column: columns.upperBound - 1))
+        if span != hoveredLink {
+            hoveredLink = span
+            pushViewStateToRenderLoop()
+        }
+        if !linkCursorShown {
+            NSCursor.pointingHand.set()
+            linkCursorShown = true
+        }
+    }
+
+    private func clearHoveredLink() {
+        if linkCursorShown {
+            NSCursor.arrow.set()
+            linkCursorShown = false
+        }
+        guard hoveredLink != nil else { return }
+        hoveredLink = nil
+        pushViewStateToRenderLoop()
+    }
+
+    /// Column span of the contiguous OSC 8 hyperlink run containing `column`.
+    private func osc8Columns(in line: [Cell], atColumn column: Int) -> Range<Int>? {
+        let id = line[column].link
+        guard id != 0 else { return nil }
+        var lo = column
+        while lo > 0, line[lo - 1].link == id { lo -= 1 }
+        var hi = column
+        while hi + 1 < line.count, line[hi + 1].link == id { hi += 1 }
+        return lo..<(hi + 1)
+    }
 
     private func openLink(at event: NSEvent) {
         guard let state = session?.snapshot else { return }
