@@ -156,6 +156,44 @@ struct BlockTests {
         #expect(t.state.block(atAbsoluteRow: -1) == nil)
     }
 
+    @Test func markdownExportCarriesAllFields() {
+        var t = makeTerminal(columns: 30, rows: 6)
+        t.feed("\u{1B}]7;file:///Users/me/dev\u{07}")
+        t.feed("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}echo hi\r\n\u{1B}]133;C\u{07}")
+        t.feed("hi\r\n\u{1B}]133;D;0\u{07}")
+        t.feed("\u{1B}]133;A\u{07}$ ")
+        let md = t.state.markdownExport(for: t.state.blocks.first!)
+        #expect(md.contains("echo hi"))         // command
+        #expect(md.contains("/Users/me/dev"))   // cwd
+        #expect(md.contains("exit 0"))          // exit code
+        #expect(md.contains("```\nhi\n```"))    // output in a fenced block
+    }
+
+    @Test func markdownExportFenceEscapesBacktickOutput() {
+        var t = makeTerminal(columns: 30, rows: 6)
+        t.feed("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}cat x\r\n\u{1B}]133;C\u{07}")
+        t.feed("```\r\n\u{1B}]133;D;0\u{07}")  // output literally contains a triple fence
+        t.feed("\u{1B}]133;A\u{07}$ ")
+        let md = t.state.markdownExport(for: t.state.blocks.first!)
+        #expect(md.contains("````\n```\n````"))  // outer fence is longer than the inner run
+    }
+
+    @Test func markdownExportEmptyForIdlePrompt() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]133;A\u{07}$ ")
+        #expect(t.state.markdownExport(for: t.state.blocks.first!).isEmpty)
+    }
+
+    @Test func markdownExportJoinsMultipleBlocks() {
+        var t = makeTerminal(columns: 30, rows: 12)
+        t.runCommand(command: "one")
+        t.runCommand(command: "two")
+        let md = t.state.markdownExport(for: t.state.blocks)
+        #expect(md.contains("one"))
+        #expect(md.contains("two"))
+        #expect(md.contains("\n---\n"))  // blocks separated by a rule
+    }
+
     @Test func spansSurviveScrollbackTrim() {
         var t = makeTerminal(columns: 10, rows: 4)
         t.scrollbackLimit = 5

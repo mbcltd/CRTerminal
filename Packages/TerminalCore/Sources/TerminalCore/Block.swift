@@ -117,4 +117,40 @@ extension TerminalState {
         while let last = lines.last, last.isEmpty { lines.removeLast() }
         return lines.joined(separator: "\n")
     }
+
+    /// A self-contained markdown rendering of a block — command, directory,
+    /// exit code, and output — for export to the clipboard or a file. Returns
+    /// "" for a block with nothing to show (an idle prompt). Local only: no
+    /// account, no upload.
+    public func markdownExport(for block: Block) -> String {
+        var parts: [String] = []
+        if let command = block.command {
+            parts.append("### `\(command)`")
+        }
+        var meta: [String] = []
+        if let directory = block.directory { meta.append("`\(directory)`") }
+        if let exitCode = block.exitCode { meta.append("exit \(exitCode)") }
+        if !meta.isEmpty { parts.append(meta.joined(separator: " · ")) }
+        let output = outputText(for: block)
+        if !output.isEmpty {
+            // Fence longer than the longest backtick run in the output, so
+            // output that itself contains ``` still nests cleanly.
+            var longestRun = 0, current = 0
+            for character in output {
+                if character == "`" { current += 1; longestRun = max(longestRun, current) }
+                else { current = 0 }
+            }
+            let fence = String(repeating: "`", count: max(3, longestRun + 1))
+            parts.append("\(fence)\n\(output)\n\(fence)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// Several blocks exported as one markdown document, separated by rules.
+    /// Skips blocks that render empty.
+    public func markdownExport(for blocks: [Block]) -> String {
+        blocks.map { markdownExport(for: $0) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n---\n\n")
+    }
 }

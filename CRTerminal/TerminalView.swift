@@ -588,7 +588,51 @@ final class TerminalView: NSView, NSTextInputClient {
             keyEquivalent: "")
         reRun.target = self
         reRun.isEnabled = block.command != nil
+
+        let exportable = block.command != nil || block.outputRange != nil
+        menu.addItem(.separator())
+        let copyMarkdown = menu.addItem(
+            withTitle: "Copy as Markdown", action: #selector(copyBlockMarkdown(_:)),
+            keyEquivalent: "")
+        copyMarkdown.target = self
+        copyMarkdown.isEnabled = exportable
+        let exportBlock = menu.addItem(
+            withTitle: "Export Block…", action: #selector(exportBlockToFile(_:)),
+            keyEquivalent: "")
+        exportBlock.target = self
+        exportBlock.isEnabled = exportable
         return menu
+    }
+
+    @objc private func copyBlockMarkdown(_ sender: Any?) {
+        guard let row = contextBlockRow, let state = session?.snapshot,
+              let block = state.block(atAbsoluteRow: row) else { return }
+        writeToPasteboard(state.markdownExport(for: block))
+    }
+
+    @objc private func exportBlockToFile(_ sender: Any?) {
+        guard let row = contextBlockRow, let state = session?.snapshot,
+              let block = state.block(atAbsoluteRow: row) else { return }
+        let markdown = state.markdownExport(for: block)
+        guard !markdown.isEmpty, let window else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = exportFilename(for: block)
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? markdown.data(using: .utf8)?.write(to: url, options: .atomic)
+        }
+    }
+
+    /// A filesystem-safe default name from the block's command, e.g.
+    /// `git status` → `git-status.md`.
+    private func exportFilename(for block: Block) -> String {
+        let slug = (block.command ?? "")
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .prefix(4)
+            .joined(separator: "-")
+        return (slug.isEmpty ? "block" : slug) + ".md"
     }
 
     /// Insert the block's command at the live prompt — but do NOT press Return.
