@@ -226,6 +226,30 @@ final class GlyphAtlas {
 
     // MARK: Glyph resolution
 
+    /// The bundled Symbols Nerd Font, appended to `fonts` on first use with
+    /// its index cached here. nil when the font failed to register (e.g. a
+    /// test host without the resource bundle), in which case private-use
+    /// scalars fall through to the generic system fallback. Created at the
+    /// primary font's point size so its icons share the run's metrics.
+    private lazy var symbolsFontIndex: UInt16? = {
+        let font = CTFontCreateWithName(
+            BundledFonts.symbolsNerdFont as CFString, CTFontGetSize(fonts[0]), nil)
+        // CTFontCreateWithName substitutes a default face for an unknown
+        // name; confirm we got the bundled font before trusting it.
+        guard CTFontCopyPostScriptName(font)
+            == BundledFonts.symbolsNerdFont as CFString else { return nil }
+        fonts.append(font)
+        return UInt16(fonts.count - 1)
+    }()
+
+    /// Nerd Font / Powerline icons live in the Unicode private-use areas —
+    /// the whole BMP PUA (U+E000–F8FF) and Supplementary PUA-A (U+F0000–FFFFD,
+    /// where Material Design Icons sit). The primary font lacks them and
+    /// macOS has no system fallback there, so they route to the symbols font.
+    private static func isPrivateUse(_ scalar: UInt32) -> Bool {
+        (0xE000...0xF8FF).contains(scalar) || (0xF0000...0xFFFFD).contains(scalar)
+    }
+
     private func resolveGlyph(_ scalar: UInt32) -> (fontIndex: UInt16, glyph: CGGlyph)? {
         if let cached = scalarToGlyph[scalar] { return cached }
         let resolved = lookUpGlyph(scalar)
@@ -241,6 +265,17 @@ final class GlyphAtlas {
 
         if CTFontGetGlyphsForCharacters(fonts[0], units, &glyphs, units.count), glyphs[0] != 0 {
             return (0, glyphs[0])
+        }
+        // Nerd Font / Powerline icons in the private-use areas: try the
+        // bundled symbols font before the generic fallback below, which finds
+        // nothing there (macOS ships no PUA coverage). Glyphs the symbols font
+        // itself lacks (e.g. the Apple logo at U+F8FF) fall through.
+        if Self.isPrivateUse(scalar), let index = symbolsFontIndex {
+            glyphs = [CGGlyph](repeating: 0, count: units.count)
+            if CTFontGetGlyphsForCharacters(
+                fonts[Int(index)], units, &glyphs, units.count), glyphs[0] != 0 {
+                return (index, glyphs[0])
+            }
         }
         // Font fallback for symbols/CJK/emoji the primary font lacks.
         let string = String(unicodeScalar) as CFString
