@@ -610,3 +610,87 @@ Out of scope (matching iTerm2): relaunching running programs (fresh shells only)
 and tmux-style detached-server persistence (a different architecture). Named,
 manually-saved window arrangements are a natural follow-on, separate from
 auto-restore.
+
+# Feature plan: command blocks
+
+Group the output stream into discrete, addressable **blocks** — one per command —
+the way Warp does, but entirely locally: no account, no cloud, no network. A block
+is the span from one shell prompt to the next: the **command** you typed (header),
+all of its **output** (body), and its **exit status**. Blocks are a *segmentation*
+of the existing scrollback, not a replacement — the flat grid stays underneath and
+is always the fallback. Once output is addressable as blocks, operations the flat
+stream can't express become cheap: clean copy (body only, no prompt noise),
+jump-by-command, per-command status at a glance, collapse/fold, re-run, and export.
+
+Three design facts from the current code shape everything:
+
+- **The segmentation already exists.** `PromptMark` (`TerminalState.swift`) already
+  captures `row`, `command`, `exitCode`, `directory`, and a stable `sequence` from
+  OSC 133 `;A/;B/;C/;D` (`handleShellIntegration`), and is already remapped through
+  reflow and dropped on scrollback eviction. A block is simply the span between
+  consecutive prompt marks; this feature adds **no new parsing**.
+- **The renderer draws a flat cell grid with no inter-row chrome.** Block boundaries
+  (divider, status gutter, fold affordance) must come from a `CALayer` overlay above
+  the Metal surface — the bell-flash / `bottomBar` pattern — not the cell pass, so the
+  hot render path and the CRT pipeline are untouched and chrome works on every preset.
+- **Blocks must be a progressive enhancement.** Shell integration may be off, and
+  full-screen TUIs emit no marks (`handleShellIntegration` bails on
+  `isAlternateScreen`). With no marks there are no blocks and the flat scrollback
+  renders exactly as today. Blocks are never a requirement to read the screen.
+
+Design:
+
+- **Blocks are a derived view, computed in `TerminalCore`.** No new stored state: a
+  `Block` value type is projected on demand from `promptMarks` + grid geometry, so it
+  stays platform-independent and unit-testable with no app host, and inherits the
+  existing reflow/trim correctness for free.
+- **Re-run is explicit, never automatic** — mirroring the session-restoration stance
+  that re-running a command can repeat a destructive one. Re-run populates the input
+  with the command; the user presses Return.
+
+### Phase CB0 — Block model in `TerminalCore`
+Add a `Block` value type (`rowRange`, `command`, `exitCode`, `directory`, `sequence`,
+`isRunning` when no `;D` yet) and a computed `blocks` projection over `promptMarks`:
+block *i* spans `promptMarks[i].row ..< promptMarks[i+1].row`, the last running to the
+live cursor. Suppress while `isAlternateScreen`; empty when there are no marks.
+**Exit:** `TerminalCoreTests` cover spans for a sequence of `;A/;B/;C/;D` marks
+(running, finished, failed), and assert spans stay correct across scrollback trim and
+resize reflow. `Scripts/test.sh core` green.
+
+### Phase CB1 — Boundary rendering (CALayer overlay)
+Draw block chrome as a `CALayer` above the Metal surface (bell-flash / `bottomBar`
+pattern): a hairline divider at each block's top row and a gutter status marker
+(neutral while running, green/red from `exitCode`). Map absolute block rows to
+on-screen y via the renderer's existing scroll offset; redraw on scroll, damage, and
+resize. No marks → no chrome.
+**Exit:** a sequence of commands shows per-block dividers and exit-code gutter dots;
+a failed command shows red; scrolling keeps chrome aligned; CRT effects unaffected.
+`Scripts/probe.sh typist` screenshot confirms.
+
+### Phase CB2 — Navigation + clean copy
+Keyboard jump to previous/next block anchored on `promptMarks[i].row` (reuse the
+prompt-jump path). Context actions: **Copy command** (the header) and **Copy output**
+(body rows only, excluding the echoed command and prompt), built on the existing
+`Selection`/`text(in:)` machinery.
+**Exit:** prev/next block navigation scrolls to the anchors; copy-output yields only
+the body for a known grid, verified across a scrollback trim; app-target tests cover
+the span math.
+
+### Phase CB3 — Collapse / fold + re-run
+Collapse a block's body to its header (its row span hidden from layout and selection),
+expand on click via the overlay affordance. **Re-run** writes the block's `command` to
+the PTY input (optionally prefixed by `cd <directory>`) without executing it — explicit
+by design.
+**Exit:** collapsing hides the body rows and shows a folded affordance; expanding
+restores them; re-run populates the prompt with the command and does not auto-run.
+
+### Phase CB4 — Export
+Export a block (or a selected range of blocks) as a self-contained markdown/text
+document — command, cwd, exit code, output — to the clipboard or a file. Local only.
+**Exit:** exporting a block produces markdown carrying command, cwd, exit code, and
+output that round-trips through paste.
+
+Out of scope: cloud sync / shared "drive", team sharing and live collaboration, and
+any account-gated surface (all conflict with the local, no-login, Apache-licensed
+design); block structure *inside* alternate-screen TUIs (a vim or htop session is one
+block, by design); and AI/agent features over blocks (a separate product decision).
