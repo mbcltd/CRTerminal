@@ -676,19 +676,37 @@ prompt-jump path). Context actions: **Copy command** (the header) and **Copy out
 the body for a known grid, verified across a scrollback trim; app-target tests cover
 the span math.
 
-### Phase CB3 — Collapse / fold + re-run
-Collapse a block's body to its header (its row span hidden from layout and selection),
-expand on click via the overlay affordance. **Re-run** writes the block's `command` to
-the PTY input (optionally prefixed by `cd <directory>`) without executing it — explicit
-by design.
-**Exit:** collapsing hides the body rows and shows a folded affordance; expanding
-restores them; re-run populates the prompt with the command and does not auto-run.
+### Phase CB3 — Re-run
+**Re-run** writes the block's `command` to the PTY input (via the block context
+menu) without executing it — execution stays an explicit user act because a re-run
+can repeat a destructive command (the session-restoration safety stance applied to
+commands). The optional `cd <directory>` prefix is deliberately skipped to avoid
+guessing the live cwd or running an extra command.
+**Exit:** re-run populates the prompt with the command and does not auto-run.
+
+(Collapse / fold was originally bundled here but split out to Phase CB5 — see the
+note there — once it became clear it's a coordinate-system change, not a UI tweak.)
 
 ### Phase CB4 — Export
 Export a block (or a selected range of blocks) as a self-contained markdown/text
 document — command, cwd, exit code, output — to the clipboard or a file. Local only.
 **Exit:** exporting a block produces markdown carrying command, cwd, exit code, and
 output that round-trips through paste.
+
+### Phase CB5 — Collapse / fold
+Collapse a block's body to its header (its row span hidden from layout and selection),
+expand on click via the overlay affordance. This is its own phase, not a UI tweak,
+because the renderer is handed the whole `TerminalState` and computes its viewport
+from the linear mapping `screen_row = absolute_row − (absoluteScreenTop − scrollOffset)`
+— the same mapping the CB1 overlay, mouse/selection hit-testing, prompt-jump, cursor
+placement, and search all rely on. A true reflowing fold (body hidden, rows below move
+up) needs a **display-line list decoupled from absolute rows**, with a display↔absolute
+translation threaded through `viewportLines`, the renderer, the overlay, hit-testing,
+scroll clamping, the cursor, and search. A visual-only cover (no reflow) was rejected
+as low value — it hides noise but reclaims no vertical space.
+**Exit:** collapsing hides the body rows and shows a folded affordance; expanding
+restores them; selection, scroll, prompt-jump, and the overlay stay correct in the
+folded coordinate space.
 
 Out of scope: cloud sync / shared "drive", team sharing and live collaboration, and
 any account-gated surface (all conflict with the local, no-login, Apache-licensed

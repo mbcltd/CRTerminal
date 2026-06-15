@@ -581,7 +581,24 @@ final class TerminalView: NSView, NSTextInputClient {
             keyEquivalent: "")
         copyOutput.target = self
         copyOutput.isEnabled = block.outputRange != nil
+
+        menu.addItem(.separator())
+        let reRun = menu.addItem(
+            withTitle: "Re-run Command", action: #selector(reRunBlockCommand(_:)),
+            keyEquivalent: "")
+        reRun.target = self
+        reRun.isEnabled = block.command != nil
         return menu
+    }
+
+    /// Insert the block's command at the live prompt — but do NOT press Return.
+    /// Re-running can repeat a destructive command, so execution stays an
+    /// explicit user act (the session-restoration safety stance, applied to
+    /// commands rather than whole sessions).
+    @objc private func reRunBlockCommand(_ sender: Any?) {
+        guard let row = contextBlockRow, let state = session?.snapshot,
+              let command = state.block(atAbsoluteRow: row)?.command else { return }
+        sendKeyboard(Array(command.utf8))  // snaps to live, types the command, no \r
     }
 
     @objc private func copyBlockCommand(_ sender: Any?) {
