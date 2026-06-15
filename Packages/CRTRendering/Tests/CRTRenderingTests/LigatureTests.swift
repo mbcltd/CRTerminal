@@ -7,11 +7,36 @@ import TerminalCore
 struct BundledFontTests {
     @Test func bundledFontsRegisterAndResolve() {
         RenderTestSupport.ready()
-        for name in [BundledFonts.geistMono, BundledFonts.departureMono, BundledFonts.c64] {
+        for name in [
+            BundledFonts.geistMono, BundledFonts.departureMono,
+            BundledFonts.c64, BundledFonts.symbolsNerdFont,
+        ] {
             // CTFontCreateWithName falls back silently; the PostScript
             // name only matches when registration actually worked.
             let font = CTFontCreateWithName(name as CFString, 13, nil)
             #expect(CTFontCopyPostScriptName(font) as String == name)
+        }
+    }
+
+    /// Nerd Font / Powerline icons in the private-use areas — absent from
+    /// Geist Mono and from any system fallback — resolve through the bundled
+    /// Symbols Nerd Font to real, non-empty glyphs. Covers both PUA blocks:
+    /// the Powerline separator (BMP) and a Material Design icon (Plane 15).
+    @Test func privateUseGlyphsResolveThroughSymbolsFont() throws {
+        RenderTestSupport.ready()
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let font = CTFontCreateWithName(BundledFonts.geistMono as CFString, 12, nil)
+        let atlas = try #require(GlyphAtlas(
+            device: device, font: font, scale: 1,
+            cellSize: CGSize(width: 8, height: 15), ascent: 11))
+        // Both would resolve to nothing before this fallback existed: Geist
+        // Mono lacks them and macOS has no system coverage for these PUA
+        // blocks.
+        for scalar: UInt32 in [0xE0B0, 0xF0001] {
+            let entry = try #require(
+                atlas.entry(forScalar: scalar),
+                "U+\(String(scalar, radix: 16)) should resolve via the symbols font")
+            #expect(!entry.isEmpty)
         }
     }
 }

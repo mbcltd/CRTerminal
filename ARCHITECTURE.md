@@ -225,12 +225,17 @@ minimum.
   CTLine, then it's a dictionary hit. Runs split at a block cursor (its cell must keep
   its own glyph to invert cleanly) and on any fg/bg/attribute change; shaping that
   drags in a fallback font bails to the per-cell path. Font fallback (emoji, CJK,
-  symbols) uses CTFontCreateForString with a per-codepoint fallback cache.
+  symbols) uses CTFontCreateForString with a per-codepoint fallback cache. Scalars in
+  the Unicode private-use areas (BMP PUA U+E000–F8FF and Supplementary PUA-A
+  U+F0000–FFFFD) — where Powerline/Nerd Font icons live — route first to the bundled
+  Symbols Nerd Font, since macOS ships no system fallback there; anything that font
+  also lacks (e.g. the Apple logo at U+F8FF) falls through to CTFontCreateForString.
 - **Bundled fonts.** Geist Mono (Regular/Bold/Italic/BoldItalic) and Departure Mono
   ship inside CRTRendering's resources (both SIL OFL 1.1; license texts sit beside the
   files) and are registered with process scope at launch. Geist Mono is the fixed
   terminal font (only its size is configurable); it is ligature-capable, which is
-  what made the shaping path verifiable.
+  what made the shaping path verifiable. Symbols Nerd Font Mono (MIT) ships alongside
+  them as a PUA fallback layer, not a user-selectable typeface.
 - **Draw.** Three instanced draws into an offscreen `terminalTexture`:
   background quads, glyph quads, then decorations (cursor, selection, underlines,
   IME marked-text). A full screen of cells is two-digit-thousands of instances —
