@@ -530,8 +530,8 @@ public final class TerminalRenderer {
     /// otherwise `appearance` picks the light or the (renderer-default) dark
     /// scheme.
     private func resolveScheme(for preset: CRTPreset?) -> ColorScheme {
-        if let palette = preset?.colors { return ColorScheme(palette: palette) }
-        return preset?.appearance == .light ? .light : baseScheme
+        guard let preset else { return baseScheme }
+        return ColorScheme.resolve(for: preset, darkBase: baseScheme)
     }
 
     private func encodeCellPass(

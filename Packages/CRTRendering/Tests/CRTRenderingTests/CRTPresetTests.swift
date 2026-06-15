@@ -52,6 +52,33 @@ struct CRTPresetTests {
         #expect(scheme.palette[196] == ColorScheme.pack(0xFF, 0x00, 0x00))
     }
 
+    @Test func resolveSchemePicksLightDarkOrPalette() throws {
+        // Appearance drives the built-in scheme; an explicit palette overrides
+        // it. Shared by the renderer and the OSC 10/11 color reporting.
+        #expect(ColorScheme.resolve(for: .darkStandard).background
+            == ColorScheme.default.background)
+        #expect(ColorScheme.resolve(for: .lightStandard).background
+            == ColorScheme.light.background)
+        let danger = try #require(CRTPresetLibrary.preset(named: "Danger"))
+        #expect(ColorScheme.resolve(for: danger).background
+            == ColorScheme.pack(0x2A, 0x0A, 0x0F))
+    }
+
+    @Test func isLightBackgroundReflectsLuminance() throws {
+        // The COLORFGBG hint follows the resolved background's luminance, not
+        // the appearance flag, so custom palettes classify correctly too.
+        #expect(!ColorScheme.resolve(for: .darkStandard).isLightBackground)
+        #expect(ColorScheme.resolve(for: .lightStandard).isLightBackground)
+        let danger = try #require(CRTPresetLibrary.preset(named: "Danger"))
+        #expect(!ColorScheme.resolve(for: danger).isLightBackground) // dark crimson
+    }
+
+    @Test func rgbAccessorsDropAlpha() {
+        let scheme = ColorScheme.light
+        #expect(scheme.foregroundRGB == (0x1C, 0x1C, 0x1C))
+        #expect(scheme.backgroundRGB == (0xF7, 0xF6, 0xF2))
+    }
+
     @Test func paletteOmissionsFallBackToXterm() {
         // Only background/foreground specified: every ANSI slot stays xterm.
         let bare = CRTPreset.Palette(

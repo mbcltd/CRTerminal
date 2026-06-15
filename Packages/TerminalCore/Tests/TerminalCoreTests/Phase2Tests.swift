@@ -281,6 +281,44 @@ struct MiscVTTests {
         t.feed("\u{1B}]52;c;?\u{07}")
         #expect(t.drainClipboard() == nil)
     }
+
+    @Test func osc11QueryReportsBackground() {
+        var t = makeTerminal()
+        t.setColors(foreground: (0x1C, 0x1C, 0x1C), background: (0xF7, 0xF6, 0xF2))
+        t.feed("\u{1B}]11;?\u{1B}\\")
+        #expect(t.drainResponses()
+            == Array("\u{1B}]11;rgb:f7f7/f6f6/f2f2\u{1B}\\".utf8))
+    }
+
+    @Test func osc10QueryReportsForeground() {
+        var t = makeTerminal()
+        t.setColors(foreground: (0x1C, 0x1C, 0x1C), background: (0xF7, 0xF6, 0xF2))
+        t.feed("\u{1B}]10;?\u{07}")
+        #expect(t.drainResponses()
+            == Array("\u{1B}]10;rgb:1c1c/1c1c/1c1c\u{1B}\\".utf8))
+    }
+
+    @Test func osc10CascadesToBackgroundQuery() {
+        // xterm lets one OSC 10 carry several specs that walk 10→11→…; a
+        // "?;?" queries both foreground and background in one go.
+        var t = makeTerminal()
+        t.setColors(foreground: (0x00, 0x00, 0x00), background: (0xFF, 0xFF, 0xFF))
+        t.feed("\u{1B}]10;?;?\u{1B}\\")
+        #expect(t.drainResponses() == Array(
+            "\u{1B}]10;rgb:0000/0000/0000\u{1B}\\\u{1B}]11;rgb:ffff/ffff/ffff\u{1B}\\".utf8))
+    }
+
+    @Test func osc11SetIsIgnored() {
+        // The renderer owns the palette, so a color set produces no reply and
+        // leaves the reported background unchanged.
+        var t = makeTerminal()
+        t.setColors(foreground: (0x1C, 0x1C, 0x1C), background: (0xF7, 0xF6, 0xF2))
+        t.feed("\u{1B}]11;rgb:0000/0000/0000\u{1B}\\")
+        #expect(t.drainResponses().isEmpty)
+        t.feed("\u{1B}]11;?\u{1B}\\")
+        #expect(t.drainResponses()
+            == Array("\u{1B}]11;rgb:f7f7/f6f6/f2f2\u{1B}\\".utf8))
+    }
 }
 
 struct SelectionTests {

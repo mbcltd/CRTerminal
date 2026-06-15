@@ -114,7 +114,19 @@ final class TerminalView: NSView, NSTextInputClient {
             renderLoop?.setPreset(preset)
             updateGridSize()
             updateBottomBar()
+            reportSchemeColors()
         }
+    }
+
+    /// Tell the session the foreground/background the active preset paints
+    /// with, so OSC 10/11 color queries report them and programs can detect a
+    /// light vs dark terminal (issue #8). Re-runs whenever the preset changes
+    /// or a session attaches.
+    private func reportSchemeColors() {
+        guard let session else { return }
+        let scheme = ColorScheme.resolve(for: preset)
+        session.setColors(
+            foreground: scheme.foregroundRGB, background: scheme.backgroundRGB)
     }
 
     /// Points reserved around the grid: the preset's bezel, or a small
@@ -313,6 +325,7 @@ final class TerminalView: NSView, NSTextInputClient {
         session?.onUpdate = { [weak self] in
             self?.sessionDidUpdate()
         }
+        reportSchemeColors()
         setUpRendererIfNeeded()
     }
 

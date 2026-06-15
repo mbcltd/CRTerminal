@@ -197,6 +197,12 @@ public struct TerminalState: Sendable {
     /// pixel→cell math for image extents and the CSI 14/16 t reports.
     public internal(set) var cellPixelWidth = 10
     public internal(set) var cellPixelHeight = 20
+    /// The foreground/background RGB the app actually paints with, reported by
+    /// the renderer from its resolved color scheme. These answer the OSC 10/11
+    /// dynamic-color queries so programs can detect a light vs dark terminal
+    /// (issue #8). Defaults match the dark scheme until the app reports one.
+    public internal(set) var foregroundColor: (red: UInt8, green: UInt8, blue: UInt8) = (0xD8, 0xD8, 0xD8)
+    public internal(set) var backgroundColor: (red: UInt8, green: UInt8, blue: UInt8) = (0x0D, 0x12, 0x0E)
     var nextImageSerial: UInt32 = 1
     var nextPlacementSerial: UInt32 = 1
     var totalImageBytes = 0
@@ -1188,6 +1194,13 @@ extension TerminalState: TerminalHandler {
             if let path = Self.fileURLPath(String(decoding: body, as: UTF8.self)) {
                 currentDirectory = path
             }
+        case 10, 11:
+            // Dynamic foreground (10) / background (11) color. We answer "?"
+            // queries so apps can detect light vs dark; explicit sets are
+            // ignored (the renderer owns the palette). xterm lets one OSC carry
+            // several ";"-separated specs that cascade to successive slots
+            // (10→fg, 11→bg, 12→cursor…), so walk them in order.
+            dynamicColorQuery(startCode: code, body: body)
         case 8:
             // "8;params;uri" — empty uri ends the link span.
             if let uriStart = body.firstIndex(of: UInt8(ascii: ";")) {
@@ -1231,6 +1244,37 @@ extension TerminalState: TerminalHandler {
         default:
             break
         }
+    }
+
+    /// OSC 10/11 dynamic-color query. `?` specs are answered with the current
+    /// color as `rgb:RRRR/GGGG/BBBB`; non-query specs (color sets) are skipped.
+    /// Multiple ";"-separated specs cascade to successive color slots, matching
+    /// xterm: index 0 → `startCode`, index 1 → `startCode + 1`, and so on.
+    private mutating func dynamicColorQuery(startCode: Int, body: ArraySlice<UInt8>) {
+        var code = startCode
+        for spec in body.split(separator: UInt8(ascii: ";"), omittingEmptySubsequences: false) {
+            defer { code += 1 }
+            guard spec.count == 1, spec.first == UInt8(ascii: "?") else { continue }
+            let color: (red: UInt8, green: UInt8, blue: UInt8)
+            switch code {
+            case 10: color = foregroundColor
+            case 11: color = backgroundColor
+            default: continue // we don't track cursor (12) or later slots
+            }
+            respond("\u{1B}]\(code);\(Self.xtermRGB(color))\u{1B}\\")
+        }
+    }
+
+    /// xterm's `rgb:RRRR/GGGG/BBBB` 16-bit-per-channel reply form. Each 8-bit
+    /// channel is scaled to 16 bits by repeating its byte (0x1C → "1c1c"), as
+    /// xterm does, so round-tripping the value is exact.
+    static func xtermRGB(_ c: (red: UInt8, green: UInt8, blue: UInt8)) -> String {
+        func channel(_ v: UInt8) -> String {
+            let digits = Array("0123456789abcdef".utf8)
+            let hi = digits[Int(v >> 4)], lo = digits[Int(v & 0xF)]
+            return String(decoding: [hi, lo, hi, lo], as: UTF8.self)
+        }
+        return "rgb:\(channel(c.red))/\(channel(c.green))/\(channel(c.blue))"
     }
 
     // MARK: Hyperlinks & shell integration

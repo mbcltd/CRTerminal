@@ -12,6 +12,17 @@ extension TerminalState {
         cellPixelHeight = h
     }
 
+    /// Report the foreground/background the renderer paints with, so OSC 10/11
+    /// color queries answer with the live scheme. Called whenever the active
+    /// preset/appearance changes.
+    public mutating func setColors(
+        foreground: (red: UInt8, green: UInt8, blue: UInt8),
+        background: (red: UInt8, green: UInt8, blue: UInt8)
+    ) {
+        foregroundColor = foreground
+        backgroundColor = background
+    }
+
     /// Register a transmitted image; returns its internal serial (the
     /// renderer's texture-cache key). Enforces the memory caps.
     mutating func storeImage(

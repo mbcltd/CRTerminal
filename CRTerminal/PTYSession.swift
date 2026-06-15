@@ -40,7 +40,7 @@ nonisolated final class PTYSession: @unchecked Sendable {
     }
 
     init(columns: Int, rows: Int, shell: String? = nil,
-         workingDirectory: String? = nil) throws {
+         workingDirectory: String? = nil, lightBackground: Bool = false) throws {
         // Master/slave pair via plain POSIX (no libutil dependency).
         let master = posix_openpt(O_RDWR | O_NOCTTY)
         guard master >= 0 else { throw Failure.openpt(errno) }
@@ -72,6 +72,11 @@ nonisolated final class PTYSession: @unchecked Sendable {
         environment["COLORTERM"] = "truecolor"
         environment["TERM_PROGRAM"] = "crterm"
         environment.removeValue(forKey: "TERM_PROGRAM_VERSION")
+        // COLORFGBG hints light vs dark to programs that read it (vim/solarized
+        // etc.) at launch, the static counterpart to the OSC 11 query (issue
+        // #8). "0;15" = dark ink on a light background, "15;0" = light ink on a
+        // dark one. The preset can change later; OSC 11 covers that dynamically.
+        environment["COLORFGBG"] = lightBackground ? "0;15" : "15;0"
         // Auto-load shell integration (zsh) so command history / prompt marks
         // work without the user editing their dotfiles.
         ShellIntegration.install(into: &environment, shellPath: shellPath)
