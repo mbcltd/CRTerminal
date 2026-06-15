@@ -22,14 +22,28 @@ public struct Block: Sendable, Equatable {
     /// Stable per-session id mirroring `PromptMark.sequence`; `nil` until a
     /// command runs. Lets callers track a block across reflow/trim.
     public var sequence: Int?
+    /// Absolute row where output begins (just past the echoed command); `nil`
+    /// for an idle prompt. See `outputRange`.
+    public var outputStartRow: Int?
 
     public init(rowRange: Range<Int>, command: String? = nil, directory: String? = nil,
-                exitCode: Int? = nil, sequence: Int? = nil) {
+                exitCode: Int? = nil, sequence: Int? = nil, outputStartRow: Int? = nil) {
         self.rowRange = rowRange
         self.command = command
         self.directory = directory
         self.exitCode = exitCode
         self.sequence = sequence
+        self.outputStartRow = outputStartRow
+    }
+
+    /// Absolute rows holding just this command's output — the block minus its
+    /// prompt and echoed command. `nil` at an idle prompt or when the command
+    /// produced no rows.
+    public var outputRange: Range<Int>? {
+        guard let start = outputStartRow else { return nil }
+        let lower = max(start, rowRange.lowerBound)
+        guard lower < rowRange.upperBound else { return nil }
+        return lower..<rowRange.upperBound
     }
 
     public enum Status: Sendable, Equatable, Hashable {
@@ -78,8 +92,29 @@ extension TerminalState {
                 command: mark.command,
                 directory: mark.directory,
                 exitCode: mark.exitCode,
-                sequence: mark.sequence))
+                sequence: mark.sequence,
+                outputStartRow: mark.outputStartRow))
         }
         return result
+    }
+
+    /// The block whose span contains `row` (absolute), or `nil`. Used to target
+    /// a block from a click point.
+    public func block(atAbsoluteRow row: Int) -> Block? {
+        blocks.first { $0.rowRange.contains(row) }
+    }
+
+    /// A block's output as text — body rows only, with the prompt and echoed
+    /// command excluded and trailing blank lines trimmed. Empty when the block
+    /// has no output (`outputRange == nil`).
+    public func outputText(for block: Block) -> String {
+        guard let range = block.outputRange else { return "" }
+        var lines: [String] = []
+        for row in range {
+            guard let line = absoluteLine(row) else { continue }
+            lines.append(Self.text(of: line))
+        }
+        while let last = lines.last, last.isEmpty { lines.removeLast() }
+        return lines.joined(separator: "\n")
     }
 }

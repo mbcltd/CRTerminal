@@ -116,6 +116,46 @@ struct BlockTests {
         #expect(after[0].rowRange.lowerBound == 3)
     }
 
+    @Test func outputTextExcludesPromptAndCommand() {
+        var t = makeTerminal(columns: 20, rows: 6)
+        t.feed("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}echo hi\r\n\u{1B}]133;C\u{07}")
+        t.feed("hi\r\nthere\r\n\u{1B}]133;D;0\u{07}")
+        t.feed("\u{1B}]133;A\u{07}$ ")  // next prompt bounds the block
+        let block = t.state.blocks.first!
+        #expect(block.command == "echo hi")
+        #expect(t.state.outputText(for: block) == "hi\nthere")
+    }
+
+    @Test func idlePromptHasNoOutput() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]133;A\u{07}$ ")
+        let block = t.state.blocks.first!
+        #expect(block.outputRange == nil)
+        #expect(t.state.outputText(for: block) == "")
+    }
+
+    @Test func outputTextSurvivesScrollIntoScrollback() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}echo hi\r\n\u{1B}]133;C\u{07}")
+        t.feed("hi\r\n\u{1B}]133;D;0\u{07}")
+        t.feed("\u{1B}]133;A\u{07}$ ")          // bound block 0 before it scrolls up
+        for _ in 0..<10 { t.feed("x\r\n") }     // push block 0 into scrollback
+        let block = t.state.blocks.first!
+        #expect(block.command == "echo hi")
+        #expect(t.state.outputText(for: block) == "hi")  // still addressable in scrollback
+    }
+
+    @Test func lookupByRowFindsContainingBlock() {
+        var t = makeTerminal(columns: 20, rows: 10)
+        t.runCommand(command: "one")
+        t.runCommand(command: "two")
+        let second = t.state.blocks[1]
+        let row = second.rowRange.lowerBound
+        #expect(t.state.block(atAbsoluteRow: row)?.command == "two")
+        // A row before the first mark belongs to no block.
+        #expect(t.state.block(atAbsoluteRow: -1) == nil)
+    }
+
     @Test func spansSurviveScrollbackTrim() {
         var t = makeTerminal(columns: 10, rows: 4)
         t.scrollbackLimit = 5

@@ -525,7 +525,10 @@ final class TerminalView: NSView, NSTextInputClient {
 
     @objc func copy(_ sender: Any?) {
         guard let selection, let state = session?.snapshot else { return }
-        let text = state.text(in: selection)
+        writeToPasteboard(state.text(in: selection))
+    }
+
+    private func writeToPasteboard(_ text: String) {
         guard !text.isEmpty else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -537,6 +540,60 @@ final class TerminalView: NSView, NSTextInputClient {
             return selection != nil && !(selection?.isEmpty ?? true)
         }
         return true
+    }
+
+    // MARK: Command-block context menu (CB2)
+
+    /// Absolute row identifying the block a context-menu action targets, set
+    /// when the menu is built so the action re-resolves the block against the
+    /// current snapshot.
+    private var contextBlockRow: Int?
+
+    /// Right-click offers per-block copy when the application isn't capturing
+    /// the mouse; otherwise the click is reported to the running program.
+    override func rightMouseDown(with event: NSEvent) {
+        if (session?.snapshot.modes.mouseMode ?? .off) == .off,
+           let menu = blockContextMenu(for: event) {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
+        _ = reportMouse(.press, button: .right, event: event)
+    }
+
+    private func blockContextMenu(for event: NSEvent) -> NSMenu? {
+        guard let state = session?.snapshot else { return nil }
+        let row = absolutePoint(of: event).row
+        guard let block = state.block(atAbsoluteRow: row) else { return nil }
+        contextBlockRow = block.rowRange.lowerBound
+
+        let menu = NSMenu()
+        if let selection, !selection.isEmpty {
+            menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+            menu.addItem(.separator())
+        }
+        let copyCommand = menu.addItem(
+            withTitle: "Copy Command", action: #selector(copyBlockCommand(_:)),
+            keyEquivalent: "")
+        copyCommand.target = self
+        copyCommand.isEnabled = block.command != nil
+        let copyOutput = menu.addItem(
+            withTitle: "Copy Output", action: #selector(copyBlockOutput(_:)),
+            keyEquivalent: "")
+        copyOutput.target = self
+        copyOutput.isEnabled = block.outputRange != nil
+        return menu
+    }
+
+    @objc private func copyBlockCommand(_ sender: Any?) {
+        guard let row = contextBlockRow, let state = session?.snapshot,
+              let command = state.block(atAbsoluteRow: row)?.command else { return }
+        writeToPasteboard(command)
+    }
+
+    @objc private func copyBlockOutput(_ sender: Any?) {
+        guard let row = contextBlockRow, let state = session?.snapshot,
+              let block = state.block(atAbsoluteRow: row) else { return }
+        writeToPasteboard(state.outputText(for: block))
     }
 
     // MARK: Mouse
@@ -668,10 +725,6 @@ final class TerminalView: NSView, NSTextInputClient {
         updateHoveredLink(
             at: event.locationInWindow,
             commandHeld: event.modifierFlags.contains(.command))
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        _ = reportMouse(.press, button: .right, event: event)
     }
 
     override func rightMouseUp(with event: NSEvent) {

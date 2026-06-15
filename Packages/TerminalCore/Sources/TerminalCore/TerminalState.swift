@@ -57,14 +57,20 @@ public struct PromptMark: Sendable, Equatable {
     /// Stable per-session id assigned when the command is captured, so the
     /// app's history store can upsert across reflow/trim. `nil` until ;C.
     public var sequence: Int?
+    /// Absolute row where this command's output begins (the cursor at OSC
+    /// 133;C, just past the echoed command). `nil` until the command starts.
+    /// Lets a block's output be copied without the prompt and command echo.
+    public var outputStartRow: Int?
 
     public init(row: Int, exitCode: Int? = nil, command: String? = nil,
-                directory: String? = nil, sequence: Int? = nil) {
+                directory: String? = nil, sequence: Int? = nil,
+                outputStartRow: Int? = nil) {
         self.row = row
         self.exitCode = exitCode
         self.command = command
         self.directory = directory
         self.sequence = sequence
+        self.outputStartRow = outputStartRow
     }
 }
 
@@ -547,6 +553,11 @@ public struct TerminalState: Sendable {
             guard old >= 0, old < oldToNewRow.count else { return nil }
             var remapped = mark
             remapped.row = evictedLineCount + oldToNewRow[old]
+            if let out = mark.outputStartRow {
+                let oldOut = out - evictedLineCount
+                remapped.outputStartRow = (oldOut >= 0 && oldOut < oldToNewRow.count)
+                    ? evictedLineCount + oldToNewRow[oldOut] : nil
+            }
             return remapped
         }
         trimScrollback()
@@ -1376,6 +1387,7 @@ extension TerminalState: TerminalHandler {
             promptMarks[last].command = String(trimmed)
             promptMarks[last].directory = currentDirectory
             promptMarks[last].sequence = nextCommandSequence
+            promptMarks[last].outputStartRow = head.row
             nextCommandSequence += 1
             touch()
         case UInt8(ascii: "D"): // command finished: "D;exit"
