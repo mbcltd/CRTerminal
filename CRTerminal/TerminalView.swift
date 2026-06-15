@@ -68,6 +68,10 @@ final class TerminalView: NSView, NSTextInputClient {
         bellFlashLayer.add(flash, forKey: "bellFlash")
     }
 
+    /// Command-block chrome (dividers + status gutter), drawn as CALayers above
+    /// the Metal surface — same pattern as the bell flash and bottom bar.
+    private let blockOverlay = BlockOverlayController()
+
     /// A thick accent stripe hugging the bottom edge, shown for presets that
     /// opt in (the "Danger" theme's production warning). A CALayer above the
     /// Metal surface, like the bell flash, so it shows on every preset.
@@ -114,6 +118,8 @@ final class TerminalView: NSView, NSTextInputClient {
             renderLoop?.setPreset(preset)
             updateGridSize()
             updateBottomBar()
+            blockOverlay.clear()  // cell metrics/colours may have changed
+            refreshBlockOverlay()
             reportSchemeColors()
         }
     }
@@ -226,6 +232,7 @@ final class TerminalView: NSView, NSTextInputClient {
             scrollOffset = clamped
             pushViewStateToRenderLoop()
         }
+        refreshBlockOverlay()
         renderLoop?.poke()
     }
 
@@ -312,6 +319,7 @@ final class TerminalView: NSView, NSTextInputClient {
             metalLayer.drawableSize = size
         }
         updateBottomBar()
+        refreshBlockOverlay()
         renderLoop?.poke(force: true)
     }
 
@@ -319,6 +327,44 @@ final class TerminalView: NSView, NSTextInputClient {
         renderLoop?.setViewState(
             scrollOffset: scrollOffset, selection: selection,
             markedText: markedText, hoveredLink: hoveredLink)
+        refreshBlockOverlay()
+    }
+
+    /// Recompute command-block chrome from the current snapshot. Cheap and
+    /// idempotent (the overlay skips the rebuild when nothing moved), so it's
+    /// safe to call from every session update, scroll, resize, and re-theme.
+    /// Empty when there are no prompt marks or the alternate screen is active —
+    /// `TerminalState.blocks` returns `[]`, clearing the overlay.
+    private func refreshBlockOverlay() {
+        guard let layer, let renderer, let session else { return }
+        let state = session.snapshot
+        let cellHeight = renderer.cellSize.height
+        let top = state.absoluteScreenTop - scrollOffset
+
+        let scheme = ColorScheme.resolve(for: preset)
+        let (fr, fg, fb) = scheme.foregroundRGB
+        func foreground(_ alpha: CGFloat) -> CGColor {
+            CGColor(red: CGFloat(fr) / 255, green: CGFloat(fg) / 255,
+                    blue: CGFloat(fb) / 255, alpha: alpha)
+        }
+        let palette = BlockOverlayController.Palette(
+            divider: foreground(0.14),
+            neutral: foreground(0.40),
+            success: NSColor.systemGreen.cgColor,
+            failure: NSColor.systemRed.cgColor)
+
+        var boundaries: [BlockOverlayController.Boundary] = []
+        for block in state.blocks {
+            let screenRow = block.rowRange.lowerBound - top
+            guard screenRow >= 0, screenRow < state.rows else { continue }
+            boundaries.append(.init(
+                y: CGFloat(screenRow) * cellHeight + contentInset,
+                status: block.status))
+        }
+        blockOverlay.update(
+            host: layer, width: bounds.width, height: bounds.height,
+            cellHeight: cellHeight, contentInset: contentInset,
+            boundaries: boundaries, palette: palette)
     }
 
     private func wireSession() {

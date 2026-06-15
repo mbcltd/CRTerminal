@@ -32,7 +32,7 @@ public struct Block: Sendable, Equatable {
         self.sequence = sequence
     }
 
-    public enum Status: Sendable, Equatable {
+    public enum Status: Sendable, Equatable, Hashable {
         /// Sitting at a prompt with nothing run yet.
         case prompt
         /// A command was issued but has not reported completion.
