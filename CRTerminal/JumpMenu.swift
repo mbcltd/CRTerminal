@@ -1,9 +1,16 @@
 import AppKit
 import TerminalCore
 
+/// Anything the floating palette can present: a searchable item (facets feed
+/// `JumpSearch.rank`) that renders as a two-line row.
+protocol PaletteItem: JumpSearchable {
+    var title: String { get }
+    var subtitle: String { get }
+}
+
 /// One jumpable session (a sidebar tab in some window), with the facets
 /// the palette searches and the lines it displays.
-struct JumpTarget: JumpSearchable {
+struct JumpTarget: PaletteItem {
     weak var controller: TerminalWindowController?
     let tabID: UUID
     let title: String
@@ -144,37 +151,40 @@ private final class JumpPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-/// The ⌘K session palette: a floating field + result list over the key
-/// window. Type to filter, ↑/↓ to choose, ⏎ to jump, Esc (or clicking
-/// away) to dismiss.
-final class JumpMenuController: NSObject, NSTextFieldDelegate,
+/// The floating palette behind ⌘K (sessions) and ⌘⇧K / ⌘⌥K (command
+/// history): a field + result list over the key window. Type to filter,
+/// ↑/↓ to choose, ⏎ to act, Esc (or clicking away) to dismiss.
+final class PaletteController<Item: PaletteItem>: NSObject, NSTextFieldDelegate,
     NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
-    private static let width: CGFloat = 600
-    private static let fieldHeight: CGFloat = 50
-    private static let rowHeight: CGFloat = 44
-    private static let maxVisibleRows = 8
+    private static var width: CGFloat { 600 }
+    private static var fieldHeight: CGFloat { 50 }
+    private static var rowHeight: CGFloat { 44 }
+    private static var maxVisibleRows: Int { 8 }
 
     private let panel: JumpPanel
     private let field = NSTextField()
     private let table = NSTableView()
     private let scroll = NSScrollView()
-    private let emptyLabel = NSTextField(labelWithString: "No matching sessions")
-    private let allTargets: [JumpTarget]
-    private var results: [JumpTarget]
+    private let emptyLabel: NSTextField
+    private let allTargets: [Item]
+    private var results: [Item]
     private let theme: SidebarTheme
-    private let onSelect: (JumpTarget) -> Void
+    private let onSelect: (Item) -> Void
     var onDismiss: (() -> Void)?
     /// Top edge stays anchored while the panel grows/shrinks with results.
     private var anchoredTop: CGFloat = 0
 
     init(
-        targets: [JumpTarget], theme: SidebarTheme,
-        onSelect: @escaping (JumpTarget) -> Void
+        targets: [Item], theme: SidebarTheme,
+        placeholder: String = "Jump to session — command, directory, branch…",
+        emptyText: String = "No matching sessions",
+        onSelect: @escaping (Item) -> Void
     ) {
         allTargets = targets
         results = targets
         self.theme = theme
         self.onSelect = onSelect
+        emptyLabel = NSTextField(labelWithString: emptyText)
         panel = JumpPanel(
             contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 200),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -205,7 +215,7 @@ final class JumpMenuController: NSObject, NSTextFieldDelegate,
         field.font = .systemFont(ofSize: 18, weight: .light)
         field.textColor = theme.text
         field.placeholderAttributedString = NSAttributedString(
-            string: "Jump to session — command, directory, branch…",
+            string: placeholder,
             attributes: [.foregroundColor: theme.faint,
                          .font: NSFont.systemFont(ofSize: 18, weight: .light)])
         field.delegate = self
@@ -363,7 +373,7 @@ final class JumpMenuController: NSObject, NSTextFieldDelegate,
         let identifier = NSUserInterfaceItemIdentifier("jumpRow")
         let view = tableView.makeView(withIdentifier: identifier, owner: nil)
             as? JumpRowView ?? JumpRowView(identifier: identifier, theme: theme)
-        view.update(target: results[row])
+        view.update(title: results[row].title, subtitle: results[row].subtitle)
         return view
     }
 
@@ -431,9 +441,9 @@ private final class JumpRowView: NSView {
             x: 18, y: 5, width: bounds.width - 36, height: 15)
     }
 
-    func update(target: JumpTarget) {
-        titleLabel.stringValue = target.title
-        subtitleLabel.stringValue = target.subtitle
+    func update(title: String, subtitle: String) {
+        titleLabel.stringValue = title
+        subtitleLabel.stringValue = subtitle
         needsLayout = true
     }
 }

@@ -7,6 +7,9 @@
 ## Navigating
 
 - **⌘K** Search palette over all sessions 
+- **⌘⇧K / ⌘⌥K** Search command history — the focused terminal's, or every
+  terminal's — and recall a command to the prompt. Shell integration is
+  auto-injected for zsh, so it works out of the box.
 - **Splits** Divide any session right (⌘D) or down (⌘⇧D) and close panes with ⌘W.
 - **Tear-off windows** Drag a session out of the sidebar to pop it into its own
   window; drag it back to recombine.
