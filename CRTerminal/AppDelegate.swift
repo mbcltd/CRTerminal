@@ -849,44 +849,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         keyController?.apply(preset: preset)
     }
 
-    // MARK: Session restoration (R1 debug harness)
-
-    /// Snapshot the focused session to disk. Validates the save half of the
-    /// loop before lifecycle wiring (R3): quit the app after this, relaunch,
-    /// then "Restore Last Saved Session".
-    @objc private func saveSessionStateDebug(_ sender: Any?) {
-        guard keyController?.saveFocusedSessionState() != nil else {
-            NSSound.beep()
-            return
-        }
-    }
-
-    /// Reopen the most recently saved session, restoring its grid + scrollback
-    /// as static text with a fresh shell in the saved directory.
-    @objc private func restoreSessionStateDebug(_ sender: Any?) {
-        guard let newest = SessionStateStore.shared.loadAll().first else {
-            NSSound.beep()
-            return
-        }
-        let controller = keyController ?? makeWindowController()
-        controller.showWindow(sender)
-        controller.window?.makeKeyAndOrderFront(sender)
-        controller.restoreSession(from: newest.snapshot)
-    }
-
     // MARK: Full-layout restoration (R2)
 
     /// The layout tree for every open window (frames, tabs, split nesting).
     func captureLayoutSnapshot() -> LayoutSnapshot {
         LayoutSnapshot(windows: controllers.map { $0.captureLayout() })
-    }
-
-    /// Persist every window's layout plus every pane's contents. R3 moves the
-    /// layout half onto `NSWindowRestoration`; here it's the debug harness.
-    @objc private func saveLayoutDebug(_ sender: Any?) {
-        guard !controllers.isEmpty else { NSSound.beep(); return }
-        for controller in controllers { controller.saveAllContents() }
-        SessionStateStore.shared.saveLayout(captureLayoutSnapshot())
     }
 
     /// Rebuild the saved windows: one fresh controller per window node, each
@@ -903,10 +870,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             restored.append(controller)
         }
         return restored
-    }
-
-    @objc private func restoreLayoutDebug(_ sender: Any?) {
-        if restoreLayoutFromDisk().isEmpty { NSSound.beep() }
     }
 
     @objc private func showSettings(_ sender: Any?) {
@@ -1090,34 +1053,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
-
-        // Debug harness for session restoration (R1): save the focused
-        // session, quit, relaunch, restore. Lifecycle wiring lands in R3.
-        let debugMenu = NSMenu(title: "Debug")
-        let saveState = debugMenu.addItem(
-            withTitle: "Save Focused Session State",
-            action: #selector(saveSessionStateDebug(_:)), keyEquivalent: "s")
-        saveState.keyEquivalentModifierMask = [.command, .control]
-        saveState.target = self
-        let restoreState = debugMenu.addItem(
-            withTitle: "Restore Last Saved Session",
-            action: #selector(restoreSessionStateDebug(_:)), keyEquivalent: "r")
-        restoreState.keyEquivalentModifierMask = [.command, .control]
-        restoreState.target = self
-        debugMenu.addItem(.separator())
-        let saveLayout = debugMenu.addItem(
-            withTitle: "Save All Windows (Layout)",
-            action: #selector(saveLayoutDebug(_:)), keyEquivalent: "l")
-        saveLayout.keyEquivalentModifierMask = [.command, .control]
-        saveLayout.target = self
-        let restoreLayout = debugMenu.addItem(
-            withTitle: "Restore All Windows (Layout)",
-            action: #selector(restoreLayoutDebug(_:)), keyEquivalent: "l")
-        restoreLayout.keyEquivalentModifierMask = [.command, .control, .shift]
-        restoreLayout.target = self
-        let debugMenuItem = NSMenuItem()
-        debugMenuItem.submenu = debugMenu
-        mainMenu.addItem(debugMenuItem)
 
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(
