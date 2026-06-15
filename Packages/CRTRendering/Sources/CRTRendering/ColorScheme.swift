@@ -57,6 +57,36 @@ public struct ColorScheme: Sendable {
             palette: colors)
     }
 
+    /// The terminal scheme a preset paints with: an explicit palette wins;
+    /// otherwise `appearance` picks the light scheme or `darkBase` (the
+    /// renderer's configured dark scheme). Shared by the renderer's per-frame
+    /// resolution and the app's OSC 10/11 color reporting so both agree.
+    public static func resolve(
+        for preset: CRTPreset, darkBase: ColorScheme = .default
+    ) -> ColorScheme {
+        if let palette = preset.colors { return ColorScheme(palette: palette) }
+        return preset.appearance == .light ? .light : darkBase
+    }
+
+    /// The foreground/background as 8-bit RGB triples (dropping the alpha the
+    /// packed form carries), for callers reporting colors outside the GPU —
+    /// e.g. the terminal's OSC 10/11 color queries.
+    public var foregroundRGB: (red: UInt8, green: UInt8, blue: UInt8) { Self.unpack(foreground) }
+    public var backgroundRGB: (red: UInt8, green: UInt8, blue: UInt8) { Self.unpack(background) }
+
+    /// Whether the background reads as light (Rec. 601 luma over half), the
+    /// authoritative signal for the COLORFGBG light/dark hint regardless of how
+    /// the scheme was derived (appearance flag or a custom palette's hue).
+    public var isLightBackground: Bool {
+        let (r, g, b) = backgroundRGB
+        let luma = 0.299 * Double(r) + 0.587 * Double(g) + 0.114 * Double(b)
+        return luma > 127.5
+    }
+
+    private static func unpack(_ c: UInt32) -> (red: UInt8, green: UInt8, blue: UInt8) {
+        (UInt8((c >> 24) & 0xFF), UInt8((c >> 16) & 0xFF), UInt8((c >> 8) & 0xFF))
+    }
+
     public func resolve(_ color: PackedColor, isForeground: Bool, bold: Bool) -> UInt32 {
         if color.isDefault {
             return isForeground ? foreground : background

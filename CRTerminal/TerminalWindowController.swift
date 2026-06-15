@@ -265,6 +265,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 workingDirectory: snapshot?.workingDirectoryHint
                     ?? settings.resolvedWorkingDirectory,
                 scrollbackLines: settings.scrollbackLines,
+                // Seed COLORFGBG from the pane's preset so the shell launches
+                // with the right light/dark hint (issue #8).
+                lightBackground: ColorScheme.resolve(for: tab.preset).isLightBackground,
                 restoringFrom: snapshot)
         } catch {
             let alert = NSAlert()

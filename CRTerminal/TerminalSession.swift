@@ -27,6 +27,7 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// shell's winsize matches what the user sees until the view reflows.
     init(columns: Int, rows: Int, shell: String? = nil,
          workingDirectory: String? = nil, scrollbackLines: Int = 10_000,
+         lightBackground: Bool = false,
          restoringFrom snapshot: TerminalStateSnapshot? = nil) throws {
         var seeded = snapshot.map(Terminal.init(restoring:))
             ?? Terminal(columns: columns, rows: rows)
@@ -36,7 +37,7 @@ nonisolated final class TerminalSession: @unchecked Sendable {
         terminal = OSAllocatedUnfairLock(initialState: seeded)
         pty = try PTYSession(
             columns: ptyColumns, rows: ptyRows, shell: shell,
-            workingDirectory: workingDirectory)
+            workingDirectory: workingDirectory, lightBackground: lightBackground)
         pty.onData = { [weak self] data in
             self?.ingest(data)
         }
@@ -66,6 +67,16 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// map image pixels to cells and answer CSI 14/16 t.
     func setCellPixelSize(width: Int, height: Int) {
         terminal.withLock { $0.setCellPixelSize(width: width, height: height) }
+    }
+
+    /// The foreground/background the active scheme paints with, so OSC 10/11
+    /// color queries answer with the live colors and programs can detect a
+    /// light vs dark terminal (issue #8).
+    func setColors(
+        foreground: (red: UInt8, green: UInt8, blue: UInt8),
+        background: (red: UInt8, green: UInt8, blue: UInt8)
+    ) {
+        terminal.withLock { $0.setColors(foreground: foreground, background: background) }
     }
 
     func resize(columns: Int, rows: Int) {

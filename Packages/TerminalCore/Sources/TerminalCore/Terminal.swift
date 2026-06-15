@@ -38,6 +38,16 @@ public struct Terminal: Sendable {
         state.setCellPixelSize(width: width, height: height)
     }
 
+    /// The foreground/background the renderer paints with, from its resolved
+    /// color scheme. Answers OSC 10/11 color queries so programs can detect a
+    /// light vs dark terminal (issue #8).
+    public mutating func setColors(
+        foreground: (red: UInt8, green: UInt8, blue: UInt8),
+        background: (red: UInt8, green: UInt8, blue: UInt8)
+    ) {
+        state.setColors(foreground: foreground, background: background)
+    }
+
     /// Bytes the terminal wants written back to the PTY (DSR/DA responses).
     public mutating func drainResponses() -> [UInt8] {
         defer { state.responses.removeAll(keepingCapacity: true) }
