@@ -744,7 +744,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Jump menu (⌘K)
 
-    private var jumpMenu: JumpMenuController?
+    private var jumpMenu: PaletteController<JumpTarget>?
 
     /// ⌘K toggles a palette searching every session in every window.
     @objc private func showJumpMenu(_ sender: Any?) {
@@ -754,10 +754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         let targets = JumpTargetBuilder.targets(across: controllers)
         guard !targets.isEmpty else { return }
-        let theme = SidebarTheme(
-            preset: keyController?.activePreset
-                ?? SettingsStore.shared.settings.preset(in: PresetCatalog.all))
-        let menu = JumpMenuController(targets: targets, theme: theme) { [weak self] target in
+        let menu = PaletteController(targets: targets, theme: paletteTheme) { [weak self] target in
             self?.jump(to: target)
         }
         menu.onDismiss = { [weak self] in self?.jumpMenu = nil }
@@ -767,6 +764,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func jump(to target: JumpTarget) {
         focusSession(id: target.tabID)
+    }
+
+    // MARK: Command history (⌘⇧K current terminal, ⌘⌥K all terminals)
+
+    private var commandPalette: PaletteController<CommandTarget>?
+
+    /// ⌘⇧K: recall a command from the focused terminal's history.
+    @objc private func showCommandHistory(_ sender: Any?) {
+        if commandPalette != nil { commandPalette?.dismiss(); return }
+        guard let pane = keyController?.focusedPane else { return }
+        presentCommandPalette(
+            targets: CommandHistoryBuilder.targets(forSession: pane.sessionID),
+            placeholder: "Search command history…", into: pane)
+    }
+
+    /// ⌘⌥K: recall a command from every terminal's history.
+    @objc private func showAllCommandHistory(_ sender: Any?) {
+        if commandPalette != nil { commandPalette?.dismiss(); return }
+        guard let pane = keyController?.focusedPane else { return }
+        presentCommandPalette(
+            targets: CommandHistoryBuilder.targets(allAcross: controllers),
+            placeholder: "Search all command history…", into: pane)
+    }
+
+    /// Shows the command palette over the focused window and, on selection,
+    /// types the chosen command at that terminal's prompt (no newline — the
+    /// user edits then runs it, Ctrl-R style).
+    private func presentCommandPalette(
+        targets: [CommandTarget], placeholder: String, into pane: TerminalView
+    ) {
+        guard !targets.isEmpty else { return }
+        let hostWindow = NSApp.keyWindow
+        let palette = PaletteController(
+            targets: targets, theme: paletteTheme,
+            placeholder: placeholder, emptyText: "No matching commands"
+        ) { [weak pane] target in
+            pane?.window?.makeKeyAndOrderFront(nil)
+            if let pane { pane.window?.makeFirstResponder(pane) }
+            pane?.send(Array(target.entry.command.utf8))
+        }
+        palette.onDismiss = { [weak self] in self?.commandPalette = nil }
+        commandPalette = palette
+        palette.show(over: hostWindow)
+    }
+
+    /// The active session's theme (or the global default) for palette chrome.
+    private var paletteTheme: SidebarTheme {
+        SidebarTheme(
+            preset: keyController?.activePreset
+                ?? SettingsStore.shared.settings.preset(in: PresetCatalog.all))
     }
 
     /// Lands on a session wherever it lives: activates the app, fronts
@@ -965,6 +1012,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             withTitle: "Jump to Session…",
             action: #selector(showJumpMenu(_:)), keyEquivalent: "k")
         jumpMenuItem.target = self
+        let commandHistoryItem = shellMenu.addItem(
+            withTitle: "Search Command History…",
+            action: #selector(showCommandHistory(_:)), keyEquivalent: "k")
+        commandHistoryItem.keyEquivalentModifierMask = [.command, .shift]
+        commandHistoryItem.target = self
+        let allCommandHistoryItem = shellMenu.addItem(
+            withTitle: "Search All Command History…",
+            action: #selector(showAllCommandHistory(_:)), keyEquivalent: "k")
+        allCommandHistoryItem.keyEquivalentModifierMask = [.command, .option]
+        allCommandHistoryItem.target = self
         shellMenu.addItem(.separator())
         shellMenu.addItem(
             withTitle: "Split Right",

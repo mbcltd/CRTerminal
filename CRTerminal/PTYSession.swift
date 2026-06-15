@@ -72,6 +72,9 @@ nonisolated final class PTYSession: @unchecked Sendable {
         environment["COLORTERM"] = "truecolor"
         environment["TERM_PROGRAM"] = "crterm"
         environment.removeValue(forKey: "TERM_PROGRAM_VERSION")
+        // Auto-load shell integration (zsh) so command history / prompt marks
+        // work without the user editing their dotfiles.
+        ShellIntegration.install(into: &environment, shellPath: shellPath)
 
         // Everything the child touches is prepared before fork: between fork
         // and execve only async-signal-safe calls are allowed (no Swift

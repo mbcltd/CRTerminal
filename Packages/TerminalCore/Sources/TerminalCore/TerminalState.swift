@@ -49,10 +49,22 @@ public struct PromptMark: Sendable, Equatable {
     public var row: Int
     /// Exit code reported by OSC 133;D, once the command finishes.
     public var exitCode: Int?
+    /// The command typed at this prompt, captured between OSC 133;B and ;C.
+    /// `nil` until the command starts (or if shell integration omits ;B/;C).
+    public var command: String?
+    /// Working directory (OSC 7) when the command started, captured at ;C.
+    public var directory: String?
+    /// Stable per-session id assigned when the command is captured, so the
+    /// app's history store can upsert across reflow/trim. `nil` until ;C.
+    public var sequence: Int?
 
-    public init(row: Int, exitCode: Int? = nil) {
+    public init(row: Int, exitCode: Int? = nil, command: String? = nil,
+                directory: String? = nil, sequence: Int? = nil) {
         self.row = row
         self.exitCode = exitCode
+        self.command = command
+        self.directory = directory
+        self.sequence = sequence
     }
 }
 
@@ -165,6 +177,10 @@ public struct TerminalState: Sendable {
     /// OSC 133 prompt marks, oldest first, rows ascending.
     public private(set) var promptMarks: [PromptMark] = []
     private static let maxPromptMarks = 2048
+    /// Where the command starts (OSC 133;B), pending capture at ;C. Transient.
+    private var pendingCommandStart: SelectionPoint?
+    /// Monotonic id stamped onto each captured command (see `PromptMark.sequence`).
+    private var nextCommandSequence = 0
 
     /// Kitty keyboard protocol: pushed flag states (CSI > u / CSI < u).
     private var kittyFlagsStack: [KittyKeyboardFlags] = []
@@ -304,6 +320,8 @@ public struct TerminalState: Sendable {
             linkIds[uri] = UInt16(index + 1)
         }
         promptMarks = snapshot.promptMarks
+        // Continue command ids past any restored ones so new captures stay unique.
+        nextCommandSequence = (promptMarks.compactMap(\.sequence).max() ?? -1) + 1
     }
 
     private static func encode(_ style: CursorStyle) -> Int {
@@ -1297,6 +1315,25 @@ extension TerminalState: TerminalHandler {
                 promptMarks.removeFirst()
             }
             touch()
+        case UInt8(ascii: "B"): // command start (end of prompt)
+            pendingCommandStart = SelectionPoint(
+                row: absoluteScreenTop + cursor.y, column: cursor.x)
+        case UInt8(ascii: "C"): // output start: capture the typed command
+            defer { pendingCommandStart = nil }
+            guard let start = pendingCommandStart,
+                  let last = promptMarks.indices.last else { return }
+            let head = SelectionPoint(
+                row: absoluteScreenTop + cursor.y, column: cursor.x)
+            let raw = self.text(in: Selection(anchor: start, head: head))
+            var trimmed = raw[...]
+            while let f = trimmed.first, f.isWhitespace { trimmed = trimmed.dropFirst() }
+            while let l = trimmed.last, l.isWhitespace { trimmed = trimmed.dropLast() }
+            guard !trimmed.isEmpty else { return }
+            promptMarks[last].command = String(trimmed)
+            promptMarks[last].directory = currentDirectory
+            promptMarks[last].sequence = nextCommandSequence
+            nextCommandSequence += 1
+            touch()
         case UInt8(ascii: "D"): // command finished: "D;exit"
             guard let last = promptMarks.indices.last,
                   promptMarks[last].exitCode == nil else { return }
@@ -1305,7 +1342,7 @@ extension TerminalState: TerminalHandler {
                 ? Int(String(decoding: parts[1], as: UTF8.self)) ?? 0 : 0
             touch()
         default:
-            break // B (command start) / C (output start): not yet used
+            break
         }
     }
 

@@ -193,6 +193,59 @@ struct ShellIntegrationTests {
         let promptLine = t.state.absoluteLine(t.state.promptMarks[0].row)
         #expect(promptLine.map(TerminalState.text(of:)) == "$")
     }
+
+    /// Mirrors the shell-integration byte order: prompt (A), end-of-prompt
+    /// marker (B), the typed command, the echoed newline, then output (C).
+    private func runCommand(
+        _ t: inout Terminal, prompt: String = "$ ", command: String, exit: Int = 0
+    ) {
+        t.feed("\u{1B}]133;A\u{07}\(prompt)\u{1B}]133;B\u{07}\(command)\r\n\u{1B}]133;C\u{07}")
+        t.feed("\u{1B}]133;D;\(exit)\u{07}")
+    }
+
+    @Test func capturesTypedCommand() {
+        var t = makeTerminal(columns: 40, rows: 6)
+        runCommand(&t, command: "git status", exit: 0)
+        let mark = t.state.promptMarks.first
+        #expect(mark?.command == "git status")
+        #expect(mark?.exitCode == 0)
+        #expect(mark?.sequence == 0)
+    }
+
+    @Test func capturesCommandDirectory() {
+        var t = makeTerminal(columns: 40, rows: 6)
+        t.feed("\u{1B}]7;file:///Users/me/dev\u{07}")
+        runCommand(&t, command: "ls -la")
+        #expect(t.state.promptMarks.first?.command == "ls -la")
+        #expect(t.state.promptMarks.first?.directory == "/Users/me/dev")
+    }
+
+    @Test func emptyCommandIsNotCaptured() {
+        var t = makeTerminal(columns: 40, rows: 6)
+        // Enter pressed at an empty prompt: B then newline then C, no text.
+        t.feed("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}\r\n\u{1B}]133;C\u{07}")
+        #expect(t.state.promptMarks.first?.command == nil)
+    }
+
+    @Test func sequencesAreMonotonic() {
+        var t = makeTerminal(columns: 40, rows: 10)
+        runCommand(&t, command: "one")
+        runCommand(&t, command: "two")
+        runCommand(&t, command: "three")
+        let captured = t.state.promptMarks.compactMap(\.command)
+        #expect(captured == ["one", "two", "three"])
+        let sequences = t.state.promptMarks.compactMap(\.sequence)
+        #expect(sequences == [0, 1, 2])
+    }
+
+    @Test func commandSurvivesSnapshotRoundTrip() {
+        var t = makeTerminal(columns: 40, rows: 6)
+        runCommand(&t, command: "make build", exit: 2)
+        let restored = TerminalState(restoring: t.state.makeSnapshot())
+        let mark = restored.promptMarks.first
+        #expect(mark?.command == "make build")
+        #expect(mark?.exitCode == 2)
+    }
 }
 
 struct WorkingDirectoryTests {

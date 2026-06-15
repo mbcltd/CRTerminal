@@ -195,6 +195,7 @@ final class TerminalView: NSView, NSTextInputClient {
     private func sessionDidUpdate() {
         guard let session else { return }
         let state = session.snapshot
+        CommandHistoryStore.shared.sync(sessionID: sessionID, marks: state.promptMarks)
         if state.bellCount != lastBellCount {
             lastBellCount = state.bellCount
             if AlertSettings.shared.bellSound { NSSound.beep() }
