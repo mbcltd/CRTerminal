@@ -416,6 +416,16 @@ struct KittyKeyboardTests {
                 == Array("\u{1B}[13;2u".utf8))
     }
 
+    @Test func encoderMetaEnter() {
+        // Bare Enter is CR; Option (Meta) prefixes ESC so apps can tell
+        // Meta+Enter from Return (Claude Code uses it for a literal newline).
+        #expect(KeyEncoder.encode(.enter) == [0x0D])
+        #expect(KeyEncoder.encode(.enter, modifiers: [.option]) == [0x1B, 0x0D])
+        // Under the kitty protocol it disambiguates via CSI u instead.
+        #expect(KeyEncoder.encode(.enter, modifiers: [.option], kittyFlags: .disambiguate)
+                == Array("\u{1B}[13;3u".utf8))
+    }
+
     @Test func encoderDisambiguatesCtrlKeys() {
         #expect(KeyEncoder.encodeCharacter("i", modifiers: [.control], kittyFlags: [])
                 == nil)

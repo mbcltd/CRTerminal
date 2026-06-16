@@ -75,7 +75,11 @@ public enum KeyEncoder {
         case .pageUp: return tildeKey(5, modifiers)
         case .pageDown: return tildeKey(6, modifiers)
         case .deleteForward: return tildeKey(3, modifiers)
-        case .enter: return [0x0D]
+        case .enter:
+            // Alt/Option is Meta: Meta+Enter is the CR prefixed with ESC,
+            // the legacy encoding apps (e.g. readline) expect to tell it
+            // apart from a bare Return.
+            return modifiers.contains(.option) ? [0x1B, 0x0D] : [0x0D]
         case .tab: return modifiers.contains(.shift) ? bytes("\u{1B}[Z") : [0x09]
         case .backspace: return [0x7F]
         case .escape: return [0x1B]

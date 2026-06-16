@@ -417,6 +417,19 @@ final class TerminalView: NSView, NSTextInputClient {
             sendKeyboard([scalar.value == 0x20 ? 0x00 : UInt8(scalar.value)])
             return
         }
+        // Option+Return must reach the app as a modified Enter (Meta+Enter),
+        // not the bare CR the input context synthesizes via insertNewline —
+        // apps like Claude Code use it to insert a literal newline. Enter
+        // never composes, so claiming Option here costs no IME behavior.
+        if event.modifierFlags.contains(.option),
+           event.keyCode == 36 /* Return */ || event.keyCode == 76 /* keypad Enter */ {
+            let modes = session?.snapshot.modes
+            sendKeyboard(KeyEncoder.encode(
+                .enter, modifiers: keyModifiers(of: event),
+                applicationCursorKeys: modes?.applicationCursorKeys ?? false,
+                kittyFlags: modes?.kittyKeyboardFlags ?? []))
+            return
+        }
         inputContext?.handleEvent(event)
     }
 
