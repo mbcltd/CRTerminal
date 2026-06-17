@@ -761,7 +761,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         menu.onDismiss = { [weak self] in self?.jumpMenu = nil }
         jumpMenu = menu
-        menu.show(over: NSApp.keyWindow)
+        // Start on the focused session's row rather than the first.
+        let focusedTabID = keyController?.activeTab?.id
+        let initial = targets.firstIndex { $0.tabID == focusedTabID } ?? 0
+        menu.show(over: NSApp.keyWindow, initiallySelecting: initial)
     }
 
     private func jump(to target: JumpTarget) {
