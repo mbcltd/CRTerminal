@@ -177,6 +177,7 @@ final class TerminalView: NSView, NSTextInputClient {
         super.init(frame: frameRect)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        registerForDraggedTypes([.fileURL])
     }
 
     @available(*, unavailable)
@@ -488,6 +489,32 @@ final class TerminalView: NSView, NSTextInputClient {
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
         let bracketed = session?.snapshot.modes.bracketedPaste ?? false
         sendKeyboard(KeyEncoder.encodePaste(text, bracketed: bracketed))
+    }
+
+    // MARK: File drag-and-drop (issue #18)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(sender).isEmpty ? [] : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let paths = droppedFileURLs(sender).map(\.path)
+        let bracketed = session?.snapshot.modes.bracketedPaste ?? false
+        let payload = FileDrop.payload(for: paths, bracketedPaste: bracketed)
+        guard !payload.isEmpty else { return false }
+        window?.makeFirstResponder(self)
+        sendKeyboard(KeyEncoder.encodePaste(payload, bracketed: bracketed))
+        return true
+    }
+
+    private func droppedFileURLs(_ sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
     }
 
     @objc func copy(_ sender: Any?) {
