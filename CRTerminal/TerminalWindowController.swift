@@ -61,7 +61,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     var onSignificantChange: (() -> Void)?
 
     private func noteSignificantChange() {
-        window?.invalidateRestorableState()
         onSignificantChange?()
     }
 
@@ -88,12 +87,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window.title = "crterm"
         // Sessions live in the sidebar; native tabbing would duplicate them.
         window.tabbingMode = .disallowed
-        // macOS state restoration (R3): a stable identifier + our restoration
-        // class let AppKit bring this window back per the system "Close
-        // windows when quitting" preference. `Never` flips `isRestorable` off.
+        // Session restoration is driven entirely from our own on-disk layout +
+        // content files (see `AppDelegate.restoreLayoutFromDisk`), not AppKit's
+        // window restoration — the latter only fires when the system "Close
+        // windows when quitting" preference allows it, which made restore feel
+        // unreliable. `isRestorable = false` keeps AppKit from encoding a
+        // parallel (and divergent) copy of the layout. The `restorationClass`
+        // is kept only so any *stale* saved state from older builds resolves to
+        // `WindowRestoration`, which now no-ops rather than reviving a window.
         window.identifier = NSUserInterfaceItemIdentifier(UUID().uuidString)
         window.restorationClass = WindowRestoration.self
-        window.isRestorable = SettingsStore.shared.restorationEnabled
+        window.isRestorable = false
         super.init(window: window)
         window.delegate = self
 
@@ -1006,36 +1010,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
         tabs.removeAll()
         onClose?(self)
-    }
-
-    // MARK: State restoration (R3)
-
-    /// NSCoder key under which this window's `WindowNode` layout rides in the
-    /// `NSWindowRestoration` archive.
-    static let restorationStateKey = "crt.layout"
-
-    /// AppKit asks the window's delegate to contribute to its restorable
-    /// state: we stash the layout tree in the coder and persist the heavy
-    /// contents to our own files (two-tier persistence). `Never` opts out.
-    func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
-        guard SettingsStore.shared.restorationEnabled else { return }
-        if let data = try? PropertyListEncoder().encode(captureLayout()) {
-            state.encode(data as NSData, forKey: Self.restorationStateKey)
-        }
-        saveAllContents()
-    }
-
-    /// Decode the layout AppKit handed back and rebuild this window's tabs and
-    /// splits, restoring each pane's contents. Returns false when there was no
-    /// usable layout in the archive (caller then seeds a default session).
-    @discardableResult
-    func restoreState(from state: NSCoder) -> Bool {
-        guard let data = state.decodeObject(of: NSData.self, forKey: Self.restorationStateKey)
-            as Data? else { return false }
-        guard let node = try? PropertyListDecoder().decode(WindowNode.self, from: data)
-        else { return false }
-        restoreLayout(node, contents: SessionStateStore.shared)
-        return !tabs.isEmpty
     }
 }
 
