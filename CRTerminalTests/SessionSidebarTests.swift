@@ -232,6 +232,40 @@ struct SessionTabLifecycleTests {
         #expect(controller.activeTabIndex == 0)
     }
 
+    /// A new tab opens where you're working: it inherits the focused pane's
+    /// live cwd, not the configured default-start directory.
+    @Test @MainActor func newSessionInheritsTheFocusedPanesWorkingDirectory() throws {
+        var settings = TerminalSettings()
+        settings.workingDirectory = "/private/tmp"
+        let controller = TerminalWindowController(settings: settings)
+        defer { controller.window?.close() }
+
+        // The first shell chdir's between fork and exec, racing this
+        // observer — poll until it lands in its start directory.
+        let first = try #require(controller.tabs[0].panes.first?.session)
+        var firstCwd = SessionInfo.workingDirectory(of: first.shellProcessID)
+        for _ in 0..<500 where firstCwd != "/private/tmp" {
+            usleep(10_000)
+            firstCwd = SessionInfo.workingDirectory(of: first.shellProcessID)
+        }
+        #expect(firstCwd == "/private/tmp")
+
+        // Move the *default* start directory elsewhere. The new session must
+        // still open in the focused pane's cwd, not this fresh default.
+        var moved = settings
+        moved.workingDirectory = "/private/var"
+        controller.apply(settings: moved)
+
+        controller.addSession()
+        let second = try #require(controller.tabs[1].panes.first?.session)
+        var secondCwd = SessionInfo.workingDirectory(of: second.shellProcessID)
+        for _ in 0..<500 where secondCwd != "/private/tmp" {
+            usleep(10_000)
+            secondCwd = SessionInfo.workingDirectory(of: second.shellProcessID)
+        }
+        #expect(secondCwd == "/private/tmp")
+    }
+
     @Test @MainActor func closeSessionClosesTheWholeTab() {
         let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }
