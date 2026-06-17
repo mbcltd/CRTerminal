@@ -208,17 +208,38 @@ final class SessionSidebarView: NSView {
 
     private(set) var theme: SidebarTheme
     private var rowViews: [SessionRowView] = []
-    /// Insertion gap (0...count) the current drag would drop into.
+    /// Insertion gap (0...count) the current drag would drop into. The
+    /// indicator is drawn by `rowContainer` so it scrolls with the rows.
     private var dropGap: Int? {
-        didSet { if dropGap != oldValue { needsDisplay = true } }
+        didSet {
+            guard dropGap != oldValue else { return }
+            rowContainer.dropGap = dropGap
+        }
     }
     private var draggedSessionID: UUID?
     private let headerHeight: CGFloat = 42
     private let footerHeight: CGFloat = 44
     private let rowHeight: CGFloat = 50
+    private let rowGap: CGFloat = 3
+    /// Inset of the first row below the scroll area's top edge.
+    private let rowTopInset: CGFloat = 4
     private let plusButton = SidebarGlyphButton(glyph: "+", size: 17)
     private let footer = SidebarFooterView()
     private var sessionCount = 0
+    /// Rows live in a scroll view so a long session list scrolls rather than
+    /// running off the bottom behind the footer (issue #21). The scroll view
+    /// is transparent: the sidebar paints the background and right border
+    /// behind it, and rows show those through their gaps.
+    private let scrollView = NSScrollView()
+    private let rowContainer = RowContainerView()
+    private var scrollObserver: NSObjectProtocol?
+    /// How close (in points) the drag must get to the scroll area's top or
+    /// bottom edge before the list starts auto-scrolling.
+    private let autoscrollMargin: CGFloat = 28
+    private var autoscrollTimer: Timer?
+    /// Latest drag location in sidebar coordinates, so the autoscroll timer
+    /// keeps scrolling while the cursor holds still in a hot zone.
+    private var lastDragLocation: NSPoint?
 
     override var isFlipped: Bool { true }
 
@@ -227,6 +248,26 @@ final class SessionSidebarView: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 600))
         plusButton.onClick = { [weak self] in self?.onNewSession?() }
         addSubview(plusButton)
+        rowContainer.rowHeight = rowHeight
+        rowContainer.rowGap = rowGap
+        rowContainer.topInset = rowTopInset
+        scrollView.drawsBackground = false
+        scrollView.contentView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.documentView = rowContainer
+        // Re-evaluate hover as rows scroll under a still cursor (tracking
+        // areas only fire on cursor movement, not on content movement).
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        scrollObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.synchronizeHoverWithMouse() }
+        }
+        addSubview(scrollView)
         footer.onClick = { [weak self] in self?.onNewSession?() }
         addSubview(footer)
         registerForDraggedTypes([.crtSessionRow])
@@ -238,6 +279,13 @@ final class SessionSidebarView: NSView {
         fatalError("SessionSidebarView is created in code")
     }
 
+    deinit {
+        if let scrollObserver {
+            NotificationCenter.default.removeObserver(scrollObserver)
+        }
+        autoscrollTimer?.invalidate()
+    }
+
     func apply(theme: SidebarTheme) {
         guard theme != self.theme else { return }
         self.theme = theme
@@ -247,6 +295,8 @@ final class SessionSidebarView: NSView {
     private func applyTheme() {
         plusButton.theme = theme
         footer.theme = theme
+        rowContainer.accent = theme.accent
+        rowContainer.background = theme.background
         needsDisplay = true
     }
 
@@ -272,14 +322,17 @@ final class SessionSidebarView: NSView {
             row.onHoverChange = { [weak self, weak row] hovering in
                 guard let self, let row,
                       let index = self.rowViews.firstIndex(of: row) else { return }
-                self.onHover?(hovering ? index : nil, row.frame)
+                // Report the row's frame in sidebar coordinates (it lives in
+                // the scrolled document view) for hover-card placement.
+                let frame = self.convert(row.frame, from: self.rowContainer)
+                self.onHover?(hovering ? index : nil, frame)
             }
             row.onDragStart = { [weak self, weak row] event in
                 guard let self, let row else { return }
                 self.beginRowDrag(row, with: event)
             }
             rowViews.append(row)
-            addSubview(row)
+            rowContainer.addSubview(row)
         }
         for (view, model) in zip(rowViews, models) {
             view.model = model
@@ -288,17 +341,62 @@ final class SessionSidebarView: NSView {
         needsDisplay = true
     }
 
+    /// The row's on-screen frame in the sidebar's coordinates (rows live in
+    /// the scrolled document view; callers — hover-card placement, the drop
+    /// math, the tests — work in sidebar space).
     func frameForRow(at index: Int) -> NSRect {
-        rowViews.indices.contains(index) ? rowViews[index].frame : .zero
+        guard rowViews.indices.contains(index) else { return .zero }
+        return convert(rowViews[index].frame, from: rowContainer)
+    }
+
+    /// Whether the session list is taller than its visible area — i.e. the
+    /// scroll bar is in play. Test/diagnostic hook.
+    var rowsOverflow: Bool {
+        rowContainer.frame.height > scrollView.contentView.bounds.height
+    }
+
+    /// Scrolls the list so the row at `index` is fully visible, with a little
+    /// margin. Called when a session is activated (⌘K jump, next/prev) so the
+    /// scroll follows focus.
+    func scrollRowIntoView(at index: Int) {
+        guard rowViews.indices.contains(index) else { return }
+        layoutSubtreeIfNeeded()
+        rowContainer.scrollToVisible(
+            rowViews[index].frame.insetBy(dx: 0, dy: -rowGap))
+    }
+
+    /// Sets exactly the row under the pointer hovered (or none), correcting
+    /// the stale-highlight that scrolling leaves when the cursor doesn't move.
+    private func synchronizeHoverWithMouse() {
+        // A drag is over the sidebar (drop indicator showing): don't revive
+        // hover highlights or the hover card mid-drag.
+        guard dropGap == nil, let window else { return }
+        let inWindow = window.mouseLocationOutsideOfEventStream
+        let overRows = scrollView.frame.contains(convert(inWindow, from: nil))
+        let inContainer = rowContainer.convert(inWindow, from: nil)
+        for row in rowViews {
+            row.setHovered(overRows && row.frame.contains(inContainer))
+        }
+    }
+
+    /// Scrolls the session list by the given offset (clamped by the scroll
+    /// view). Test/diagnostic hook for the scrolled drop-gap math.
+    func scrollRows(toOffset y: CGFloat) {
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     // MARK: Row dragging (reorder / move between windows / tear off)
 
     /// Maps a point in sidebar coordinates to the insertion gap between
-    /// rows (0 = before the first row, count = after the last).
+    /// rows (0 = before the first row, count = after the last). Accounts for
+    /// the scroll offset so the gap tracks the rows the user actually sees.
     func dropGapIndex(at point: NSPoint) -> Int {
-        let slot = rowHeight + 3
-        let raw = Int(((point.y - (headerHeight + 4)) / slot).rounded())
+        let slot = rowHeight + rowGap
+        // Into document coordinates: undo the scroll area's top edge, add how
+        // far the rows are scrolled.
+        let documentY = point.y - scrollView.frame.minY + scrollView.contentView.bounds.origin.y
+        let raw = Int(((documentY - rowTopInset) / slot).rounded())
         return min(max(0, raw), sessionCount)
     }
 
@@ -309,7 +407,10 @@ final class SessionSidebarView: NSView {
         let item = NSPasteboardItem()
         item.setString(id.uuidString, forType: .crtSessionRow)
         let dragItem = NSDraggingItem(pasteboardWriter: item)
-        dragItem.setDraggingFrame(row.frame, contents: row.dragImage())
+        // The session is begun on the sidebar, so the image frame is in
+        // sidebar coordinates — convert it up from the scrolled document.
+        dragItem.setDraggingFrame(
+            convert(row.frame, from: rowContainer), contents: row.dragImage())
         draggedSessionID = id
         onHover?(nil, .zero)  // no hover card while dragging
         let session = beginDraggingSession(with: [dragItem], event: event, source: self)
@@ -321,7 +422,10 @@ final class SessionSidebarView: NSView {
     private func dragUpdate(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard sender.draggingPasteboard.availableType(from: [.crtSessionRow]) != nil
         else { return [] }
-        dropGap = dropGapIndex(at: convert(sender.draggingLocation, from: nil))
+        let point = convert(sender.draggingLocation, from: nil)
+        lastDragLocation = point
+        dropGap = dropGapIndex(at: point)
+        updateAutoscroll()
         return .move
     }
 
@@ -335,32 +439,105 @@ final class SessionSidebarView: NSView {
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         dropGap = nil
+        endAutoscroll()
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
         dropGap = nil
+        endAutoscroll()
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        defer { dropGap = nil }
+        defer { dropGap = nil; endAutoscroll() }
         guard let string = sender.draggingPasteboard.string(forType: .crtSessionRow),
               let id = UUID(uuidString: string) else { return false }
         let gap = dropGapIndex(at: convert(sender.draggingLocation, from: nil))
         return onDropSession?(id, gap) ?? false
     }
 
+    // MARK: Drag autoscroll
+
+    /// Starts/stops the autoscroll timer based on the latest drag location.
+    /// The timer runs in `.common` mode so it keeps firing during the drag's
+    /// event-tracking run loop, scrolling even while the cursor holds still.
+    private func updateAutoscroll() {
+        guard autoscrollVelocity() != 0 else { return endAutoscroll() }
+        guard autoscrollTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepAutoscroll() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        autoscrollTimer = timer
+    }
+
+    private func endAutoscroll() {
+        autoscrollTimer?.invalidate()
+        autoscrollTimer = nil
+        lastDragLocation = nil
+    }
+
+    private func autoscrollVelocity() -> CGFloat {
+        guard let point = lastDragLocation else { return 0 }
+        return autoscrollVelocity(for: point)
+    }
+
+    /// Points to scroll per tick for a drag at `point` (sidebar coordinates):
+    /// negative (up) near the top edge, positive (down) near the bottom, 0
+    /// outside both hot zones or when nothing overflows. Ramps up as the
+    /// cursor nears the edge.
+    func autoscrollVelocity(for point: NSPoint) -> CGFloat {
+        guard rowsOverflow else { return 0 }
+        let fromTop = point.y - scrollView.frame.minY
+        let fromBottom = scrollView.frame.maxY - point.y
+        if fromTop < autoscrollMargin {
+            return -max(3, (autoscrollMargin - fromTop) / 2)
+        }
+        if fromBottom < autoscrollMargin {
+            return max(3, (autoscrollMargin - fromBottom) / 2)
+        }
+        return 0
+    }
+
+    private func stepAutoscroll() {
+        let velocity = autoscrollVelocity()
+        guard velocity != 0, let point = lastDragLocation else { return endAutoscroll() }
+        let clip = scrollView.contentView
+        let maxOffset = max(0, rowContainer.frame.height - clip.bounds.height)
+        let newY = min(max(0, clip.bounds.origin.y + velocity), maxOffset)
+        guard newY != clip.bounds.origin.y else { return }  // at an end
+        clip.scroll(to: NSPoint(x: 0, y: newY))
+        scrollView.reflectScrolledClipView(clip)
+        // The cursor hasn't moved but different rows are under it now.
+        dropGap = dropGapIndex(at: point)
+    }
+
     override func layout() {
         super.layout()
         plusButton.frame = NSRect(
             x: bounds.width - 10 - 24, y: (headerHeight - 24) / 2, width: 24, height: 24)
-        var y = headerHeight + 4
-        for row in rowViews {
-            row.frame = NSRect(x: 8, y: y, width: bounds.width - 16, height: rowHeight)
-            y += rowHeight + 3
-        }
+        // 1px short of the right edge so the sidebar's border stays visible.
+        scrollView.frame = NSRect(
+            x: 0, y: headerHeight, width: max(0, bounds.width - 1),
+            height: max(0, bounds.height - headerHeight - footerHeight))
+        layoutRows()
         footer.frame = NSRect(
             x: 0, y: bounds.height - footerHeight,
             width: bounds.width, height: footerHeight)
+    }
+
+    /// Positions the rows inside the scrolling document view and sizes the
+    /// document to their full height so the scroll bar appears once the list
+    /// outgrows the visible area.
+    private func layoutRows() {
+        let slot = rowHeight + rowGap
+        let width = scrollView.frame.width
+        let contentHeight = rowTopInset + CGFloat(rowViews.count) * slot
+        rowContainer.frame = NSRect(x: 0, y: 0, width: width, height: contentHeight)
+        var y = rowTopInset
+        for row in rowViews {
+            row.frame = NSRect(x: 8, y: y, width: width - 16, height: rowHeight)
+            y += slot
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -388,16 +565,37 @@ final class SessionSidebarView: NSView {
                 x: plusButton.frame.minX - 8 - countSize.width,
                 y: (headerHeight - countSize.height) / 2),
             withAttributes: countAttrs)
+    }
+}
 
-        // Insertion indicator in the gap a row drag would drop into.
-        if let dropGap {
-            let y = headerHeight + 4 + CGFloat(dropGap) * (rowHeight + 3) - 2.5
-            theme.accent.setFill()
-            NSBezierPath(
-                roundedRect: NSRect(x: 8, y: y, width: bounds.width - 16, height: 3),
-                xRadius: 1.5, yRadius: 1.5
-            ).fill()
-        }
+/// The scrolling document view that hosts the session rows. It paints the
+/// sidebar background itself — a transparent document view would leave stale
+/// pixels in the row gaps as the clip view scrolls — and draws the row-drag
+/// insertion indicator, both in its own (scrolled) coordinates. It stops 1px
+/// short of the sidebar's right edge so the sidebar's border shows beside it.
+final class RowContainerView: NSView {
+    var rowHeight: CGFloat = 50
+    var rowGap: CGFloat = 3
+    var topInset: CGFloat = 4
+    var accent: NSColor = .clear
+    var background: NSColor = .clear { didSet { needsDisplay = true } }
+    /// Insertion gap (0...count) the current drag would drop into.
+    var dropGap: Int? {
+        didSet { if dropGap != oldValue { needsDisplay = true } }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        background.setFill()
+        dirtyRect.fill()
+        guard let dropGap else { return }
+        let y = topInset + CGFloat(dropGap) * (rowHeight + rowGap) - 2.5
+        accent.setFill()
+        NSBezierPath(
+            roundedRect: NSRect(x: 8, y: y, width: bounds.width - 16, height: 3),
+            xRadius: 1.5, yRadius: 1.5
+        ).fill()
     }
 }
 
@@ -415,6 +613,7 @@ extension SessionSidebarView: NSDraggingSource {
         operation: NSDragOperation
     ) {
         dropGap = nil
+        endAutoscroll()
         guard let id = draggedSessionID else { return }
         draggedSessionID = nil
         if operation.isEmpty {
@@ -571,9 +770,18 @@ final class SessionRowView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        isHovered = true
+        setHovered(true)
+    }
+
+    /// Drives the hover state from outside the tracking area — the sidebar
+    /// re-syncs hover after a scroll, since tracking areas don't fire
+    /// enter/exit when content moves under a stationary cursor.
+    func setHovered(_ hovered: Bool) {
+        guard hovered != isHovered else { return }
+        isHovered = hovered
+        if !hovered { isCloseHovered = false }
         needsDisplay = true
-        onHoverChange?(true)
+        onHoverChange?(hovered)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -585,10 +793,7 @@ final class SessionRowView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        isHovered = false
-        isCloseHovered = false
-        needsDisplay = true
-        onHoverChange?(false)
+        setHovered(false)
     }
 
     override func mouseDown(with event: NSEvent) {
