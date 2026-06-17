@@ -247,7 +247,9 @@ final class PaletteController<Item: PaletteItem>: NSObject, NSTextFieldDelegate,
         chrome.addSubview(emptyLabel)
     }
 
-    func show(over hostWindow: NSWindow?) {
+    /// `initiallySelecting` highlights a starting row (e.g. the focused
+    /// session) instead of the first; out-of-range values clamp to it.
+    func show(over hostWindow: NSWindow?, initiallySelecting row: Int = 0) {
         let screenFrame = (hostWindow?.screen ?? NSScreen.main)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
         let host = hostWindow?.frame ?? screenFrame
@@ -256,7 +258,7 @@ final class PaletteController<Item: PaletteItem>: NSObject, NSTextFieldDelegate,
         let x = host.midX - Self.width / 2
         layout(panelOriginX: max(screenFrame.minX + 20, x))
         table.reloadData()
-        selectRow(0)
+        selectRow(row)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(field)
     }
