@@ -160,6 +160,16 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window?.firstResponder as? TerminalView ?? activeTab?.panes.first
     }
 
+    /// The working directory of the focused pane's session, so new tabs and
+    /// splits open where the user is currently working. Prefers the shell's
+    /// live OSC 7 report (survives a cd since the last probe); falls back to
+    /// the kernel query.
+    private var focusedWorkingDirectory: String? {
+        guard let session = focusedPane?.session else { return nil }
+        return session.snapshot.currentDirectory
+            ?? SessionInfo.workingDirectory(of: session.shellProcessID)
+    }
+
     // MARK: Renderer (shared across the window's panes)
 
     private func rendererForPane(name: String, scale: Double) -> TerminalRenderer? {
@@ -265,8 +275,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             session = try TerminalSession(
                 columns: 80, rows: 24,
                 shell: settings.shellPath,
-                // Restore in the saved directory; fall back to the setting.
+                // Restore in the saved directory; otherwise inherit the
+                // focused pane's cwd (new tab/split opens where you are);
+                // fall back to the setting.
                 workingDirectory: snapshot?.workingDirectoryHint
+                    ?? focusedWorkingDirectory
                     ?? settings.resolvedWorkingDirectory,
                 scrollbackLines: settings.scrollbackLines,
                 // Seed COLORFGBG from the pane's preset so the shell launches
