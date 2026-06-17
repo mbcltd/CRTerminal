@@ -25,7 +25,7 @@ struct TerminalSettings: Codable, Equatable {
     /// Shape operator runs so font ligatures (=>, ===) apply.
     var ligatures = true
     /// Whether relaunch restores the previous windows/sessions.
-    var restoration: RestorationMode = .system
+    var restoration: RestorationMode = .always
 
     /// The typeface is fixed: everyone gets bundled Geist Mono. Only the
     /// size is configurable; system monospaced is a fallback for when
@@ -92,7 +92,7 @@ extension TerminalSettings {
             Int.self, forKey: .scrollbackLines) ?? 10_000
         ligatures = try container.decodeIfPresent(Bool.self, forKey: .ligatures) ?? true
         restoration = try container.decodeIfPresent(
-            RestorationMode.self, forKey: .restoration) ?? .system
+            RestorationMode.self, forKey: .restoration) ?? .always
     }
 }
 

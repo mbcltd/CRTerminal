@@ -529,14 +529,19 @@ Two design facts from the current code shape everything:
 
 Design:
 
-- **Two-tier persistence.** Lightweight layout (window frames, tab order, split
-  tree, session UUIDs, presets, active indices) flows through
-  `NSWindowRestoration`, so it honours the macOS "Close windows when quitting an
-  app" setting and ⌘Q-vs-restart semantics natively (as Terminal.app and Ghostty
-  do — `applicationSupportsSecureRestorableState` already returns `true`). Heavy
-  per-session terminal contents (grid + scrollback, ~1–13 MB each) are written to
-  our own files in Application Support keyed by session UUID, never into the
-  restoration plist.
+- **Two-tier persistence, one restore path.** Lightweight layout (window frames,
+  tab order, split tree, session UUIDs, presets, active indices) and heavy
+  per-session terminal contents (grid + scrollback, ~1–13 MB each) are both
+  written to our own files in Application Support — layout to `layout.crtlayout`,
+  contents keyed by session UUID. Restore is driven from those files in
+  `applicationDidFinishLaunching`, *not* through `NSWindowRestoration`: AppKit's
+  window restoration only fires when the macOS "Close windows when quitting an
+  app" setting allows it, which made restore feel unreliable and created a second,
+  divergent copy of the layout. Windows are therefore `isRestorable = false`; the
+  three-way **System** mode still honours that macOS preference, but by *reading*
+  it directly (`AppDelegate.shouldRestore`, the global `NSQuitAlwaysKeepsWindows`
+  default) and driving the reliable on-disk path. `Always` ignores the preference;
+  `Never` writes nothing.
 - **Serialization lives in `TerminalCore`.** A versioned, `Codable`
   `TerminalStateSnapshot` (visible grid, scrollback, cursor, SGR/colors, link
   table, prompt marks, cwd hint) — platform-independent and unit-testable with no
@@ -585,15 +590,21 @@ restored session, then applying divider fractions after layout.
 each pane's contents, and each cwd; frames restored across two windows.
 
 ### Phase R3 — macOS lifecycle integration
-Give each `TerminalWindowController.window` a `restorationClass` + stable
-`identifier`; implement `encodeRestorableState` /
-`restoreWindow(withIdentifier:state:completionHandler:)` to drive `LayoutSnapshot`
-+ `SessionStateStore`. Save on `applicationWillTerminate` (capture all cwds
-*before* SIGHUP) and on a coalesced significant-change debounce so a crash loses
-little. Add the **Restoration** setting (System/Always/Never) to `SettingsStore`
-+ Settings UI; `Never` disables encoding and deletes stored state.
-**Exit:** with the system setting on, ⌘Q + reopen restores everything; with it off
-(or setting = Never), launches clean; no stray `.crtstate` files leak.
+Restore is driven from our own files, not AppKit window restoration (which only
+fires under the system "Close windows when quitting" pref and proved unreliable).
+`applicationDidFinishLaunching` calls `restoreLayoutFromDisk()` when
+`shouldRestoreOnLaunch` is true (`Always`, or `System` when the global
+`NSQuitAlwaysKeepsWindows` pref keeps windows); windows are `isRestorable = false`
+and `restoreWindow(...)` no-ops so stale saved state from older builds can't
+revive a duplicate window. Save on `applicationWillTerminate` (capture all cwds
+*before* SIGHUP, write layout + contents synchronously, then `flush`) and on a
+coalesced significant-change debounce so a crash loses little — both write the
+layout file in every enabled mode. Add the **Restoration** setting
+(System/Always/Never) to `SettingsStore` + Settings UI; `Never` deletes stored
+state.
+**Exit:** with `System` + the macOS keep-windows pref on (or `Always`), ⌘Q +
+reopen restores everything regardless of how the app was quit; with the pref off
+(or setting = `Never`), launches clean; no stray `.crtstate` files leak.
 
 ### Phase R4 — Robustness & fidelity
 Parse **OSC 7** (add `case 7` to `TerminalState.oscDispatch`) to track cwd live,

@@ -58,12 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             self.refreshDockBadge()
         }
 
-        // `Always` restores from our own layout backstop when AppKit didn't
-        // (the system "Close windows when quitting" pref is off). AppKit's own
-        // restoration, when it fires, has already populated `controllers` by
-        // now, so we never double-restore.
-        if controllers.isEmpty,
-           SettingsStore.shared.settings.restoration == .always {
+        // Restore from our own on-disk layout + content files. This is the
+        // single restore path (AppKit window restoration is disabled), so it
+        // works regardless of the system "Close windows when quitting"
+        // preference. `System` mode consults that preference directly via
+        // `shouldRestoreOnLaunch`; `Always` ignores it; `Never` is off.
+        if controllers.isEmpty, shouldRestoreOnLaunch {
             restoreLayoutFromDisk()
         }
 
@@ -541,6 +541,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// Whether this launch should restore the previous session. `Never` never
+    /// does, `Always` always does, and `System` follows the macOS "Close
+    /// windows when quitting an application" preference — the global
+    /// `NSQuitAlwaysKeepsWindows` default (true ⇒ keep/restore). Reading it
+    /// directly (rather than waiting for AppKit's restoration callback, which
+    /// only fires under that same preference but unreliably) lets us drive the
+    /// reliable on-disk path while still honouring the user's system choice.
+    var shouldRestoreOnLaunch: Bool {
+        Self.shouldRestore(
+            mode: SettingsStore.shared.settings.restoration,
+            systemKeepsWindows: UserDefaults.standard.bool(forKey: "NSQuitAlwaysKeepsWindows"))
+    }
+
+    /// Pure restore decision (unit-tested): `Never` off, `Always` on, `System`
+    /// follows the macOS "keep windows when quitting" preference.
+    static func shouldRestore(mode: RestorationMode, systemKeepsWindows: Bool) -> Bool {
+        switch mode {
+        case .never: return false
+        case .always: return true
+        case .system: return systemKeepsWindows
+        }
+    }
+
     /// Quit-time save of every window's layout + contents (R3). `Never`
     /// instead wipes any stored state so nothing is left behind.
     func saveStateForTermination() {
@@ -550,13 +573,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         for controller in controllers {
             controller.saveAllContents(synchronously: true)
-            controller.window?.invalidateRestorableState()
         }
-        // System mode rides the layout on AppKit's restorable-state coder;
-        // only Always needs our own on-disk layout backstop.
-        if SettingsStore.shared.settings.restoration == .always {
-            SessionStateStore.shared.saveLayoutSynchronously(captureLayoutSnapshot())
-        }
+        // The on-disk layout is our single source of truth for restore, in
+        // every enabled mode (System included) — so it must always be written.
+        SessionStateStore.shared.saveLayoutSynchronously(captureLayoutSnapshot())
         // The generation-skip may have elided sessions whose only write was an
         // async debounce; drain the io queue so every file is on disk before
         // the process exits.
@@ -575,9 +595,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             for controller in self.controllers { controller.saveAllContents() }
-            if SettingsStore.shared.settings.restoration == .always {
-                SessionStateStore.shared.saveLayout(self.captureLayoutSnapshot())
-            }
+            // Always persist the layout (the restore source of truth) so a
+            // crash before the next quit still comes back, in every mode.
+            SessionStateStore.shared.saveLayout(self.captureLayoutSnapshot())
         }
         restorationSaveWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
@@ -590,14 +610,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         SessionStateStore.shared.pruneOrphans(keeping: live)
     }
 
-    /// React to a restoration-mode change: flip window restorability, and
-    /// either wipe stored state (`Never`) or schedule a fresh save.
+    /// React to a restoration-mode change: wipe stored state (`Never`) or
+    /// schedule a fresh save so the on-disk layout reflects the new mode.
     private func applyRestorationMode() {
-        let enabled = SettingsStore.shared.restorationEnabled
-        for controller in controllers {
-            controller.window?.isRestorable = enabled
-        }
-        if enabled {
+        if SettingsStore.shared.restorationEnabled {
             setNeedsRestorationSave()
         } else {
             restorationSaveWork?.cancel()
@@ -605,30 +621,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
-    /// NSWindowRestoration callback (via `WindowRestoration`): rebuild one
-    /// window from its archived layout, restoring each pane's contents.
+    /// NSWindowRestoration callback (via `WindowRestoration`). AppKit window
+    /// restoration is no longer used — restore is driven from our own on-disk
+    /// layout in `applicationDidFinishLaunching` — so this only fires for
+    /// *stale* saved state left by older builds, and must not revive a window
+    /// (that would duplicate what the disk path restores).
     func restoreWindow(
         identifier: NSUserInterfaceItemIdentifier, state: NSCoder,
         completionHandler: @escaping (NSWindow?, (any Error)?) -> Void
     ) {
-        // The lifecycle probe drives restore from our own layout file and
-        // asserts exact window counts; ignore AppKit's parallel attempt (whose
-        // saved state races `open -n` instances) so the probe is deterministic.
-        if ProcessInfo.processInfo.environment["CRT_LIFECYCLE_PROBE"] != nil {
-            completionHandler(nil, nil)
-            return
-        }
-        guard SettingsStore.shared.restorationEnabled else {
-            completionHandler(nil, nil)
-            return
-        }
-        let controller = makeWindowController(spawnInitialSession: false)
-        controller.window?.identifier = identifier
-        if !controller.restoreState(from: state) {
-            // No usable layout in the archive — don't leave an empty window.
-            controller.addSession()
-        }
-        completionHandler(controller.window, nil)
+        completionHandler(nil, nil)
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
