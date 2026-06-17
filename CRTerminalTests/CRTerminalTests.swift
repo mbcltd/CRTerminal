@@ -68,6 +68,32 @@ struct TerminalSettingsTests {
         #expect(settings.font.pointSize <= 72)
     }
 
+    @Test func fontNameRoundTripsAndResolves() throws {
+        var settings = TerminalSettings()
+        // A nil fontName still resolves to a usable monospaced face (the
+        // bundled default, or the system fallback in an unregistered host).
+        #expect(settings.font.isFixedPitch)
+        // A chosen family resolves to that family (Menlo ships on every Mac).
+        settings.fontName = "Menlo"
+        #expect(settings.font.familyName == "Menlo")
+        // An explicit override (a preset's face) wins over the chosen font.
+        #expect(settings.font(name: "Courier").familyName == "Courier")
+        // An unresolvable name falls back to the system monospaced font.
+        settings.fontName = "No Such Font 9000"
+        #expect(settings.font.isFixedPitch)
+        // The chosen name survives a persistence round-trip.
+        settings.fontName = "Fira Mono for Powerline"
+        let decoded = try JSONDecoder().decode(
+            TerminalSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded.fontName == "Fira Mono for Powerline")
+    }
+
+    @Test @MainActor func monospacedFontListIncludesBundledDefault() {
+        #expect(MonospacedFonts.all.first == MonospacedFonts.defaultFamily)
+        // Every offered family is genuinely fixed-pitch (or a bundled face).
+        #expect(MonospacedFonts.all.contains("Menlo"))
+    }
+
     @Test func restorationDefaultsToAlwaysAndRoundTrips() throws {
         var settings = TerminalSettings()
         #expect(settings.restoration == .always)
