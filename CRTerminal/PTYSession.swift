@@ -196,10 +196,14 @@ nonisolated final class PTYSession: @unchecked Sendable {
         }
     }
 
-    func resize(columns: Int, rows: Int) {
+    /// `pixelWidth`/`pixelHeight` populate `ws_xpixel`/`ws_ypixel` so graphics
+    /// clients (e.g. `kitten icat`) that read the size in pixels from
+    /// TIOCGWINSZ — rather than via CSI 14 t — get real dimensions. 0 leaves
+    /// them unset (the initial winsize, before the renderer reports cell size).
+    func resize(columns: Int, rows: Int, pixelWidth: Int = 0, pixelHeight: Int = 0) {
         var size = winsize(
             ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: columns),
-            ws_xpixel: 0, ws_ypixel: 0)
+            ws_xpixel: UInt16(clamping: pixelWidth), ws_ypixel: UInt16(clamping: pixelHeight))
         _ = ioctl(slaveFD, Self.TIOCSWINSZ, &size)
     }
 

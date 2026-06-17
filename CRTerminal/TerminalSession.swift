@@ -10,6 +10,9 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     private let terminal: OSAllocatedUnfairLock<Terminal>
     private let pty: PTYSession
     private let updatePending = OSAllocatedUnfairLock(initialState: false)
+    /// Latest device-pixel cell size from the renderer, used to size the PTY
+    /// winsize in pixels (ws_xpixel/ws_ypixel) alongside its rows/columns.
+    private let cellPixelSize = OSAllocatedUnfairLock(initialState: (width: 0, height: 0))
 
     /// Called on the main queue, coalesced across PTY chunks.
     var onUpdate: (@MainActor () -> Void)?
@@ -67,6 +70,18 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// map image pixels to cells and answer CSI 14/16 t.
     func setCellPixelSize(width: Int, height: Int) {
         terminal.withLock { $0.setCellPixelSize(width: width, height: height) }
+        let changed = cellPixelSize.withLock { size -> Bool in
+            guard (width, height) != (size.width, size.height) else { return false }
+            size = (width, height)
+            return true
+        }
+        // Re-report the PTY winsize so ws_xpixel/ws_ypixel track the new cell
+        // size even when the grid (rows/columns) is unchanged — e.g. a font
+        // size change. resize() covers the grid-changed case.
+        guard changed else { return }
+        let (cols, rows) = terminal.withLock { ($0.state.columns, $0.state.rows) }
+        pty.resize(columns: cols, rows: rows,
+                   pixelWidth: cols * width, pixelHeight: rows * height)
     }
 
     /// The foreground/background the active scheme paints with, so OSC 10/11
@@ -86,7 +101,9 @@ nonisolated final class TerminalSession: @unchecked Sendable {
             return before != (columns, rows)
         }
         if changed {
-            pty.resize(columns: columns, rows: rows)
+            let cell = cellPixelSize.withLock { $0 }
+            pty.resize(columns: columns, rows: rows,
+                       pixelWidth: columns * cell.width, pixelHeight: rows * cell.height)
             scheduleUpdate()
         }
     }
