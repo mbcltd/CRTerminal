@@ -195,6 +195,67 @@ struct SessionSidebarViewTests {
         #expect(view.progressBarFraction == nil)
     }
 
+    @Test @MainActor func longSessionListScrollsAndDropGapTracksTheOffset() {
+        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .darkStandard))
+        // A short sidebar that can't show 20 rows at 50pt + gaps.
+        sidebar.frame = NSRect(x: 0, y: 0, width: SessionSidebarView.width, height: 320)
+        sidebar.update(rows: (1...20).map { row($0) })
+        sidebar.layoutSubtreeIfNeeded()
+        #expect(sidebar.rowsOverflow)
+
+        // At rest, the gap math matches the visible rows.
+        let firstAtRest = sidebar.frameForRow(at: 0)
+        #expect(sidebar.dropGapIndex(at: NSPoint(x: 10, y: firstAtRest.minY + 4)) == 0)
+
+        // After scrolling down, a point near the top of the visible area maps
+        // to a later gap — the offset is folded into the math.
+        sidebar.scrollRows(toOffset: 200)
+        sidebar.layoutSubtreeIfNeeded()
+        let topVisibleGap = sidebar.dropGapIndex(
+            at: NSPoint(x: 10, y: 42 /* headerHeight */ + 4))
+        #expect(topVisibleGap > 0)
+    }
+
+    @Test @MainActor func scrollRowIntoViewBringsAnOffscreenRowVisible() {
+        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .darkStandard))
+        sidebar.frame = NSRect(x: 0, y: 0, width: SessionSidebarView.width, height: 320)
+        sidebar.update(rows: (1...20).map { row($0) })
+        sidebar.layoutSubtreeIfNeeded()
+        #expect(sidebar.rowsOverflow)
+
+        // The last row starts below the fold (off the bottom of the band).
+        let before = sidebar.frameForRow(at: 19)
+        #expect(before.minY > 320)
+
+        // Activating it scrolls it into the visible band (header..footer).
+        sidebar.scrollRowIntoView(at: 19)
+        sidebar.layoutSubtreeIfNeeded()
+        let after = sidebar.frameForRow(at: 19)
+        #expect(after.minY >= 42)        // headerHeight
+        #expect(after.maxY <= 320 - 44)  // footerHeight
+    }
+
+    @Test @MainActor func dragNearEdgesDrivesAutoscroll() {
+        let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .darkStandard))
+        sidebar.frame = NSRect(x: 0, y: 0, width: SessionSidebarView.width, height: 320)
+        sidebar.update(rows: (1...20).map { row($0) })
+        sidebar.layoutSubtreeIfNeeded()
+        // Scroll band runs from headerHeight (42) to height - footerHeight (276).
+        #expect(sidebar.autoscrollVelocity(for: NSPoint(x: 10, y: 46)) < 0)   // top
+        #expect(sidebar.autoscrollVelocity(for: NSPoint(x: 10, y: 272)) > 0)  // bottom
+        #expect(sidebar.autoscrollVelocity(for: NSPoint(x: 10, y: 160)) == 0) // middle
+        // Nearer the edge scrolls faster.
+        #expect(
+            abs(sidebar.autoscrollVelocity(for: NSPoint(x: 10, y: 43)))
+                > abs(sidebar.autoscrollVelocity(for: NSPoint(x: 10, y: 60))))
+
+        // A list that fits doesn't autoscroll at all.
+        sidebar.update(rows: [row(1), row(2)])
+        sidebar.layoutSubtreeIfNeeded()
+        #expect(!sidebar.rowsOverflow)
+        #expect(sidebar.autoscrollVelocity(for: NSPoint(x: 10, y: 46)) == 0)
+    }
+
     @Test @MainActor func selectionCallbackReportsTheClickedRowIndex() {
         let sidebar = SessionSidebarView(theme: SidebarTheme(preset: .darkStandard))
         var selected: Int?

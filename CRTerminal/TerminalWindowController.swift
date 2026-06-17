@@ -235,6 +235,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         updateSidebarVisibility()
         applyChrome(preset: activePreset)
         refreshSessionMetadata()
+        sidebar.scrollRowIntoView(at: index)
         noteSignificantChange()
     }
 
