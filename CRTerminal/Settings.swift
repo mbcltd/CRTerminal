@@ -22,9 +22,31 @@ struct SettingsView: View {
             set: { SettingsStore.shared.update($0); revision += 1 })
     }
 
+    /// The font picker works in family names; the default family maps back to
+    /// a nil `fontName` (the bundled Geist Mono default), so the stored value
+    /// stays meaningful even if Geist Mono is ever renamed or removed.
+    private var fontSelection: Binding<String> {
+        Binding(
+            get: {
+                _ = revision
+                return SettingsStore.shared.settings.fontName ?? MonospacedFonts.defaultFamily
+            },
+            set: { newValue in
+                var updated = SettingsStore.shared.settings
+                updated.fontName = newValue == MonospacedFonts.defaultFamily ? nil : newValue
+                SettingsStore.shared.update(updated)
+                revision += 1
+            })
+    }
+
     var body: some View {
         Form {
             Section("Terminal") {
+                Picker("Font", selection: fontSelection) {
+                    ForEach(MonospacedFonts.all, id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
                 Slider(value: settings.fontSize, in: 9...32, step: 1) {
                     Text("Size: \(Int(settings.wrappedValue.fontSize)) pt")
                 }
@@ -113,5 +135,28 @@ struct SettingsView: View {
         Binding(
             get: { _ = revision; return AlertSettings.shared[keyPath: keyPath] },
             set: { AlertSettings.shared[keyPath: keyPath] = $0; revision += 1 })
+    }
+}
+
+/// The monospaced typefaces offered in the font picker: the bundled faces
+/// first (process-registered, so they don't reliably surface in
+/// NSFontManager's lists), then every fixed-pitch family installed on the
+/// system — which is how a user's "Fira Mono for Powerline" and friends
+/// appear. Built once; the scan over installed families is not free.
+@MainActor
+enum MonospacedFonts {
+    /// The picker's stand-in for a nil `fontName` (the bundled default).
+    static let defaultFamily = "Geist Mono"
+
+    static let all: [String] = {
+        let manager = NSFontManager.shared
+        let system = manager.availableFontFamilies.filter(isMonospaced)
+        var seen = Set<String>()
+        return (BundledFonts.families + system).filter { seen.insert($0).inserted }
+    }()
+
+    private static func isMonospaced(_ family: String) -> Bool {
+        let descriptor = NSFontDescriptor(fontAttributes: [.family: family])
+        return NSFont(descriptor: descriptor, size: 12)?.isFixedPitch ?? false
     }
 }

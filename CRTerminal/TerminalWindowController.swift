@@ -314,9 +314,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// another window.
     private func wire(pane: TerminalView) {
         pane.rendererProvider = { [weak self, weak pane] in
+            guard let self else { return nil }
             let preset = pane?.preset
-            return self?.rendererForPane(
-                name: preset?.fontName ?? BundledFonts.geistMono,
+            // A preset that forces its own face wins (the C64 1702); otherwise
+            // the user's chosen font, falling back to bundled Geist Mono.
+            return self.rendererForPane(
+                name: preset?.fontName ?? self.settings.fontName ?? BundledFonts.geistMono,
                 scale: preset?.fontSizeScale ?? 1)
         }
         guard let session = pane.session else { return }

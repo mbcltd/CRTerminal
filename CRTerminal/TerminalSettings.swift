@@ -22,25 +22,36 @@ struct TerminalSettings: Codable, Equatable {
     /// Where new shells start; nil = the home folder. "~" is expanded.
     var workingDirectory: String?
     var scrollbackLines: Int = 10_000
+    /// The chosen typeface, as an NSFontManager family name (e.g. "Fira Mono
+    /// for Powerline") or a PostScript face name. nil = the bundled Geist
+    /// Mono default. A preset that forces its own face (the C64 1702) still
+    /// wins; this applies to presets that leave `fontName` unset.
+    var fontName: String?
     /// Shape operator runs so font ligatures (=>, ===) apply.
     var ligatures = true
     /// Whether relaunch restores the previous windows/sessions.
     var restoration: RestorationMode = .always
 
-    /// The typeface is fixed: everyone gets bundled Geist Mono. Only the
-    /// size is configurable; system monospaced is a fallback for when
-    /// registration failed (or a test host without the bundle).
+    /// Resolves the configured typeface to a sized `NSFont`. `name` is an
+    /// explicit override (a preset's PostScript `fontName`); when nil it
+    /// falls back to the user's chosen `fontName`, then the bundled Geist
+    /// Mono. `scale` multiplies the configured size for presets that ask for
+    /// it (a preset's `fontSizeScale` — the Commodore 1702 renders 25% larger
+    /// in the bundled C64 face). The clamp applies after scaling.
     ///
-    /// `name` is the PostScript face — a preset's `fontName`, or the
-    /// bundled Geist Mono default. `scale` multiplies the configured size
-    /// for presets that ask for it (a preset's `fontSizeScale` — the
-    /// Commodore 1702 renders 25% larger in the bundled C64 face). The
-    /// clamp applies after scaling; an unresolvable name falls back to the
-    /// system monospaced font.
-    func font(name: String = BundledFonts.geistMono, scale: Double = 1) -> NSFont {
+    /// Resolution tries the name as a PostScript face first (how the bundled
+    /// faces register), then as a font family (how NSFontManager lists user
+    /// fonts), then falls back to the system monospaced font when the name
+    /// resolves to nothing.
+    func font(name: String? = nil, scale: Double = 1) -> NSFont {
         let size = CGFloat(max(6, min(fontSize * scale, 72)))
-        if let resolved = NSFont(name: name, size: size) {
-            return resolved
+        let resolved = name ?? fontName ?? BundledFonts.geistMono
+        if let face = NSFont(name: resolved, size: size) {
+            return face
+        }
+        let descriptor = NSFontDescriptor(fontAttributes: [.family: resolved])
+        if let family = NSFont(descriptor: descriptor, size: size) {
+            return family
         }
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
@@ -73,13 +84,13 @@ struct TerminalSettings: Codable, Equatable {
 extension TerminalSettings {
     private enum CodingKeys: String, CodingKey {
         case fontSize, presetName, shellPath,
-             workingDirectory, scrollbackLines, ligatures, restoration
+             workingDirectory, scrollbackLines, fontName, ligatures, restoration
     }
 
     /// Tolerant decoding, in an extension so the memberwise init survives:
     /// settings persist as JSON in UserDefaults and a failed decode silently
     /// resets to defaults — adding a field must never invalidate saved
-    /// settings. (An old blob's `fontName` is simply ignored.)
+    /// settings.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 13
@@ -90,6 +101,7 @@ extension TerminalSettings {
             String.self, forKey: .workingDirectory)
         scrollbackLines = try container.decodeIfPresent(
             Int.self, forKey: .scrollbackLines) ?? 10_000
+        fontName = try container.decodeIfPresent(String.self, forKey: .fontName)
         ligatures = try container.decodeIfPresent(Bool.self, forKey: .ligatures) ?? true
         restoration = try container.decodeIfPresent(
             RestorationMode.self, forKey: .restoration) ?? .always
