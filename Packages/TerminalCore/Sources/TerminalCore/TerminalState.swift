@@ -208,6 +208,13 @@ public struct TerminalState: Sendable {
     /// (issue #8). Defaults match the dark scheme until the app reports one.
     public internal(set) var foregroundColor: (red: UInt8, green: UInt8, blue: UInt8) = (0xD8, 0xD8, 0xD8)
     public internal(set) var backgroundColor: (red: UInt8, green: UInt8, blue: UInt8) = (0x0D, 0x12, 0x0E)
+    /// Runtime color overrides set by programs via OSC 4 / 10 / 11 / 12. The
+    /// preset stays authoritative for the default look (`foregroundColor` etc.
+    /// above), but these layer on top: the renderer consults them before the
+    /// preset palette, and OSC `?` queries report them. Reset sequences (OSC
+    /// 104 / 110 / 111 / 112) clear them. Sparse — only overridden slots are
+    /// present, so `colorOverrides.isEmpty` is the common fast path (issue #25).
+    public internal(set) var colorOverrides = ColorOverrides()
     var nextImageSerial: UInt32 = 1
     var nextPlacementSerial: UInt32 = 1
     var totalImageBytes = 0
@@ -1234,10 +1241,13 @@ extension TerminalState: TerminalHandler {
     }
 
     public mutating func oscDispatch(_ payload: [UInt8]) {
-        guard let separator = payload.firstIndex(of: UInt8(ascii: ";")),
-              let code = Int(String(decoding: payload[..<separator], as: UTF8.self))
-        else { return }
-        let body = payload[(separator + 1)...]
+        // Most OSCs carry "code;body"; a few resets (104/110/111/112) arrive
+        // bare with no params and so no separator, so fall back to the whole
+        // payload as the code with an empty body.
+        let separator = payload.firstIndex(of: UInt8(ascii: ";"))
+        let codeBytes = separator.map { payload[..<$0] } ?? payload[...]
+        guard let code = Int(String(decoding: codeBytes, as: UTF8.self)) else { return }
+        let body = separator.map { payload[($0 + 1)...] } ?? payload[payload.endIndex...]
         switch code {
         case 0, 2:
             title = String(decoding: body, as: UTF8.self)
@@ -1248,13 +1258,28 @@ extension TerminalState: TerminalHandler {
             if let path = Self.fileURLPath(String(decoding: body, as: UTF8.self)) {
                 currentDirectory = path
             }
-        case 10, 11:
-            // Dynamic foreground (10) / background (11) color. We answer "?"
-            // queries so apps can detect light vs dark; explicit sets are
-            // ignored (the renderer owns the palette). xterm lets one OSC carry
-            // several ";"-separated specs that cascade to successive slots
-            // (10→fg, 11→bg, 12→cursor…), so walk them in order.
-            dynamicColorQuery(startCode: code, body: body)
+        case 4:
+            // Set/query ANSI palette entries: "4;index;spec" (repeatable).
+            paletteColor(body: body)
+        case 10, 11, 12:
+            // Dynamic foreground (10) / background (11) / cursor (12) color.
+            // A "?" spec is answered with the current value; any other spec
+            // sets a runtime override the renderer paints with. xterm lets one
+            // OSC carry several ";"-separated specs that cascade to successive
+            // slots (10→fg, 11→bg, 12→cursor), so walk them in order.
+            dynamicColor(startCode: code, body: body)
+        case 104:
+            // Reset palette entries: "104;index;index;…", or all when empty.
+            resetPaletteColors(body: body)
+        case 110, 111, 112:
+            // Reset foreground / background / cursor to the preset default.
+            let had: Bool
+            switch code {
+            case 110: had = colorOverrides.foreground != nil; colorOverrides.foreground = nil
+            case 111: had = colorOverrides.background != nil; colorOverrides.background = nil
+            default: had = colorOverrides.cursor != nil; colorOverrides.cursor = nil
+            }
+            if had { touch() }
         case 8:
             // "8;params;uri" — empty uri ends the link span.
             if let uriStart = body.firstIndex(of: UInt8(ascii: ";")) {
@@ -1300,23 +1325,84 @@ extension TerminalState: TerminalHandler {
         }
     }
 
-    /// OSC 10/11 dynamic-color query. `?` specs are answered with the current
-    /// color as `rgb:RRRR/GGGG/BBBB`; non-query specs (color sets) are skipped.
+    /// OSC 10/11/12 dynamic color. A `?` spec is answered with the current
+    /// color as `rgb:RRRR/GGGG/BBBB`; any other spec sets a runtime override.
     /// Multiple ";"-separated specs cascade to successive color slots, matching
     /// xterm: index 0 → `startCode`, index 1 → `startCode + 1`, and so on.
-    private mutating func dynamicColorQuery(startCode: Int, body: ArraySlice<UInt8>) {
+    /// Slots past 12 (the cursor) are neither tracked nor reported.
+    private mutating func dynamicColor(startCode: Int, body: ArraySlice<UInt8>) {
         var code = startCode
         for spec in body.split(separator: UInt8(ascii: ";"), omittingEmptySubsequences: false) {
             defer { code += 1 }
-            guard spec.count == 1, spec.first == UInt8(ascii: "?") else { continue }
-            let color: (red: UInt8, green: UInt8, blue: UInt8)
-            switch code {
-            case 10: color = foregroundColor
-            case 11: color = backgroundColor
-            default: continue // we don't track cursor (12) or later slots
+            guard code <= 12 else { break }
+            if spec.count == 1, spec.first == UInt8(ascii: "?") {
+                respond("\u{1B}]\(code);\(Self.xtermRGB(dynamicColorValue(code)))\u{1B}\\")
+            } else if let color = Self.parseColorSpec(spec) {
+                switch code {
+                case 10: colorOverrides.foreground = color
+                case 11: colorOverrides.background = color
+                default: colorOverrides.cursor = color
+                }
+                touch()
             }
-            respond("\u{1B}]\(code);\(Self.xtermRGB(color))\u{1B}\\")
         }
+    }
+
+    /// The current effective color for an OSC 10/11/12 query: the runtime
+    /// override if one is set, else the preset color the renderer reported. The
+    /// cursor (12) has no preset value of its own, so it defaults to the
+    /// foreground, as xterm does.
+    private func dynamicColorValue(_ code: Int) -> (red: UInt8, green: UInt8, blue: UInt8) {
+        switch code {
+        case 10: return colorOverrides.foreground ?? foregroundColor
+        case 11: return colorOverrides.background ?? backgroundColor
+        default: return colorOverrides.cursor ?? colorOverrides.foreground ?? foregroundColor
+        }
+    }
+
+    /// OSC 4: "index;spec" pairs. A `?` spec reports the slot as
+    /// `OSC 4;index;rgb:… ST` (override if set, else the base xterm palette);
+    /// any other spec sets a runtime override. Malformed indices or specs are
+    /// skipped without disturbing the rest.
+    private mutating func paletteColor(body: ArraySlice<UInt8>) {
+        let parts = body.split(separator: UInt8(ascii: ";"), omittingEmptySubsequences: false)
+        var i = 0
+        while i + 1 < parts.count {
+            defer { i += 2 }
+            guard let raw = Int(String(decoding: parts[i], as: UTF8.self)),
+                  (0...255).contains(raw) else { continue }
+            let index = UInt8(raw)
+            let spec = parts[i + 1]
+            if spec.count == 1, spec.first == UInt8(ascii: "?") {
+                let color = colorOverrides.palette[index] ?? Self.defaultPaletteColor(index)
+                respond("\u{1B}]4;\(raw);\(Self.xtermRGB(color))\u{1B}\\")
+            } else if let color = Self.parseColorSpec(spec) {
+                colorOverrides.palette[index] = color
+                touch()
+            }
+        }
+    }
+
+    /// OSC 104: clear palette overrides for the listed indices, or every slot
+    /// when no index is given.
+    private mutating func resetPaletteColors(body: ArraySlice<UInt8>) {
+        let trimmed = body.drop { $0 == UInt8(ascii: ";") }
+        guard !trimmed.isEmpty else {
+            if !colorOverrides.palette.isEmpty {
+                colorOverrides.palette.removeAll()
+                touch()
+            }
+            return
+        }
+        var changed = false
+        for part in body.split(separator: UInt8(ascii: ";")) {
+            if let raw = Int(String(decoding: part, as: UTF8.self)),
+               (0...255).contains(raw),
+               colorOverrides.palette.removeValue(forKey: UInt8(raw)) != nil {
+                changed = true
+            }
+        }
+        if changed { touch() }
     }
 
     /// xterm's `rgb:RRRR/GGGG/BBBB` 16-bit-per-channel reply form. Each 8-bit

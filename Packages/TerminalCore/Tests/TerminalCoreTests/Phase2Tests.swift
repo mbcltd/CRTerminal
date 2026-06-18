@@ -308,16 +308,96 @@ struct MiscVTTests {
             "\u{1B}]10;rgb:0000/0000/0000\u{1B}\\\u{1B}]11;rgb:ffff/ffff/ffff\u{1B}\\".utf8))
     }
 
-    @Test func osc11SetIsIgnored() {
-        // The renderer owns the palette, so a color set produces no reply and
-        // leaves the reported background unchanged.
+    @Test func osc11SetOverridesBackgroundAndQueryReportsIt() {
+        // A runtime set now wins (issue #25): no reply, but a later "?" reports
+        // the override, not the preset background.
         var t = makeTerminal()
         t.setColors(foreground: (0x1C, 0x1C, 0x1C), background: (0xF7, 0xF6, 0xF2))
         t.feed("\u{1B}]11;rgb:0000/0000/0000\u{1B}\\")
         #expect(t.drainResponses().isEmpty)
+        #expect(t.state.colorOverrides.background.map { [$0.red, $0.green, $0.blue] } == [0, 0, 0])
         t.feed("\u{1B}]11;?\u{1B}\\")
         #expect(t.drainResponses()
-            == Array("\u{1B}]11;rgb:f7f7/f6f6/f2f2\u{1B}\\".utf8))
+            == Array("\u{1B}]11;rgb:0000/0000/0000\u{1B}\\".utf8))
+    }
+
+    @Test func osc110ResetsForegroundToPreset() {
+        var t = makeTerminal()
+        t.setColors(foreground: (0x1C, 0x1C, 0x1C), background: (0xF7, 0xF6, 0xF2))
+        t.feed("\u{1B}]10;rgb:ffff/0000/0000\u{1B}\\")
+        #expect(t.state.colorOverrides.foreground != nil)
+        t.feed("\u{1B}]110\u{1B}\\") // bare reset, no params
+        #expect(t.state.colorOverrides.foreground == nil)
+        t.feed("\u{1B}]10;?\u{1B}\\")
+        #expect(t.drainResponses()
+            == Array("\u{1B}]10;rgb:1c1c/1c1c/1c1c\u{1B}\\".utf8))
+    }
+
+    @Test func osc12SetsAndQueriesCursorColor() {
+        var t = makeTerminal()
+        t.setColors(foreground: (0x1C, 0x1C, 0x1C), background: (0xF7, 0xF6, 0xF2))
+        // Unset cursor reports the foreground.
+        t.feed("\u{1B}]12;?\u{1B}\\")
+        #expect(t.drainResponses() == Array("\u{1B}]12;rgb:1c1c/1c1c/1c1c\u{1B}\\".utf8))
+        t.feed("\u{1B}]12;#00ff00\u{1B}\\")
+        #expect(t.state.colorOverrides.cursor.map { [$0.red, $0.green, $0.blue] } == [0, 255, 0])
+        t.feed("\u{1B}]12;?\u{1B}\\")
+        #expect(t.drainResponses() == Array("\u{1B}]12;rgb:0000/ffff/0000\u{1B}\\".utf8))
+        t.feed("\u{1B}]112\u{1B}\\")
+        #expect(t.state.colorOverrides.cursor == nil)
+    }
+
+    @Test func osc10CascadeSetsFgBgCursor() {
+        // One OSC 10 carrying three specs flows 10→fg, 11→bg, 12→cursor.
+        var t = makeTerminal()
+        t.feed("\u{1B}]10;rgb:1111/2222/3333;#445566;red\u{1B}\\")
+        #expect(t.state.colorOverrides.foreground.map { [$0.red, $0.green, $0.blue] } == [0x11, 0x22, 0x33])
+        #expect(t.state.colorOverrides.background.map { [$0.red, $0.green, $0.blue] } == [0x44, 0x55, 0x66])
+        #expect(t.state.colorOverrides.cursor.map { [$0.red, $0.green, $0.blue] } == [255, 0, 0])
+    }
+
+    @Test func osc4SetsPaletteSlotAndQueryReportsIt() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]4;1;rgb:ffff/0000/0000\u{1B}\\")
+        #expect(t.state.colorOverrides.palette[1].map { [$0.red, $0.green, $0.blue] } == [255, 0, 0])
+        t.feed("\u{1B}]4;1;?\u{1B}\\")
+        #expect(t.drainResponses() == Array("\u{1B}]4;1;rgb:ffff/0000/0000\u{1B}\\".utf8))
+    }
+
+    @Test func osc4QueryUnsetSlotReportsBasePalette() {
+        // Slot 196 in the xterm cube is (255, 0, 0).
+        var t = makeTerminal()
+        t.feed("\u{1B}]4;196;?\u{1B}\\")
+        #expect(t.drainResponses() == Array("\u{1B}]4;196;rgb:ffff/0000/0000\u{1B}\\".utf8))
+    }
+
+    @Test func osc4MultiplePairsInOneSequence() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]4;1;#ff0000;2;rgb:00/ff/00\u{1B}\\")
+        #expect(t.state.colorOverrides.palette[1].map { [$0.red, $0.green, $0.blue] } == [255, 0, 0])
+        #expect(t.state.colorOverrides.palette[2].map { [$0.red, $0.green, $0.blue] } == [0, 255, 0])
+    }
+
+    @Test func osc104ResetsPaletteSlots() {
+        var t = makeTerminal()
+        t.feed("\u{1B}]4;1;#ff0000;2;#00ff00\u{1B}\\")
+        t.feed("\u{1B}]104;1\u{1B}\\") // reset only slot 1
+        #expect(t.state.colorOverrides.palette[1] == nil)
+        #expect(t.state.colorOverrides.palette[2] != nil)
+        t.feed("\u{1B}]104\u{1B}\\") // reset all
+        #expect(t.state.colorOverrides.palette.isEmpty)
+    }
+
+    @Test func malformedColorSpecsLeaveStateUnchanged() {
+        var t = makeTerminal()
+        // Bad index, garbage spec, missing fields — none should mutate or trap.
+        t.feed("\u{1B}]4;999;#ff0000\u{1B}\\")      // index out of range
+        t.feed("\u{1B}]4;1;not-a-color\u{1B}\\")     // unparseable spec
+        t.feed("\u{1B}]4;1;rgb:ff/00\u{1B}\\")       // missing channel
+        t.feed("\u{1B}]10;rgb:zz/00/00\u{1B}\\")     // bad hex
+        #expect(t.state.colorOverrides.palette.isEmpty)
+        #expect(t.state.colorOverrides.foreground == nil)
+        #expect(t.drainResponses().isEmpty)
     }
 }
 

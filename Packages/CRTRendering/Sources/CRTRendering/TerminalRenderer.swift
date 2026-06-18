@@ -549,8 +549,10 @@ public final class TerminalRenderer {
         encodeLock.lock()
         defer { encodeLock.unlock() }
         // Adopt the pass's scheme while holding the lock so the encode-path
-        // readers (resolveColors, emitShapedRuns) are stable.
-        scheme = resolvedScheme
+        // readers (resolveColors, emitShapedRuns) are stable. Layer the
+        // terminal's runtime OSC color overrides (4/10/11/12) on top of the
+        // preset scheme so program-set colors win (issue #25).
+        scheme = resolvedScheme.applyingOverrides(state.colorOverrides)
         let cellW = Float(cellSize.width * scale)
         let cellH = Float(cellSize.height * scale)
         let baselineOffset = Float(ascent * scale)
@@ -706,12 +708,12 @@ public final class TerminalRenderer {
                 overlayInstances.append(BgInstance(
                     origin: origin,
                     size: SIMD2(max(1, Float(scale)), cellH),
-                    color: scheme.foreground))
+                    color: scheme.cursorColor))
             case .underline:
                 overlayInstances.append(BgInstance(
                     origin: SIMD2(origin.x, origin.y + cellH - lineThickness * 2),
                     size: SIMD2(cellW, lineThickness * 2),
-                    color: scheme.foreground))
+                    color: scheme.cursorColor))
             case .block:
                 break
             }
@@ -901,6 +903,10 @@ public final class TerminalRenderer {
         var bg = scheme.resolve(cell.background, isForeground: false, bold: false)
         if attrs.contains(.inverse) != isCursor { // inverse XOR block cursor
             swap(&fg, &bg)
+            // The block cursor fills with the cursor color (foreground by
+            // default, recolored by OSC 12); the glyph keeps the cell's
+            // background so text reads as a cut-out (issue #25).
+            if isCursor { bg = scheme.cursorColor }
         }
         if attrs.contains(.hidden) {
             fg = bg
