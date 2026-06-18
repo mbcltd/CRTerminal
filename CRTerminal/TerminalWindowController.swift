@@ -12,6 +12,9 @@ final class SessionTab {
     /// Each session wears its own theme; new sessions start from the
     /// global settings default.
     var preset: CRTPreset
+    /// User-chosen name that overrides the inferred one (process/OSC title).
+    /// `nil` (or empty) means fall back to the automatic name.
+    var customName: String?
     /// Bells (and notifications) that arrived while the session wasn't
     /// being watched; the sidebar badges the row until the tab is viewed.
     var unseenBells = 0
@@ -115,6 +118,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         sidebar.isHidden = true
         sidebar.onSelect = { [weak self] index in self?.selectTab(index) }
         sidebar.onClose = { [weak self] index in self?.closeSession(at: index) }
+        sidebar.onRename = { [weak self] id, name in self?.renameSession(id: id, to: name) }
         sidebar.onNewSession = { [weak self] in self?.addSession() }
         sidebar.onHover = { [weak self] index, rowFrame in
             self?.hoverChanged(index: index, rowFrame: rowFrame)
@@ -595,7 +599,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         let tabNodes = tabs.compactMap { tab -> TabNode? in
             guard let rootView = tab.container.subviews.first,
                   let root = Self.captureSplitNode(from: rootView) else { return nil }
-            return TabNode(uuid: tab.id, presetName: tab.preset.name, root: root)
+            return TabNode(
+                uuid: tab.id, presetName: tab.preset.name, root: root,
+                customName: tab.customName)
         }
         return WindowNode(
             frame: window?.frame ?? .zero,
@@ -648,6 +654,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             let preset = PresetCatalog.all.first { $0.name == tabNode.presetName }
                 ?? currentPreset()
             let tab = SessionTab(preset: preset)
+            tab.customName = tabNode.customName
             tab.container.frame = contentHost.bounds
             tab.container.autoresizingMask = [.width, .height]
             contentHost.addSubview(tab.container)
@@ -776,6 +783,28 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Sidebar metadata
 
+    /// The name shown for a tab: the user's custom name when set (non-empty),
+    /// otherwise the inferred one — the shell's OSC title, falling back to the
+    /// process/shell name. Single source of truth for the row, hover card, and
+    /// window title.
+    func displayTitle(for tab: SessionTab) -> String {
+        if let custom = tab.customName, !custom.isEmpty { return custom }
+        let session = tab.panes.first?.session
+        let shellName = session.flatMap { SessionInfo.processName(of: $0.shellProcessID) }
+            ?? (settings.shellPath as NSString?)?.lastPathComponent ?? "shell"
+        return session?.snapshot.title ?? shellName
+    }
+
+    /// Apply a user-chosen name to a session (empty/whitespace reverts to the
+    /// automatic name), then refresh the sidebar and persist the new layout.
+    func renameSession(id: UUID, to newName: String?) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        let trimmed = newName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        tab.customName = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        refreshSessionMetadata()
+        noteSignificantChange()
+    }
+
     /// Cheap kernel probes each tick; git runs async behind a short cache.
     /// Internal so alert-settings changes can re-apply without waiting a tick.
     func refreshSessionMetadata() {
@@ -790,7 +819,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             let isRunning = foreground > 0 && foreground != shellPID
             let shellName = SessionInfo.processName(of: shellPID)
                 ?? (settings.shellPath as NSString?)?.lastPathComponent ?? "shell"
-            let title = session.snapshot.title ?? shellName
+            let automaticName = session.snapshot.title ?? shellName
+            let title = displayTitle(for: tab)
             let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
                 ?? SessionInfo.workingDirectory(of: shellPID)
             var metaLine: String
@@ -805,7 +835,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 metaLine += " · \(progress.percent)%"
             }
             rows.append(SessionRowModel(
-                id: tab.id, index: index + 1, title: title, metaLine: metaLine,
+                id: tab.id, index: index + 1, title: title,
+                customName: tab.customName, automaticName: automaticName,
+                metaLine: metaLine,
                 isActive: index == activeTabIndex, isRunning: isRunning,
                 dirtyCount: dirtyCounts[tab.id],
                 attentionCount: AlertSettings.shared.sidebarBadges
@@ -854,7 +886,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         let lastExit = session.snapshot.promptMarks.last(where: { $0.exitCode != nil })?
             .exitCode
         var model = SessionCardModel(
-            title: session.snapshot.title ?? shellName,
+            title: displayTitle(for: tab),
             index: index + 1,
             isRunning: isRunning,
             statusText: isRunning ? "running" : "idle",

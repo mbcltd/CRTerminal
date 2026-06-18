@@ -327,6 +327,60 @@ struct SessionTabLifecycleTests {
         #expect(secondCwd == "/private/tmp")
     }
 
+    @Test @MainActor func renameSessionOverridesTitleAndPersists() {
+        let controller = TerminalWindowController(settings: TerminalSettings())
+        defer { controller.window?.close() }
+        let tab = controller.tabs[0]
+
+        controller.renameSession(id: tab.id, to: "deploy box")
+        #expect(tab.customName == "deploy box")
+        #expect(controller.displayTitle(for: tab) == "deploy box")
+        // The name rides into the layout snapshot for restoration.
+        #expect(controller.captureLayout().tabs.first?.customName == "deploy box")
+
+        // Empty/whitespace reverts to the automatic (inferred) name.
+        controller.renameSession(id: tab.id, to: "   ")
+        #expect(tab.customName == nil)
+        #expect(controller.displayTitle(for: tab) != "deploy box")
+        #expect(!controller.displayTitle(for: tab).isEmpty)
+        #expect(controller.captureLayout().tabs.first?.customName == nil)
+    }
+
+    @Test @MainActor func renamePopoverCommitsTypedNameEmptyRevertsAndResets() {
+        let theme = SidebarTheme(preset: .darkStandard)
+
+        // A typed name commits verbatim; commitIfNeeded is idempotent.
+        let typed = RenamePopoverController(
+            theme: theme, customName: nil, automaticName: "zsh")
+        var typedResult: [String?] = []
+        typed.onCommit = { typedResult.append($0) }
+        typed.setNameForTest("build box")
+        typed.commitIfNeeded()
+        typed.commitIfNeeded()
+        #expect(typedResult.count == 1)
+        #expect(typedResult.first ?? nil == "build box")
+
+        // Empty/whitespace commits nil — revert to automatic.
+        let blank = RenamePopoverController(
+            theme: theme, customName: "old", automaticName: "zsh")
+        var blankResult: [String?] = []
+        blank.onCommit = { blankResult.append($0) }
+        blank.setNameForTest("   ")
+        blank.commitIfNeeded()
+        #expect(blankResult.count == 1)
+        #expect(blankResult.first ?? "x" == nil)
+
+        // The reset button reverts regardless of typed text.
+        let reset = RenamePopoverController(
+            theme: theme, customName: "old", automaticName: "zsh")
+        var resetResult: [String?] = []
+        reset.onCommit = { resetResult.append($0) }
+        reset.setNameForTest("ignored")
+        reset.resetForTest()
+        #expect(resetResult.count == 1)
+        #expect(resetResult.first ?? "x" == nil)
+    }
+
     @Test @MainActor func closeSessionClosesTheWholeTab() {
         let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }

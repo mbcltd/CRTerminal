@@ -156,6 +156,10 @@ struct SessionRowModel: Equatable {
     var id: UUID
     var index: Int       // 1-based; ⌘index jumps here
     var title: String
+    /// The user's custom name (nil when automatic) and the inferred name —
+    /// both feed the rename popover (seed + placeholder).
+    var customName: String? = nil
+    var automaticName: String = ""
     var metaLine: String
     var isActive: Bool
     var isRunning: Bool
@@ -196,6 +200,9 @@ final class SessionSidebarView: NSView {
     var onSelect: ((Int) -> Void)?
     /// The row's hover ✕: close the session at this index.
     var onClose: ((Int) -> Void)?
+    /// Commit a renamed session: the tab's id and the new name (nil = revert
+    /// to the automatic name).
+    var onRename: ((UUID, String?) -> Void)?
     var onNewSession: (() -> Void)?
     /// Hover changed: row index (into the models array) or nil, plus the
     /// row's frame in the sidebar's coordinates for card placement.
@@ -208,6 +215,8 @@ final class SessionSidebarView: NSView {
 
     private(set) var theme: SidebarTheme
     private var rowViews: [SessionRowView] = []
+    /// The open rename popover, if any.
+    private var renamePopover: NSPopover?
     /// Insertion gap (0...count) the current drag would drop into. The
     /// indicator is drawn by `rowContainer` so it scrolls with the rows.
     private var dropGap: Int? {
@@ -318,6 +327,11 @@ final class SessionSidebarView: NSView {
                 guard let self, let row,
                       let index = self.rowViews.firstIndex(of: row) else { return }
                 self.onClose?(index)
+            }
+            row.onBeginRename = { [weak self, weak row] in
+                guard let self, let row,
+                      let index = self.rowViews.firstIndex(of: row) else { return }
+                self.beginRenaming(at: index)
             }
             row.onHoverChange = { [weak self, weak row] hovering in
                 guard let self, let row,
@@ -540,6 +554,35 @@ final class SessionSidebarView: NSView {
         }
     }
 
+    // MARK: Rename popover
+
+    /// Opens a small popover anchored to the row, with a text field to name the
+    /// session (and a button to revert to the automatic name). A popover hosts
+    /// its field in its own key window, so the terminal view can't steal focus
+    /// the way an in-rail inline field would.
+    func beginRenaming(at index: Int) {
+        guard rowViews.indices.contains(index),
+              let model = rowViews[index].model else { return }
+        renamePopover?.close()
+        let tabID = model.id
+        let controller = RenamePopoverController(
+            theme: theme, customName: model.customName,
+            automaticName: model.automaticName)
+        controller.onCommit = { [weak self] name in
+            self?.onRename?(tabID, name)
+            self?.renamePopover?.close()
+        }
+        controller.onCancel = { [weak self] in self?.renamePopover?.close() }
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        popover.delegate = self
+        // Anchor to the visible row rect (rows live in the scrolled document).
+        let anchor = convert(rowViews[index].frame, from: rowContainer)
+        renamePopover = popover
+        popover.show(relativeTo: anchor, of: self, preferredEdge: .maxX)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         theme.background.setFill()
         bounds.fill()
@@ -599,6 +642,114 @@ final class RowContainerView: NSView {
     }
 }
 
+/// Commit the typed name when the popover closes (click-away), unless ⏎ or the
+/// reset button already did. The popover hosts the field in its own key window,
+/// so focus is stable — no fighting the terminal view for first responder.
+extension SessionSidebarView: NSPopoverDelegate {
+    func popoverWillClose(_ notification: Notification) {
+        (renamePopover?.contentViewController as? RenamePopoverController)?.commitIfNeeded()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        renamePopover = nil
+    }
+}
+
+/// The rename popover's content: a labelled text field seeded with the session's
+/// custom name (placeholder shows the automatic one), plus a button to revert to
+/// automatic. ⏎ or closing the popover commits; Esc / the reset button revert.
+final class RenamePopoverController: NSViewController, NSTextFieldDelegate {
+    private let field = NSTextField()
+    private let theme: SidebarTheme
+    private let customName: String?
+    private let automaticName: String
+    /// Fired with the new name; nil means revert to the automatic name.
+    var onCommit: ((String?) -> Void)?
+    /// Fired when the edit is abandoned (Esc) — dismiss without committing.
+    var onCancel: (() -> Void)?
+    private var committed = false
+
+    init(theme: SidebarTheme, customName: String?, automaticName: String) {
+        self.theme = theme
+        self.customName = customName
+        self.automaticName = automaticName
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("RenamePopoverController is created in code") }
+
+    override func loadView() {
+        let width: CGFloat = 260
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 96))
+
+        let heading = NSTextField(labelWithString: "Session name")
+        heading.font = .systemFont(ofSize: 11, weight: .semibold)
+        heading.textColor = theme.dim
+        heading.frame = NSRect(x: 14, y: 66, width: width - 28, height: 16)
+        root.addSubview(heading)
+
+        field.font = .systemFont(ofSize: 13)
+        field.stringValue = customName ?? ""
+        field.placeholderString = automaticName
+        field.delegate = self
+        field.frame = NSRect(x: 14, y: 38, width: width - 28, height: 24)
+        root.addSubview(field)
+
+        let reset = NSButton(
+            title: "Reset to automatic", target: self, action: #selector(resetTapped))
+        reset.bezelStyle = .rounded
+        reset.controlSize = .small
+        reset.font = .systemFont(ofSize: 11)
+        reset.isEnabled = customName != nil
+        reset.sizeToFit()
+        reset.frame = NSRect(
+            x: 14, y: 8, width: reset.frame.width, height: reset.frame.height)
+        root.addSubview(reset)
+
+        view = root
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        view.window?.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    /// Commit whatever is typed (used when the popover closes by click-away).
+    func commitIfNeeded() {
+        guard !committed else { return }
+        committed = true
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        onCommit?(trimmed.isEmpty ? nil : trimmed)
+    }
+
+    @objc private func resetTapped() {
+        committed = true
+        onCommit?(nil)
+    }
+
+    /// Test hooks: set the field text as if typed / tap the reset button.
+    func setNameForTest(_ s: String) { loadViewIfNeeded(); field.stringValue = s }
+    func resetForTest() { resetTapped() }
+
+    func control(
+        _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
+    ) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            commitIfNeeded()  // onCommit closes the popover
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            committed = true  // abandon: dismiss without committing
+            onCancel?()
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 extension SessionSidebarView: NSDraggingSource {
     func draggingSession(
         _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
@@ -630,12 +781,16 @@ final class SessionRowView: NSView {
     }
     var onClick: (() -> Void)?
     var onClose: (() -> Void)?
+    /// Fired when the hover pen is clicked or the row is double-clicked: begin
+    /// editing this session's name in place.
+    var onBeginRename: (() -> Void)?
     var onHoverChange: ((Bool) -> Void)?
     /// Fired once when a press turns into a drag (passes the drag event).
     var onDragStart: ((NSEvent) -> Void)?
 
     private var isHovered = false
     private var isCloseHovered = false
+    private var isPenHovered = false
     private var mouseDownLocation: NSPoint?
     private let pulseDot = CALayer()
     /// Amber attention dot, pulsing until the session is viewed.
@@ -653,6 +808,12 @@ final class SessionRowView: NSView {
     /// The hover-only ✕ pinned to the right edge.
     private var closeRect: NSRect {
         NSRect(x: bounds.width - 10 - 16, y: bounds.midY - 8, width: 16, height: 16)
+    }
+
+    /// The hover-only rename pen: a leading accessory just right of the icon
+    /// chip (chip ends at x 38), vertically centred like the chip.
+    private var penRect: NSRect {
+        NSRect(x: 42, y: bounds.midY - 8, width: 16, height: 16)
     }
 
     override var isFlipped: Bool { true }
@@ -779,15 +940,18 @@ final class SessionRowView: NSView {
     func setHovered(_ hovered: Bool) {
         guard hovered != isHovered else { return }
         isHovered = hovered
-        if !hovered { isCloseHovered = false }
+        if !hovered { isCloseHovered = false; isPenHovered = false }
         needsDisplay = true
         onHoverChange?(hovered)
     }
 
     override func mouseMoved(with event: NSEvent) {
-        let inClose = closeRect.contains(convert(event.locationInWindow, from: nil))
-        if inClose != isCloseHovered {
+        let point = convert(event.locationInWindow, from: nil)
+        let inClose = closeRect.contains(point)
+        let inPen = penRect.contains(point)
+        if inClose != isCloseHovered || inPen != isPenHovered {
             isCloseHovered = inClose
+            isPenHovered = inPen
             needsDisplay = true
         }
     }
@@ -817,9 +981,33 @@ final class SessionRowView: NSView {
         guard bounds.contains(point) else { return }
         if isHovered && closeRect.contains(point) {
             onClose?()
+        } else if isHovered && penRect.contains(point) {
+            onBeginRename?()
+        } else if event.clickCount == 2 {
+            // A slow second click renames in place (the first click selected).
+            onBeginRename?()
         } else {
             onClick?()
         }
+    }
+
+    /// Draws an SF Symbol, palette-tinted, centred in `rect`. `respectFlipped`
+    /// keeps it upright in the row's flipped coordinates.
+    static func drawSymbol(
+        _ name: String, in rect: NSRect, color: NSColor,
+        pointSize: CGFloat, weight: NSFont.Weight
+    ) {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config) else { return }
+        let size = image.size
+        let target = NSRect(
+            x: rect.midX - size.width / 2, y: rect.midY - size.height / 2,
+            width: size.width, height: size.height)
+        image.draw(
+            in: target, from: .zero, operation: .sourceOver, fraction: 1,
+            respectFlipped: true, hints: nil)
     }
 
     /// A bitmap of the row as currently drawn, for the drag image.
@@ -872,11 +1060,24 @@ final class SessionRowView: NSView {
                 y: chipRect.midY - glyphSize.height / 2),
             withAttributes: glyphAttrs)
 
-        let textX = chipRect.maxX + 10
+        // Title/meta start past the chip, nudging right on hover to make room
+        // for the leading rename pen.
+        let textX = isHovered ? penRect.maxX + 6 : chipRect.maxX + 10
         var textRight = bounds.width - 10
 
-        // Hover-only close widget; the badge and title shuffle left of it.
         if isHovered {
+            // Leading rename pen, between the chip and the title.
+            let pen = penRect
+            if isPenHovered {
+                theme.chip.setFill()
+                NSBezierPath(roundedRect: pen, xRadius: 5, yRadius: 5).fill()
+            }
+            Self.drawSymbol(
+                "square.and.pencil", in: pen,
+                color: isPenHovered ? theme.text : theme.dim,
+                pointSize: 12, weight: .semibold)
+
+            // Close ✕ pinned right; badges and title shuffle left of it.
             let close = closeRect
             if isCloseHovered {
                 theme.chip.setFill()

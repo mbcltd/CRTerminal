@@ -41,7 +41,8 @@ enum JumpTargetBuilder {
 
     /// Each provider derives zero or more facets per session tab.
     static var facetProviders: [FacetProvider] {
-        [titleFacets, commandFacets, directoryFacets, branchFacets] + extraProviders
+        [nameFacets, titleFacets, commandFacets, directoryFacets, branchFacets]
+            + extraProviders
     }
 
     static func targets(
@@ -61,7 +62,8 @@ enum JumpTargetBuilder {
                 targets.append(JumpTarget(
                     controller: controller,
                     tabID: tab.id,
-                    title: facets.first { $0.kind == "title" }?.text ?? "session",
+                    title: facets.first { $0.kind == "name" }?.text
+                        ?? facets.first { $0.kind == "title" }?.text ?? "session",
                     subtitle: subtitle(
                         context: context, facets: facets,
                         showWindow: controllers.count > 1),
@@ -78,7 +80,9 @@ enum JumpTargetBuilder {
     ) -> String {
         var parts: [String] = []
         if showWindow { parts.append("Window \(context.windowNumber)") }
-        for facet in facets where facet.kind != "title" {
+        // Skip the title-ish facets: "name" (the user's name) and "title" are
+        // already shown as the result's title line.
+        for facet in facets where facet.kind != "title" && facet.kind != "name" {
             parts.append(facet.kind == "branch" ? "⎇ \(facet.text)" : facet.text)
         }
         if context.sessions.count > 1 {
@@ -88,6 +92,14 @@ enum JumpTargetBuilder {
     }
 
     // MARK: Built-in providers
+
+    /// The user's custom name, when set. Weighted above the inferred title so
+    /// an explicitly named session ranks first; the inferred facets stay so a
+    /// renamed session is still findable by its process/cwd/branch.
+    private static func nameFacets(_ context: JumpFacetContext) -> [SessionFacet] {
+        guard let name = context.tab.customName, !name.isEmpty else { return [] }
+        return [SessionFacet(kind: "name", text: name, weight: 2.5)]
+    }
 
     private static func titleFacets(_ context: JumpFacetContext) -> [SessionFacet] {
         guard let session = context.sessions.first else { return [] }
