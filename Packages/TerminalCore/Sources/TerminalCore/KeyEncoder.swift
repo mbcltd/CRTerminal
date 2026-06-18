@@ -23,6 +23,7 @@ public struct KeyModifiers: OptionSet, Sendable {
 }
 
 /// Kitty keyboard protocol progressive-enhancement flags (CSI > flags u).
+/// The five flags of the [kitty spec](https://sw.kovidgoyal.net/kitty/keyboard-protocol/).
 public struct KittyKeyboardFlags: OptionSet, Sendable, Equatable {
     public var rawValue: Int
 
@@ -30,10 +31,23 @@ public struct KittyKeyboardFlags: OptionSet, Sendable, Equatable {
         self.rawValue = rawValue & 0b11111
     }
 
-    /// Flag 1: escape and modified keys get unambiguous CSI u encodings.
+    /// 0b1 — escape and modified keys get unambiguous CSI u encodings.
     public static let disambiguate = KittyKeyboardFlags(rawValue: 1 << 0)
-    // Flags 2–16 (event types, alternate keys, all-keys-as-escapes,
-    // associated text) are accepted on the wire but not yet honored.
+    /// 0b10 — append `:event-type` (press/repeat/release) to the encoded form.
+    public static let reportEventTypes = KittyKeyboardFlags(rawValue: 1 << 1)
+    /// 0b100 — append `:shifted-key:base-layout-key` alternate codepoints.
+    public static let reportAlternateKeys = KittyKeyboardFlags(rawValue: 1 << 2)
+    /// 0b1000 — report every key as an escape code (even plain text).
+    public static let reportAllKeysAsEscapeCodes = KittyKeyboardFlags(rawValue: 1 << 3)
+    /// 0b10000 — append the associated text codepoints as a trailing field.
+    public static let reportAssociatedText = KittyKeyboardFlags(rawValue: 1 << 4)
+}
+
+/// Kitty key event type: the third sub-field of the modifier parameter.
+public enum KeyEventType: Int, Sendable, Equatable {
+    case press = 1
+    case `repeat` = 2
+    case release = 3
 }
 
 /// Pure (key, modifiers, modes) → bytes. The view translates NSEvents into
@@ -44,37 +58,39 @@ public enum KeyEncoder {
         _ key: TerminalKey,
         modifiers: KeyModifiers = [],
         applicationCursorKeys: Bool = false,
-        kittyFlags: KittyKeyboardFlags = []
+        kittyFlags: KittyKeyboardFlags = [],
+        eventType: KeyEventType = .press
     ) -> [UInt8] {
-        if kittyFlags.contains(.disambiguate) {
-            // Escape is the headline ambiguity CSI u resolves; Enter, Tab
-            // and Backspace keep their legacy encodings at this level
-            // unless modified.
+        let allKeys = kittyFlags.contains(.reportAllKeysAsEscapeCodes)
+        if kittyFlags.contains(.disambiguate) || allKeys {
+            // Escape is the headline ambiguity CSI u resolves; Enter, Tab and
+            // Backspace keep their legacy encodings at the disambiguate level
+            // unless modified, but the all-keys level reports them too.
             switch key {
             case .escape:
-                return csiU(27, modifiers)
-            case .enter where !modifiers.isEmpty:
-                return csiU(13, modifiers)
-            case .tab where modifiers == [.shift]:
+                return csiU(27, modifiers, kittyFlags, eventType)
+            case .enter where allKeys || !modifiers.isEmpty:
+                return csiU(13, modifiers, kittyFlags, eventType)
+            case .tab where modifiers == [.shift] && !allKeys:
                 return bytes("\u{1B}[Z") // back-tab predates kitty; keep it
-            case .tab where !modifiers.isEmpty:
-                return csiU(9, modifiers)
-            case .backspace where !modifiers.isEmpty:
-                return csiU(127, modifiers)
+            case .tab where allKeys || !modifiers.isEmpty:
+                return csiU(9, modifiers, kittyFlags, eventType)
+            case .backspace where allKeys || !modifiers.isEmpty:
+                return csiU(127, modifiers, kittyFlags, eventType)
             default:
                 break
             }
         }
         switch key {
-        case .up: return cursorKey("A", modifiers, applicationCursorKeys)
-        case .down: return cursorKey("B", modifiers, applicationCursorKeys)
-        case .right: return cursorKey("C", modifiers, applicationCursorKeys)
-        case .left: return cursorKey("D", modifiers, applicationCursorKeys)
-        case .home: return cursorKey("H", modifiers, applicationCursorKeys)
-        case .end: return cursorKey("F", modifiers, applicationCursorKeys)
-        case .pageUp: return tildeKey(5, modifiers)
-        case .pageDown: return tildeKey(6, modifiers)
-        case .deleteForward: return tildeKey(3, modifiers)
+        case .up: return cursorKey("A", modifiers, applicationCursorKeys, kittyFlags, eventType)
+        case .down: return cursorKey("B", modifiers, applicationCursorKeys, kittyFlags, eventType)
+        case .right: return cursorKey("C", modifiers, applicationCursorKeys, kittyFlags, eventType)
+        case .left: return cursorKey("D", modifiers, applicationCursorKeys, kittyFlags, eventType)
+        case .home: return cursorKey("H", modifiers, applicationCursorKeys, kittyFlags, eventType)
+        case .end: return cursorKey("F", modifiers, applicationCursorKeys, kittyFlags, eventType)
+        case .pageUp: return tildeKey(5, modifiers, kittyFlags, eventType)
+        case .pageDown: return tildeKey(6, modifiers, kittyFlags, eventType)
+        case .deleteForward: return tildeKey(3, modifiers, kittyFlags, eventType)
         case .enter:
             // Alt/Option is Meta: Meta+Enter is the CR prefixed with ESC,
             // the legacy encoding apps (e.g. readline) expect to tell it
@@ -83,22 +99,37 @@ public enum KeyEncoder {
         case .tab: return modifiers.contains(.shift) ? bytes("\u{1B}[Z") : [0x09]
         case .backspace: return [0x7F]
         case .escape: return [0x1B]
-        case .function(let n): return functionKey(n, modifiers)
+        case .function(let n): return functionKey(n, modifiers, kittyFlags, eventType)
         }
     }
 
-    /// Character keys with modifiers under the kitty protocol: returns the
-    /// CSI u encoding when disambiguation calls for one, nil when the
-    /// caller should fall back to legacy bytes (plain text, ^C, ESC-prefix).
+    /// Character keys under the kitty protocol: returns the CSI u encoding when
+    /// the protocol calls for one (a modified key while disambiguating, or any
+    /// key once `reportAllKeysAsEscapeCodes` is on), nil when the caller should
+    /// fall back to legacy bytes (plain text, ^C, ESC-prefix).
+    ///
+    /// `scalar` is the key's base (unshifted) codepoint. When `reportAlternateKeys`
+    /// is set, `shiftedScalar` / `baseScalar` add the `:shifted:base` sub-fields;
+    /// when `reportAssociatedText` is set, `text` adds the trailing text field.
     public static func encodeCharacter(
         _ scalar: Unicode.Scalar,
         modifiers: KeyModifiers,
-        kittyFlags: KittyKeyboardFlags
+        kittyFlags: KittyKeyboardFlags,
+        eventType: KeyEventType = .press,
+        shiftedScalar: Unicode.Scalar? = nil,
+        baseScalar: Unicode.Scalar? = nil,
+        text: String? = nil
     ) -> [UInt8]? {
-        guard kittyFlags.contains(.disambiguate),
-              modifiers.contains(.control) || modifiers.contains(.option)
+        let modified = modifiers.contains(.control) || modifiers.contains(.option)
+        guard kittyFlags.contains(.reportAllKeysAsEscapeCodes)
+                || (kittyFlags.contains(.disambiguate) && modified)
         else { return nil }
-        return csiU(Int(scalar.value), modifiers)
+        let shifted = shiftedScalar.map { Int($0.value) }
+        let base = baseScalar.map { Int($0.value) }
+        let textCodepoints = text.map { $0.unicodeScalars.map { Int($0.value) } } ?? []
+        return csiU(
+            Int(scalar.value), modifiers, kittyFlags, eventType,
+            shifted: shifted, base: base, text: textCodepoints)
     }
 
     /// Control-key combination, e.g. ^C. Returns nil if the character has no
@@ -140,40 +171,75 @@ public enum KeyEncoder {
         Array(s.utf8)
     }
 
-    /// Kitty CSI u: `ESC [ code ; modifiers u` (modifier param omitted when 1).
-    private static func csiU(_ code: Int, _ modifiers: KeyModifiers) -> [UInt8] {
-        modifiers.isEmpty
-            ? bytes("\u{1B}[\(code)u")
-            : bytes("\u{1B}[\(code);\(modifiers.xtermParam)u")
+    /// Kitty CSI u: `ESC [ key ; modifiers ; text u`. The key field may carry
+    /// `:shifted:base` alternates and the modifier field a `:event-type`; empty
+    /// trailing fields are dropped so the simple cases stay compact (a bare
+    /// `ESC [ code u`).
+    private static func csiU(
+        _ code: Int, _ modifiers: KeyModifiers, _ flags: KittyKeyboardFlags,
+        _ eventType: KeyEventType, shifted: Int? = nil, base: Int? = nil, text: [Int] = []
+    ) -> [UInt8] {
+        var keyField = "\(code)"
+        if flags.contains(.reportAlternateKeys), shifted != nil || base != nil {
+            var subs = ["\(code)", shifted.map(String.init) ?? "", base.map(String.init) ?? ""]
+            while subs.count > 1, subs.last == "" { subs.removeLast() }
+            keyField = subs.joined(separator: ":")
+        }
+        let textField = flags.contains(.reportAssociatedText) && !text.isEmpty
+            ? text.map(String.init).joined(separator: ":") : ""
+        var fields = [keyField, modifierField(modifiers, flags, eventType), textField]
+        while fields.count > 1, fields.last == "" { fields.removeLast() }
+        return bytes("\u{1B}[\(fields.joined(separator: ";"))u")
+    }
+
+    /// The modifier parameter, with `:event-type` appended when event reporting
+    /// is on. Empty (the field is omitted) when modifiers are default and event
+    /// types aren't reported — keeping legacy output byte-identical.
+    private static func modifierField(
+        _ modifiers: KeyModifiers, _ flags: KittyKeyboardFlags, _ eventType: KeyEventType
+    ) -> String {
+        if flags.contains(.reportEventTypes) {
+            return "\(modifiers.xtermParam):\(eventType.rawValue)"
+        }
+        return modifiers.xtermParam == 1 ? "" : "\(modifiers.xtermParam)"
     }
 
     private static func cursorKey(
-        _ letter: Character, _ modifiers: KeyModifiers, _ application: Bool
+        _ letter: Character, _ modifiers: KeyModifiers, _ application: Bool,
+        _ flags: KittyKeyboardFlags, _ eventType: KeyEventType
     ) -> [UInt8] {
-        if modifiers.isEmpty {
+        let field = modifierField(modifiers, flags, eventType)
+        if field.isEmpty {
             return application ? bytes("\u{1B}O\(letter)") : bytes("\u{1B}[\(letter)")
         }
-        return bytes("\u{1B}[1;\(modifiers.xtermParam)\(letter)")
+        return bytes("\u{1B}[1;\(field)\(letter)")
     }
 
-    private static func tildeKey(_ code: Int, _ modifiers: KeyModifiers) -> [UInt8] {
-        if modifiers.isEmpty {
-            return bytes("\u{1B}[\(code)~")
-        }
-        return bytes("\u{1B}[\(code);\(modifiers.xtermParam)~")
+    private static func tildeKey(
+        _ code: Int, _ modifiers: KeyModifiers,
+        _ flags: KittyKeyboardFlags, _ eventType: KeyEventType
+    ) -> [UInt8] {
+        let field = modifierField(modifiers, flags, eventType)
+        return field.isEmpty
+            ? bytes("\u{1B}[\(code)~")
+            : bytes("\u{1B}[\(code);\(field)~")
     }
 
-    private static func functionKey(_ n: Int, _ modifiers: KeyModifiers) -> [UInt8] {
+    private static func functionKey(
+        _ n: Int, _ modifiers: KeyModifiers,
+        _ flags: KittyKeyboardFlags, _ eventType: KeyEventType
+    ) -> [UInt8] {
         switch n {
         case 1...4:
             let letter = Character(Unicode.Scalar(UInt8(ascii: "P") + UInt8(n - 1)))
-            if modifiers.isEmpty {
+            let field = modifierField(modifiers, flags, eventType)
+            if field.isEmpty {
                 return bytes("\u{1B}O\(letter)")
             }
-            return bytes("\u{1B}[1;\(modifiers.xtermParam)\(letter)")
-        case 5: return tildeKey(15, modifiers)
-        case 6...10: return tildeKey(17 + (n - 6), modifiers) // 17,18,19,20,21
-        case 11, 12: return tildeKey(23 + (n - 11), modifiers)
+            return bytes("\u{1B}[1;\(field)\(letter)")
+        case 5: return tildeKey(15, modifiers, flags, eventType)
+        case 6...10: return tildeKey(17 + (n - 6), modifiers, flags, eventType) // 17,18,19,20,21
+        case 11, 12: return tildeKey(23 + (n - 11), modifiers, flags, eventType)
         default: return []
         }
     }

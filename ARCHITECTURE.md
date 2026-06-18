@@ -93,8 +93,9 @@ synchronized output (DEC ?2026) and `DECRQM` mode reporting,
 OSC 0/2 (title), OSC 4/10/11/12 (dynamic palette + fg/bg/cursor color, set & query,
 with 104/110–112 resets), OSC 8 (hyperlinks), OSC 52 (clipboard),
 OSC 9/777 (notifications), mouse modes (X10/normal/button/any, SGR encoding),
-`DECSCUSR` cursor shapes, XTGETTCAP/DA responses, and the kitty keyboard protocol as a
-progressive enhancement.
+`DECSCUSR` cursor shapes, XTGETTCAP/DA responses, and the full kitty keyboard protocol
+as a progressive enhancement (all five flags: disambiguate, report event types,
+alternate keys, all-keys-as-escape-codes, associated text — with per-screen flag stacks).
 
 Synchronized output (DEC private mode ?2026) suits a pull-based, always-animating
 renderer: rather than gating presents, `beginSynchronizedOutput` captures the current
