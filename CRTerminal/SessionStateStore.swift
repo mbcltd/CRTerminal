@@ -36,6 +36,13 @@ final class SessionStateStore: Sendable {
     ) {
         if let directory {
             self.directory = directory
+        } else if ProcessInfo.processInfo.environment["CRT_CLEAN_LAUNCH"] != nil {
+            // Tests/probes: keep throwaway sessions out of the real store, so a
+            // test run neither reads the installed app's saved sessions (which
+            // would prompt for their restored cwds) nor clobbers them.
+            self.directory = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("CRTerminalCleanLaunch", isDirectory: true)
+                .appendingPathComponent("Restore", isDirectory: true)
         } else {
             let base = FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask).first

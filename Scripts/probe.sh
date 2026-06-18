@@ -37,14 +37,14 @@ clear_saved_state() {
 mode="${1:?usage: Scripts/probe.sh typist|typist-capture|jump [args]}"
 case "$mode" in
   typist|typist-capture)
-    envargs=(--env CRT_TYPIST=1 --env "CRT_TYPIST_WAIT=${3:-1}")
+    envargs=(--env CRT_CLEAN_LAUNCH=1 --env CRT_TYPIST=1 --env "CRT_TYPIST_WAIT=${3:-1}")
     [ -n "${2:-}" ] && envargs+=(--env "CRT_TYPIST_SCRIPT=$2")
     [ "$mode" = typist-capture ] && envargs+=(--env CRT_TYPIST_CAPTURE=1)
     rm -f /tmp/crterminal-probe.txt
     open -n -W "${envargs[@]}" "$app"
     cat /tmp/crterminal-probe.txt ;;
   jump)
-    envargs=(--env CRT_JUMP_PROBE=1)
+    envargs=(--env CRT_CLEAN_LAUNCH=1 --env CRT_JUMP_PROBE=1)
     [ -n "${2:-}" ] && envargs+=(--env "CRT_JUMP_QUERY=$2")
     rm -f /tmp/crterminal-jump.txt
     open -n -W "${envargs[@]}" "$app"
@@ -56,7 +56,7 @@ case "$mode" in
     # palette is probed against a session with a live foreground command.
     # Keep [setup] short: typing starts at ~2s (50ms/byte) and the palette
     # snapshots at ~4s. Usage: Scripts/probe.sh jump-live [setup] [query]
-    envargs=(--env CRT_JUMP_PROBE=1 --env CRT_TYPIST=1 --env CRT_TYPIST_WAIT=30)
+    envargs=(--env CRT_CLEAN_LAUNCH=1 --env CRT_JUMP_PROBE=1 --env CRT_TYPIST=1 --env CRT_TYPIST_WAIT=30)
     [ -n "${2:-}" ] && envargs+=(--env "CRT_TYPIST_SCRIPT=$2")
     [ -n "${3:-}" ] && envargs+=(--env "CRT_JUMP_QUERY=$3")
     rm -f /tmp/crterminal-jump.txt
