@@ -71,6 +71,24 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// nothing is running.
     var foregroundProcessGroup: pid_t { pty.foregroundProcessGroup }
 
+    /// Foreground processes that don't warrant a "still running" prompt when
+    /// closing: terminal multiplexers sit in the foreground but manage their
+    /// own detachable sessions, so killing the client loses nothing. Mirrors
+    /// the default ignore-list in Terminal.app and iTerm2.
+    private static let closeConfirmationIgnoredNames: Set<String> = ["tmux", "screen"]
+
+    /// Name of a foreground process whose loss should be confirmed before
+    /// closing this session, or nil when the shell is idle at its prompt (the
+    /// foreground group is the shell itself) or only an ignored multiplexer is
+    /// running. Used to gate the close/quit confirmation.
+    var runningProcessName: String? {
+        let foreground = foregroundProcessGroup
+        guard foreground > 0, foreground != shellProcessID else { return nil }
+        let name = SessionInfo.processName(of: foreground)
+        if let name, Self.closeConfirmationIgnoredNames.contains(name) { return nil }
+        return name ?? "a process"
+    }
+
     func send(_ bytes: [UInt8]) {
         pty.send(bytes)
     }
