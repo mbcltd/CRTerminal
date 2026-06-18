@@ -13,6 +13,18 @@ The features in README.md are implemented. In broad strokes:
 
 See ARCHITECTURE.md for the detailed design (module layout, concurrency model, render pipeline, performance budgets) and the phased implementation plan — the core build-out (Phases 0–6), the attention/notification work (Phases A–F), and session restoration (Phases R0–R4) are all landed. Follow it when implementing features, and update it when the design changes.
 
+## Versioning
+
+The shipping version lives in `marketing_version.txt` (`MAJOR.MINOR.PATCH`). With
+**every feature change or other user-facing change**, review whether the version
+should bump and update it accordingly via the `bump-version` skill
+(`.claude/skills/bump-version/SKILL.md`), which defines the major/minor/patch
+conventions. Default mapping: a new feature ⇒ MINOR, a fix/perf/polish ⇒ PATCH, a
+breaking or persistence-format change ⇒ MAJOR; internal-only changes with no
+user-facing effect need no bump. Edit only `marketing_version.txt` — never the
+`MARKETING_VERSION` in `project.pbxproj` (overridden at build time) or the build
+number (derived automatically).
+
 ## Commands
 
 Use the wrapper scripts in `Scripts/` — they are allowlisted in
