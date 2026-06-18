@@ -27,6 +27,9 @@ struct TabNode: Codable, Equatable {
     var uuid: UUID
     var presetName: String
     var root: SplitNode
+    /// User-chosen session name; `nil` when the row uses its automatic name.
+    /// Optional + defaulted so older snapshots (without the key) decode cleanly.
+    var customName: String? = nil
 }
 
 /// The pane tree inside a tab: leaves are panes (keyed by session UUID),

@@ -17,7 +17,8 @@ struct LayoutSnapshotTests {
                        children: [.leaf(sessionID: UUID()), .leaf(sessionID: UUID())]),
             ])
         let tabs = [
-            TabNode(uuid: UUID(), presetName: "Dark", root: .leaf(sessionID: UUID())),
+            TabNode(uuid: UUID(), presetName: "Dark", root: .leaf(sessionID: UUID()),
+                    customName: "build server"),
             TabNode(uuid: UUID(), presetName: "IBM 5151", root: quad),
             TabNode(uuid: UUID(), presetName: "Light", root: .leaf(sessionID: UUID())),
         ]
@@ -57,6 +58,31 @@ struct LayoutSnapshotTests {
         let layout = sample()
         let middle = layout.windows[0].tabs[1].root
         #expect(middle.sessionIDs.count == 4)
+    }
+
+    @Test func customNameSurvivesEncoding() throws {
+        let layout = sample()
+        let data = try PropertyListEncoder().encode(layout)
+        let decoded = try PropertyListDecoder().decode(LayoutSnapshot.self, from: data)
+        #expect(decoded.windows[0].tabs[0].customName == "build server")
+        #expect(decoded.windows[0].tabs[1].customName == nil)
+    }
+
+    /// Backward compatibility: a TabNode written before `customName` existed
+    /// (no such key) decodes to `nil` rather than failing — so older restore
+    /// files still load. This is why no schema version bump is needed.
+    @Test func legacyTabNodeWithoutCustomNameDecodes() throws {
+        struct LegacyTabNode: Codable {
+            var uuid: UUID
+            var presetName: String
+            var root: SplitNode
+        }
+        let legacy = LegacyTabNode(
+            uuid: UUID(), presetName: "Dark", root: .leaf(sessionID: UUID()))
+        let data = try PropertyListEncoder().encode(legacy)
+        let decoded = try PropertyListDecoder().decode(TabNode.self, from: data)
+        #expect(decoded.customName == nil)
+        #expect(decoded.presetName == "Dark")
     }
 
     @Test func frameSurvivesEncoding() throws {

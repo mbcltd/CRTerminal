@@ -8,10 +8,14 @@ struct Item: JumpSearchable, Equatable {
 }
 
 private func item(
-    _ name: String, title: String? = nil, command: String? = nil,
-    directory: String? = nil, branch: String? = nil
+    _ name: String, sessionName: String? = nil, title: String? = nil,
+    command: String? = nil, directory: String? = nil, branch: String? = nil
 ) -> Item {
     var facets: [SessionFacet] = []
+    // The user's custom name outweighs the inferred title (matches nameFacets).
+    if let sessionName {
+        facets.append(SessionFacet(kind: "name", text: sessionName, weight: 2.5))
+    }
     if let title { facets.append(SessionFacet(kind: "title", text: title, weight: 2)) }
     if let command { facets.append(SessionFacet(kind: "command", text: command, weight: 1.5)) }
     if let directory { facets.append(SessionFacet(kind: "directory", text: directory)) }
@@ -73,6 +77,34 @@ struct JumpSearchTests {
             SessionFacet(kind: "port", text: "localhost:8080"),
         ])
         #expect(JumpSearch.rank([withPort], query: "8080").map(\.name) == ["ported"])
+    }
+
+    @Test func customNameIsSearchable() {
+        let named = [
+            item("a", sessionName: "build server", command: "zsh", directory: "~/dev/api"),
+            item("b", command: "vim", directory: "~/dev/web"),
+        ]
+        #expect(JumpSearch.rank(named, query: "build").map(\.name) == ["a"])
+        #expect(JumpSearch.rank(named, query: "server").map(\.name) == ["a"])
+    }
+
+    @Test func customNameOutranksTitleOnTie() {
+        // Same match quality; the name facet (weight 2.5) beats title (2).
+        let ranked = JumpSearch.rank([
+            item("titled", title: "deploy"),
+            item("named", sessionName: "deploy"),
+        ], query: "deploy")
+        #expect(ranked.map(\.name) == ["named", "titled"])
+    }
+
+    @Test func inferredFacetsStillMatchAfterNaming() {
+        // Renaming a session must not hide its process/cwd/branch from search.
+        let renamed = item(
+            "x", sessionName: "my build", command: "claude",
+            directory: "~/dev/widget", branch: "main")
+        #expect(JumpSearch.rank([renamed], query: "claude").map(\.name) == ["x"])
+        #expect(JumpSearch.rank([renamed], query: "widget").map(\.name) == ["x"])
+        #expect(JumpSearch.rank([renamed], query: "main").map(\.name) == ["x"])
     }
 
     @Test func tieBreaksPreserveOriginalOrder() {
