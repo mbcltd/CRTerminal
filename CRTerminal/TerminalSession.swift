@@ -13,6 +13,12 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// Latest device-pixel cell size from the renderer, used to size the PTY
     /// winsize in pixels (ws_xpixel/ws_ypixel) alongside its rows/columns.
     private let cellPixelSize = OSAllocatedUnfairLock(initialState: (width: 0, height: 0))
+    /// Pending safety-timeout for synchronized output (DEC ?2026): armed while
+    /// the mode buffers frames, fired if the app never sends the closing `l`.
+    private let syncTimeout = OSAllocatedUnfairLock<DispatchWorkItem?>(initialState: nil)
+    /// Matches the ~150 ms cap xterm/contour use, so a buggy program can't
+    /// freeze the display indefinitely.
+    private static let synchronizedOutputTimeout: TimeInterval = 0.15
 
     /// Called on the main queue, coalesced across PTY chunks.
     var onUpdate: (@MainActor () -> Void)?
@@ -52,7 +58,10 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     }
 
     var snapshot: TerminalState {
-        terminal.withLock { $0.state }
+        // `displaySnapshot` holds the frame frozen at the start of a
+        // synchronized-output frame (?2026) so consumers never see a
+        // half-composed grid; otherwise it's the live state.
+        terminal.withLock { $0.state.displaySnapshot }
     }
 
     /// The shell's pid (sidebar metadata: cwd, process rows).
@@ -128,13 +137,14 @@ nonisolated final class TerminalSession: @unchecked Sendable {
             handle.write(Data(data))
             try? handle.close()
         }
-        let (responses, clipboard, notifications) = terminal.withLock { terminal in
+        let (responses, clipboard, notifications, syncActive) = terminal.withLock { terminal in
             data.withUnsafeBufferPointer { raw in
                 terminal.feed(raw)
             }
             return (terminal.drainResponses(), terminal.drainClipboard(),
-                    terminal.drainNotifications())
+                    terminal.drainNotifications(), terminal.isSynchronizedOutputActive)
         }
+        updateSynchronizedOutputTimeout(active: syncActive)
         if !responses.isEmpty {
             pty.send(responses)
         }
@@ -153,6 +163,37 @@ nonisolated final class TerminalSession: @unchecked Sendable {
             }
         }
         scheduleUpdate()
+    }
+
+    /// Arm the safety timeout when synchronized output becomes active, cancel
+    /// it when the app closes the frame (`CSI ? 2026 l`). The deadline is a
+    /// hard cap from when the mode opened: re-entry while already armed keeps
+    /// the original deadline rather than extending it.
+    private func updateSynchronizedOutputTimeout(active: Bool) {
+        syncTimeout.withLock { pending in
+            if active {
+                guard pending == nil else { return }
+                let work = DispatchWorkItem { [weak self] in
+                    self?.expireSynchronizedOutput()
+                }
+                pending = work
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + Self.synchronizedOutputTimeout, execute: work)
+            } else {
+                pending?.cancel()
+                pending = nil
+            }
+        }
+    }
+
+    private func expireSynchronizedOutput() {
+        syncTimeout.withLock { $0 = nil }
+        let flushed = terminal.withLock { terminal -> Bool in
+            guard terminal.isSynchronizedOutputActive else { return false }
+            terminal.expireSynchronizedOutput()
+            return true
+        }
+        if flushed { scheduleUpdate() }
     }
 
     private func scheduleUpdate() {

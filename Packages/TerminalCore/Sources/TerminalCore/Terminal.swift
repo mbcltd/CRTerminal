@@ -32,6 +32,19 @@ public struct Terminal: Sendable {
         state.resize(columns: columns, rows: rows)
     }
 
+    /// Whether synchronized output (DEC ?2026) is currently buffering frames.
+    /// The host watches this to arm the safety timeout.
+    public var isSynchronizedOutputActive: Bool {
+        state.modes.synchronizedOutput
+    }
+
+    /// Force-release synchronized output, presenting whatever has accumulated.
+    /// The host's safety timeout calls this so a program that never sends the
+    /// closing `CSI ? 2026 l` can't freeze the display.
+    public mutating func expireSynchronizedOutput() {
+        state.endSynchronizedOutput()
+    }
+
     /// Cell size in device pixels (points × backing scale), from the
     /// renderer. Drives inline-image pixel↔cell math and CSI 14/16 t.
     public mutating func setCellPixelSize(width: Int, height: Int) {
