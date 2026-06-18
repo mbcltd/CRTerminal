@@ -75,8 +75,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     /// `spawnInitialSession: false` makes an empty shell of a window for
     /// adopting a torn-off session; callers must adopt one immediately.
-    init(settings: TerminalSettings, spawnInitialSession: Bool = true) {
+    init(settings: TerminalSettings, spawnInitialSession: Bool = true,
+         initialWorkingDirectory: String? = nil) {
         self.settings = settings
+        self.initialWorkingDirectory = initialWorkingDirectory
         sidebar = SessionSidebarView(
             theme: SidebarTheme(preset: settings.preset(in: PresetCatalog.all)))
         let window = NSWindow(
@@ -164,10 +166,21 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// splits open where the user is currently working. Prefers the shell's
     /// live OSC 7 report (survives a cd since the last probe); falls back to
     /// the kernel query.
-    private var focusedWorkingDirectory: String? {
+    var focusedWorkingDirectory: String? {
         guard let session = focusedPane?.session else { return nil }
         return session.snapshot.currentDirectory
             ?? SessionInfo.workingDirectory(of: session.shellProcessID)
+    }
+
+    /// Seed cwd for this window's *first* session, so ⌘N opens where the
+    /// previously focused window was working (new tab/split already inherit
+    /// via `focusedWorkingDirectory`). Consumed once, then cleared — later
+    /// sessions inherit from their own focused pane.
+    private var initialWorkingDirectory: String?
+
+    private func consumeInitialWorkingDirectory() -> String? {
+        defer { initialWorkingDirectory = nil }
+        return initialWorkingDirectory
     }
 
     // MARK: Renderer (shared across the window's panes)
@@ -277,10 +290,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 columns: 80, rows: 24,
                 shell: settings.shellPath,
                 // Restore in the saved directory; otherwise inherit the
-                // focused pane's cwd (new tab/split opens where you are);
-                // fall back to the setting.
+                // focused pane's cwd (new tab/split opens where you are), or
+                // the seed cwd handed to a fresh ⌘N window; fall back to the
+                // setting.
                 workingDirectory: snapshot?.workingDirectoryHint
                     ?? focusedWorkingDirectory
+                    ?? consumeInitialWorkingDirectory()
                     ?? settings.resolvedWorkingDirectory,
                 scrollbackLines: settings.scrollbackLines,
                 // Seed COLORFGBG from the pane's preset so the shell launches
