@@ -6,6 +6,9 @@ public struct ColorScheme: Sendable {
     public var background: UInt32
     public var selectionBackground: UInt32
     public var palette: [UInt32] // 256 entries
+    /// The block/bar/underline cursor fill. Defaults to `foreground` (xterm's
+    /// behaviour); OSC 12 overrides it via `applyingOverrides`.
+    public var cursorColor: UInt32
 
     public init(
         foreground: UInt32, background: UInt32,
@@ -16,6 +19,7 @@ public struct ColorScheme: Sendable {
         self.background = background
         self.selectionBackground = selectionBackground
         self.palette = palette
+        self.cursorColor = foreground
     }
 
     /// Light gray on near-black with the standard xterm 256-color palette.
@@ -99,6 +103,23 @@ public struct ColorScheme: Sendable {
             return Self.pack(rgb.red, rgb.green, rgb.blue)
         }
         return isForeground ? foreground : background
+    }
+
+    /// This scheme with the terminal's runtime OSC color overrides layered on
+    /// top: palette slots (OSC 4), foreground / background (OSC 10/11), and the
+    /// cursor (OSC 12). Returns `self` unchanged when nothing is overridden —
+    /// the common per-frame fast path (issue #25).
+    public func applyingOverrides(_ overrides: ColorOverrides) -> ColorScheme {
+        guard !overrides.isEmpty else { return self }
+        var scheme = self
+        for (index, c) in overrides.palette {
+            scheme.palette[Int(index)] = Self.pack(c.red, c.green, c.blue)
+        }
+        if let fg = overrides.foreground { scheme.foreground = Self.pack(fg.red, fg.green, fg.blue) }
+        if let bg = overrides.background { scheme.background = Self.pack(bg.red, bg.green, bg.blue) }
+        scheme.cursorColor = overrides.cursor
+            .map { Self.pack($0.red, $0.green, $0.blue) } ?? scheme.foreground
+        return scheme
     }
 
     public static func pack(_ r: UInt8, _ g: UInt8, _ b: UInt8, _ a: UInt8 = 255) -> UInt32 {

@@ -138,4 +138,31 @@ struct Phase2RenderTests {
         }
         #expect(found)
     }
+
+    @Test func osc4PaletteOverrideWinsOverPreset() throws {
+        guard let renderer = makeRenderer() else { return }
+        var terminal = Terminal(columns: 2, rows: 1)
+        // Paint a cell with ANSI background 1 (palette slot 1 = red in the
+        // preset), then override that slot to pure blue via OSC 4. The runtime
+        // override must win over the preset palette (issue #25).
+        terminal.feed(Array(
+            "\u{1B}]4;1;rgb:0000/0000/ffff\u{1B}\\\u{1B}[41m \u{1B}[0m".utf8))
+        let image = try #require(renderer.renderImage(terminal.state))
+        let cellH = Int(renderer.cellSize.height)
+        let p = pixel(image, 1, cellH / 2)
+        #expect(p.b > 150 && p.r < 80) // blue override, not the preset red
+    }
+
+    @Test func osc11BackgroundOverrideFillsScreen() throws {
+        guard let renderer = makeRenderer() else { return }
+        var terminal = Terminal(columns: 2, rows: 1)
+        // OSC 11 sets the default background to pure blue; the (default-bg)
+        // cells must paint with it.
+        terminal.feed(Array("\u{1B}]11;rgb:0000/0000/ffff\u{1B}\\".utf8))
+        let image = try #require(renderer.renderImage(terminal.state))
+        let cellW = Int(renderer.cellSize.width)
+        let cellH = Int(renderer.cellSize.height)
+        let p = pixel(image, cellW + cellW / 2, cellH / 2) // a bare cell
+        #expect(p.b > 150 && p.r < 80)
+    }
 }
