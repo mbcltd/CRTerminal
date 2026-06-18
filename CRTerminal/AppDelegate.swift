@@ -912,13 +912,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func showAboutPanel(_ sender: Any?) {
         let credits = NSMutableAttributedString()
-        let link = NSAttributedString(
-            string: "morgan-brown.com",
+        let smallFont = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.paragraphSpacing = 8
+        credits.append(NSAttributedString(
+            string: "crterm.ai\n",
             attributes: [
-                .link: URL(string: "https://morgan-brown.com")!,
-                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-            ])
-        credits.append(link)
+                .link: URL(string: "https://crterm.ai")!,
+                .font: smallFont,
+                .paragraphStyle: paragraph,
+            ]))
+        credits.append(NSAttributedString(
+            string: "github.com/mbcltd/CRTerminal",
+            attributes: [
+                .link: URL(string: "https://github.com/mbcltd/CRTerminal")!,
+                .font: smallFont,
+                .paragraphStyle: paragraph,
+            ]))
 
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
