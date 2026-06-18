@@ -15,7 +15,7 @@ enum CloseConfirmation {
         alert.alertStyle = .warning
         if names.count == 1 {
             alert.messageText = "“\(names[0])” is still running."
-            alert.informativeText = "\(verb)ing will terminate it."
+            alert.informativeText = "It will be terminated if you \(verb.lowercased())."
         } else {
             // De-dup for the summary line: three shells running `vim` read as
             // "vim, vim, vim" otherwise.
