@@ -292,6 +292,98 @@ struct ModeAndReportTests {
         #expect(t.state.cursor == Cursor(x: 0, y: 0))
         #expect(!t.state.modes.applicationCursorKeys)
     }
+
+    @Test func decrqmReportsResetMode() {
+        var t = makeTerminal()
+        // 2026 (synchronized output) is recognised but off → reset (2).
+        t.feed("\u{1B}[?2026$p")
+        #expect(t.drainResponses() == Array("\u{1B}[?2026;2$y".utf8))
+    }
+
+    @Test func decrqmReportsSetMode() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[?2004h")
+        t.feed("\u{1B}[?2004$p")
+        #expect(t.drainResponses() == Array("\u{1B}[?2004;1$y".utf8))
+    }
+
+    @Test func decrqmUnknownMode() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[?9999$p")
+        #expect(t.drainResponses() == Array("\u{1B}[?9999;0$y".utf8))
+    }
+
+    @Test func decrqmAnsiMode() {
+        var t = makeTerminal()
+        // ANSI mode 4 (insert) off → reset (2), no '?' in the reply.
+        t.feed("\u{1B}[4$p")
+        #expect(t.drainResponses() == Array("\u{1B}[4;2$y".utf8))
+        t.feed("\u{1B}[4h\u{1B}[4$p")
+        #expect(t.drainResponses() == Array("\u{1B}[4;1$y".utf8))
+    }
+}
+
+struct SynchronizedOutputTests {
+    @Test func mode2026FreezesDisplaySnapshot() {
+        var t = makeTerminal()
+        t.feed("hi")
+        let frozenGen = t.state.displaySnapshot.generation
+        // Begin a synchronized frame, then mutate the grid.
+        t.feed("\u{1B}[?2026h")
+        t.feed("!!")
+        #expect(t.state.modes.synchronizedOutput)
+        // The display snapshot still shows the pre-frame content, frozen...
+        #expect(t.state.displaySnapshot.lineText(0) == "hi")
+        #expect(t.state.displaySnapshot.generation == frozenGen)
+        // ...while the live grid has already buffered the mutation.
+        #expect(t.state.lineText(0) == "hi!!")
+        // Closing the frame presents the accumulated state atomically.
+        t.feed("\u{1B}[?2026l")
+        #expect(!t.state.modes.synchronizedOutput)
+        #expect(t.state.displaySnapshot.lineText(0) == "hi!!")
+        #expect(t.state.displaySnapshot.generation > frozenGen)
+    }
+
+    @Test func reentryKeepsOriginalCapture() {
+        var t = makeTerminal()
+        t.feed("a\u{1B}[?2026h")
+        t.feed("b")
+        // A second `h` while already synchronized must not re-snapshot.
+        t.feed("\u{1B}[?2026h")
+        t.feed("c")
+        #expect(t.state.displaySnapshot.lineText(0) == "a")
+        t.feed("\u{1B}[?2026l")
+        #expect(t.state.displaySnapshot.lineText(0) == "abc")
+    }
+
+    @Test func safetyTimeoutReleasesMode() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[?2026h")
+        t.feed("buffered")
+        #expect(t.state.modes.synchronizedOutput)
+        #expect(t.state.displaySnapshot.lineText(0) == "")
+        // `l` never arrives; the host's safety timeout force-releases it.
+        t.expireSynchronizedOutput()
+        #expect(!t.state.modes.synchronizedOutput)
+        #expect(t.state.displaySnapshot.lineText(0) == "buffered")
+    }
+
+    @Test func decrqmReports2026WhileActive() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[?2026h")
+        t.feed("\u{1B}[?2026$p")
+        #expect(t.drainResponses() == Array("\u{1B}[?2026;1$y".utf8))
+    }
+
+    @Test func unterminatedFrameDoesNotTrap() {
+        // A frame opened but never closed must leave the parser usable.
+        var t = makeTerminal()
+        t.feed("\u{1B}[?2026h")
+        t.feed("abc")
+        t.expireSynchronizedOutput()
+        t.feed("def")
+        #expect(t.screen.first == "abcdef")
+    }
 }
 
 struct RobustnessTests {

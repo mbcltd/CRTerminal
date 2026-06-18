@@ -34,6 +34,11 @@ public struct TerminalModes: Sendable, Equatable {
     public var focusReporting = false
     /// xterm ?1007: wheel sends arrows on the alternate screen.
     public var alternateScroll = true
+    /// DEC ?2026: synchronized output. While set, visible mutations are
+    /// buffered and the renderer keeps presenting the last frame; they show
+    /// atomically when the app clears the mode (or the host's safety timeout
+    /// fires). See `TerminalState.beginSynchronizedOutput`.
+    public var synchronizedOutput = false
     public var mouseMode = MouseMode.off
     public var mouseEncoding = MouseEncoding.legacy
     /// Kitty keyboard protocol flags (CSI > u stack top).
@@ -218,6 +223,17 @@ public struct TerminalState: Sendable {
 
     var brush = Brush.initial
     var pendingWrap = false
+    /// The frame captured when synchronized output (?2026) began; `nil` when
+    /// the mode is off. Boxed in a class so `TerminalState` can hold a copy of
+    /// itself without recursion; the copy is CoW-cheap (it shares grid
+    /// storage until a row diverges). See `beginSynchronizedOutput`.
+    private var frozenFrame: FrozenFrame?
+
+    /// Immutable box for the synchronized-output captured frame.
+    private final class FrozenFrame: Sendable {
+        let state: TerminalState
+        init(_ state: TerminalState) { self.state = state }
+    }
     /// Scroll region (DECSTBM), inclusive.
     public private(set) var marginTop = 0
     public private(set) var marginBottom: Int
@@ -607,6 +623,38 @@ public struct TerminalState: Sendable {
         generation &+= 1
     }
 
+    /// DEC ?2026 begin: capture the frame as it stands now. While the mode is
+    /// active `displaySnapshot` keeps handing out this captured frame, so the
+    /// renderer never picks up a half-composed grid — even though it redraws
+    /// every tick for the CRT effects. Re-entry while active is a no-op so the
+    /// original capture (and the host's safety deadline) stands.
+    mutating func beginSynchronizedOutput() {
+        if !modes.synchronizedOutput {
+            frozenFrame = FrozenFrame(self)
+        }
+        modes.synchronizedOutput = true
+    }
+
+    /// DEC ?2026 end: drop the captured frame so `displaySnapshot` resumes
+    /// handing out live state. Any mutations made meanwhile bumped
+    /// `generation`, so the renderer presents the accumulated frame on its
+    /// next tick. Also the path the host's safety timeout takes.
+    mutating func endSynchronizedOutput() {
+        guard modes.synchronizedOutput else { return }
+        modes.synchronizedOutput = false
+        frozenFrame = nil
+    }
+
+    /// The state the renderer (and other snapshot consumers) should observe:
+    /// the frame frozen at `beginSynchronizedOutput` while ?2026 is active,
+    /// otherwise the live state. Buffers visual updates into one atomic frame.
+    public var displaySnapshot: TerminalState {
+        if modes.synchronizedOutput, let frozenFrame {
+            return frozenFrame.state
+        }
+        return self
+    }
+
     // MARK: Image helpers reachable from the protocol-parsing extensions
     // (those live in other files and so can't touch the private cursor/scroll
     // machinery directly).
@@ -747,6 +795,7 @@ public struct TerminalState: Sendable {
         cursorStyle = .block
         brush = .initial
         modes = TerminalModes()
+        frozenFrame = nil
         pendingWrap = false
         savedCursorPrimary = nil
         savedCursorAlternate = nil
@@ -1053,6 +1102,11 @@ extension TerminalState: TerminalHandler {
     public mutating func csiDispatch(_ seq: CSISequence) {
         if seq.intermediates == [UInt8(ascii: " ")], seq.final == UInt8(ascii: "q") {
             setCursorStyle(seq.param(0))
+            return
+        }
+        // DECRQM (CSI Ps $ p / CSI ? Ps $ p): report a mode's set/reset state.
+        if seq.intermediates == [UInt8(ascii: "$")], seq.final == UInt8(ascii: "p") {
+            reportMode(seq.param(0), private: seq.prefix == UInt8(ascii: "?"))
             return
         }
         guard seq.intermediates.isEmpty else { return }
@@ -1423,6 +1477,8 @@ extension TerminalState: TerminalHandler {
             case 1006: modes.mouseEncoding = enable ? .sgr : .legacy
             case 1007: modes.alternateScroll = enable
             case 2004: modes.bracketedPaste = enable
+            case 2026:
+                if enable { beginSynchronizedOutput() } else { endSynchronizedOutput() }
             case 1047:
                 if enable {
                     enterAlternateScreen(clear: true)
@@ -1542,6 +1598,40 @@ extension TerminalState: TerminalHandler {
                 respond("\u{1B}[\(row);\(cursor.x + 1)R")
             }
         default: break
+        }
+    }
+
+    /// DECRQM reply: `CSI ? Ps ; Pm $ y` (private) or `CSI Ps ; Pm $ y`
+    /// (ANSI), where Pm is 0 = not recognised, 1 = set, 2 = reset, 3 =
+    /// permanently set, 4 = permanently reset. Apps parse this to detect
+    /// support (e.g. synchronized output, mode 2026) before relying on it.
+    private mutating func reportMode(_ mode: Int, private isPrivate: Bool) {
+        let value: Int
+        if isPrivate {
+            switch mode {
+            case 1: value = modes.applicationCursorKeys ? 1 : 2
+            case 6: value = modes.originMode ? 1 : 2
+            case 7: value = modes.autowrap ? 1 : 2
+            case 9: value = modes.mouseMode == .x10 ? 1 : 2
+            case 25: value = modes.cursorVisible ? 1 : 2
+            case 1000: value = modes.mouseMode == .normal ? 1 : 2
+            case 1002: value = modes.mouseMode == .buttonEvent ? 1 : 2
+            case 1003: value = modes.mouseMode == .anyEvent ? 1 : 2
+            case 1004: value = modes.focusReporting ? 1 : 2
+            case 1006: value = modes.mouseEncoding == .sgr ? 1 : 2
+            case 1007: value = modes.alternateScroll ? 1 : 2
+            case 2004: value = modes.bracketedPaste ? 1 : 2
+            case 2026: value = modes.synchronizedOutput ? 1 : 2
+            case 47, 1047, 1049: value = isAlternateScreen ? 1 : 2
+            default: value = 0
+            }
+            respond("\u{1B}[?\(mode);\(value)$y")
+        } else {
+            switch mode {
+            case 4: value = modes.insertMode ? 1 : 2
+            default: value = 0
+            }
+            respond("\u{1B}[\(mode);\(value)$y")
         }
     }
 

@@ -89,10 +89,21 @@ Target emulation level: xterm-compatible VT220+ — the de-facto contract assume
 ncurses/terminfo `xterm-256color`, plus modern extensions:
 truecolor SGR, 256-color, underline styles and colors (SGR 4:x, 58), bracketed paste,
 focus reporting, alternate screen, scroll regions, rectangular ops where cheap,
+synchronized output (DEC ?2026) and `DECRQM` mode reporting,
 OSC 0/2 (title), OSC 4/10/11 (palette), OSC 8 (hyperlinks), OSC 52 (clipboard),
 OSC 9/777 (notifications), mouse modes (X10/normal/button/any, SGR encoding),
 `DECSCUSR` cursor shapes, XTGETTCAP/DA responses, and the kitty keyboard protocol as a
 progressive enhancement.
+
+Synchronized output (DEC private mode ?2026) suits a pull-based, always-animating
+renderer: rather than gating presents, `beginSynchronizedOutput` captures the current
+frame into a CoW-cheap boxed copy, and `TerminalState.displaySnapshot` keeps handing
+that frozen frame to every snapshot consumer until `CSI ? 2026 l` clears the mode.
+Mutations land on the live grid (bumping `generation`) but stay invisible until the
+frame closes, so even the CRT effect animation never paints a half-composed grid. The
+app (`TerminalSession`) arms a ~150 ms safety timeout when the mode opens and calls
+`expireSynchronizedOutput` if the closing `l` never arrives, so a buggy program can't
+freeze the display.
 
 ### Screen model
 
