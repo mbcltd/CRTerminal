@@ -9,6 +9,7 @@ public enum MouseMode: Sendable, Equatable {
 public enum MouseEncoding: Sendable, Equatable {
     case legacy
     case sgr // ?1006
+    case sgrPixels // ?1016
 }
 
 public enum CursorStyle: Sendable, Equatable {
@@ -1579,6 +1580,7 @@ extension TerminalState: TerminalHandler {
             case 1003: modes.mouseMode = enable ? .anyEvent : .off
             case 1004: modes.focusReporting = enable
             case 1006: modes.mouseEncoding = enable ? .sgr : .legacy
+            case 1016: modes.mouseEncoding = enable ? .sgrPixels : .legacy
             case 1007: modes.alternateScroll = enable
             case 2004: modes.bracketedPaste = enable
             case 2026:
@@ -1723,6 +1725,7 @@ extension TerminalState: TerminalHandler {
             case 1003: value = modes.mouseMode == .anyEvent ? 1 : 2
             case 1004: value = modes.focusReporting ? 1 : 2
             case 1006: value = modes.mouseEncoding == .sgr ? 1 : 2
+            case 1016: value = modes.mouseEncoding == .sgrPixels ? 1 : 2
             case 1007: value = modes.alternateScroll ? 1 : 2
             case 2004: value = modes.bracketedPaste ? 1 : 2
             case 2026: value = modes.synchronizedOutput ? 1 : 2

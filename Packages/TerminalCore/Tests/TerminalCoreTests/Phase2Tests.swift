@@ -251,6 +251,14 @@ struct MiscVTTests {
         #expect(t.state.modes.mouseMode == .off)
     }
 
+    @Test func sgrPixelsEncodingMode() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[?1016h")
+        #expect(t.state.modes.mouseEncoding == .sgrPixels)
+        t.feed("\u{1B}[?1016l")
+        #expect(t.state.modes.mouseEncoding == .legacy)
+    }
+
     @Test func focusReportingMode() {
         var t = makeTerminal()
         t.feed("\u{1B}[?1004h")
@@ -470,6 +478,32 @@ struct MouseEncoderTests {
         let event = MouseEncoder.encode(
             .press, button: .left, x: 0, y: 0, modifiers: [.control], encoding: .sgr)
         #expect(event == Array("\u{1B}[<16;1;1M".utf8))
+    }
+
+    @Test func sgrPixelsPressAndRelease() {
+        // Same logical cell, but pixel coords drive the report (1-based).
+        let press = MouseEncoder.encode(
+            .press, button: .left, x: 4, y: 9, pixelX: 47, pixelY: 182,
+            encoding: .sgrPixels)
+        #expect(press == Array("\u{1B}[<0;48;183M".utf8))
+        let release = MouseEncoder.encode(
+            .release, button: .left, x: 4, y: 9, pixelX: 47, pixelY: 182,
+            encoding: .sgrPixels)
+        #expect(release == Array("\u{1B}[<0;48;183m".utf8))
+        // Distinct from the cell-based SGR output for the same x/y.
+        let sgr = MouseEncoder.encode(.press, button: .left, x: 4, y: 9, encoding: .sgr)
+        #expect(press != sgr)
+    }
+
+    @Test func sgrPixelsDragAndModifiers() {
+        let drag = MouseEncoder.encode(
+            .drag, button: .left, x: 0, y: 0, pixelX: 0, pixelY: 0,
+            encoding: .sgrPixels)
+        #expect(drag == Array("\u{1B}[<32;1;1M".utf8))
+        let mod = MouseEncoder.encode(
+            .press, button: .left, x: 0, y: 0, pixelX: 12, pixelY: 34,
+            modifiers: [.control], encoding: .sgrPixels)
+        #expect(mod == Array("\u{1B}[<16;13;35M".utf8))
     }
 
     @Test func legacyEncodingAndClamp() {

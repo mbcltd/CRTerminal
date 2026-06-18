@@ -628,6 +628,22 @@ final class TerminalView: NSView, NSTextInputClient {
         return (x, y)
     }
 
+    /// 0-based device-pixel position within the terminal surface, for the
+    /// `.sgrPixels` (DEC ?1016) mouse encoding. Same coordinate convention as
+    /// `cellPosition` (the view is flipped, so y runs top-down), scaled to
+    /// device pixels to match `cellPixelWidth`/`cellPixelHeight` and CSI 14/16 t.
+    private func pixelPosition(of event: NSEvent) -> (x: Int, y: Int) {
+        guard let renderer else { return (0, 0) }
+        let point = convert(event.locationInWindow, from: nil)
+        let inset = contentInset
+        let scale = renderer.scale
+        let maxX = Int(CGFloat(session?.snapshot.columns ?? 1) * renderer.cellSize.width * scale) - 1
+        let maxY = Int(CGFloat(session?.snapshot.rows ?? 1) * renderer.cellSize.height * scale) - 1
+        let x = min(max(0, Int((point.x - inset) * scale)), max(0, maxX))
+        let y = min(max(0, Int((point.y - inset) * scale)), max(0, maxY))
+        return (x, y)
+    }
+
     private func absolutePoint(of event: NSEvent) -> SelectionPoint {
         let cell = cellPosition(of: event)
         let state = session?.snapshot
@@ -675,8 +691,10 @@ final class TerminalView: NSView, NSTextInputClient {
             }
             lastReportedDragCell = cell
         }
+        let pixel = pixelPosition(of: event)
         send(MouseEncoder.encode(
             kind, button: button, x: cell.x, y: cell.y,
+            pixelX: pixel.x, pixelY: pixel.y,
             modifiers: keyModifiers(of: event),
             encoding: modes.mouseEncoding))
         return true
@@ -775,9 +793,11 @@ final class TerminalView: NSView, NSTextInputClient {
         if state.modes.mouseMode != .off && !event.modifierFlags.contains(.shift) {
             let button: MouseButton = lines > 0 ? .wheelUp : .wheelDown
             let cell = cellPosition(of: event)
+            let pixel = pixelPosition(of: event)
             for _ in 0..<min(abs(lines), 30) {
                 send(MouseEncoder.encode(
                     .press, button: button, x: cell.x, y: cell.y,
+                    pixelX: pixel.x, pixelY: pixel.y,
                     modifiers: keyModifiers(of: event),
                     encoding: state.modes.mouseEncoding))
             }
