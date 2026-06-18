@@ -650,10 +650,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Windows & tabs
 
-    func makeWindowController(spawnInitialSession: Bool = true) -> TerminalWindowController {
+    func makeWindowController(
+        spawnInitialSession: Bool = true, initialWorkingDirectory: String? = nil
+    ) -> TerminalWindowController {
         let controller = TerminalWindowController(
             settings: SettingsStore.shared.settings,
-            spawnInitialSession: spawnInitialSession)
+            spawnInitialSession: spawnInitialSession,
+            initialWorkingDirectory: initialWorkingDirectory)
         controller.onClose = { [weak self] closed in
             self?.controllers.removeAll { $0 === closed }
             self?.refreshDockBadge()
@@ -739,7 +742,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func newWindow(_ sender: Any?) {
-        makeWindowController().showWindow(sender)
+        // Open the new window where the currently focused window is working,
+        // matching new-tab/split behaviour.
+        makeWindowController(
+            initialWorkingDirectory: keyController?.focusedWorkingDirectory
+        ).showWindow(sender)
     }
 
     @objc private func newSession(_ sender: Any?) {
