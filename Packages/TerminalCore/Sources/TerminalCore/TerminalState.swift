@@ -190,6 +190,11 @@ public struct TerminalState: Sendable {
     /// Kitty keyboard protocol: pushed flag states (CSI > u / CSI < u).
     private var kittyFlagsStack: [KittyKeyboardFlags] = []
     private static let maxKittyStack = 32
+    /// The main screen's kitty flags + stack, parked while on the alternate
+    /// screen. The kitty spec gives each screen its own keyboard stack: entering
+    /// the alternate screen starts fresh and leaving it restores the main one.
+    private var savedPrimaryKittyFlags: KittyKeyboardFlags?
+    private var savedPrimaryKittyStack: [KittyKeyboardFlags]?
 
     // MARK: Inline images (kitty graphics / sixel / iTerm2)
 
@@ -814,6 +819,8 @@ public struct TerminalState: Sendable {
         shiftedOut = false
         currentLink = 0
         kittyFlagsStack.removeAll()
+        savedPrimaryKittyFlags = nil
+        savedPrimaryKittyStack = nil
         promptMarks.removeAll()
         progress = nil
         clearAllImages()
@@ -851,6 +858,12 @@ public struct TerminalState: Sendable {
         lines = clear ? blankLines(rows) : blankLines(rows)
         lineWrapped = Array(repeating: false, count: rows)
         isAlternateScreen = true
+        // The alternate screen gets its own kitty keyboard stack; park the
+        // main screen's so leaving restores it (kitty spec).
+        savedPrimaryKittyFlags = modes.kittyKeyboardFlags
+        savedPrimaryKittyStack = kittyFlagsStack
+        modes.kittyKeyboardFlags = []
+        kittyFlagsStack.removeAll()
         // Alternate-screen images start fresh; stale ones can't be valid.
         imagePlacements.removeAll { $0.onAlternateScreen }
         pendingWrap = false
@@ -863,6 +876,11 @@ public struct TerminalState: Sendable {
         lineWrapped = savedPrimaryWrapped ?? Array(repeating: false, count: rows)
         savedPrimaryLines = nil
         savedPrimaryWrapped = nil
+        // Restore the main screen's kitty keyboard stack.
+        modes.kittyKeyboardFlags = savedPrimaryKittyFlags ?? []
+        kittyFlagsStack = savedPrimaryKittyStack ?? []
+        savedPrimaryKittyFlags = nil
+        savedPrimaryKittyStack = nil
         isAlternateScreen = false
         // Drop alternate-screen images; primary placements resume.
         imagePlacements.removeAll { $0.onAlternateScreen }

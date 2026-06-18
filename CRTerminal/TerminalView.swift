@@ -400,6 +400,15 @@ final class TerminalView: NSView, NSTextInputClient {
     // MARK: Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // Kitty "report all keys as escape codes" (flag 0b1000) reports every
+        // key — including plain text — as a CSI u escape, so it must intercept
+        // before the input context (which would otherwise insert text). Only
+        // engaged when an app has set that flag; the legacy path below is
+        // untouched otherwise (issue #26).
+        if let bytes = kittyEncoded(event, eventType: event.isARepeat ? .repeat : .press) {
+            sendKeyboard(bytes)
+            return
+        }
         // Control combinations bypass the input context (^C must not reach
         // an IME). NSEvent already maps ctrl+letter to the control character;
         // ctrl+space stays a plain space (0x20) and must become NUL by hand.
@@ -432,6 +441,75 @@ final class TerminalView: NSView, NSTextInputClient {
             return
         }
         inputContext?.handleEvent(event)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        // Release events exist only at the "report event types" level, and we
+        // only know how a key was encoded when "report all keys" is also on
+        // (otherwise a release would echo an indistinguishable press). Both
+        // conditions are enforced inside `kittyEncoded` / here.
+        let kittyFlags = session?.snapshot.modes.kittyKeyboardFlags ?? []
+        guard kittyFlags.contains(.reportEventTypes),
+              let bytes = kittyEncoded(event, eventType: .release) else { return }
+        sendKeyboard(bytes)
+    }
+
+    /// Encode a key event under the kitty "report all keys as escape codes"
+    /// level, or nil when that flag isn't set (so the caller uses the legacy
+    /// path). The key code is best-effort: letters resolve their unshifted base
+    /// and shifted alternate; layout-specific bases (e.g. shifted digits) report
+    /// the produced character. Functional keys map by virtual key code / Apple's
+    /// function-key scalars.
+    private func kittyEncoded(_ event: NSEvent, eventType: KeyEventType) -> [UInt8]? {
+        let modes = session?.snapshot.modes
+        let kittyFlags = modes?.kittyKeyboardFlags ?? []
+        guard kittyFlags.contains(.reportAllKeysAsEscapeCodes) else { return nil }
+        let modifiers = keyModifiers(of: event)
+        if let key = Self.terminalKey(for: event) {
+            return KeyEncoder.encode(
+                key, modifiers: modifiers,
+                applicationCursorKeys: modes?.applicationCursorKeys ?? false,
+                kittyFlags: kittyFlags, eventType: eventType)
+        }
+        guard let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first,
+              !(0xF700...0xF8FF).contains(scalar.value) // private-use function keys
+        else { return nil }
+        let hasShift = modifiers.contains(.shift)
+        let base = hasShift
+            ? (String(scalar).lowercased().unicodeScalars.first ?? scalar)
+            : scalar
+        let shifted: Unicode.Scalar? = (hasShift && scalar != base) ? scalar : nil
+        let text = eventType == .release ? nil : event.characters
+        return KeyEncoder.encodeCharacter(
+            base, modifiers: modifiers, kittyFlags: kittyFlags,
+            eventType: eventType, shiftedScalar: shifted, text: text)
+    }
+
+    /// Map an NSEvent to a functional `TerminalKey`, or nil for a text key.
+    private static func terminalKey(for event: NSEvent) -> TerminalKey? {
+        switch event.keyCode {
+        case 36, 76: return .enter   // Return, keypad Enter
+        case 48: return .tab
+        case 51: return .backspace
+        case 53: return .escape
+        default: break
+        }
+        guard let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first else {
+            return nil
+        }
+        switch scalar.value {
+        case 0xF700: return .up
+        case 0xF701: return .down
+        case 0xF702: return .left
+        case 0xF703: return .right
+        case 0xF728: return .deleteForward
+        case 0xF729: return .home
+        case 0xF72B: return .end
+        case 0xF72C: return .pageUp
+        case 0xF72D: return .pageDown
+        case 0xF704...0xF70F: return .function(Int(scalar.value - 0xF704) + 1) // F1–F12
+        default: return nil
+        }
     }
 
     override func doCommand(by selector: Selector) {

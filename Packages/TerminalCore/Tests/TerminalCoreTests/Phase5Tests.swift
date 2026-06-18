@@ -443,6 +443,98 @@ struct KittyKeyboardTests {
         t.feed("\u{1B}[<u")
         #expect(t.state.modes.kittyKeyboardFlags == [])
     }
+
+    // MARK: Higher progressive-enhancement levels (issue #26)
+
+    @Test func setFlagsAssignsAndQueryReports() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[=5;1u") // assign disambiguate + reportAlternateKeys (0b101)
+        #expect(t.state.modes.kittyKeyboardFlags == [.disambiguate, .reportAlternateKeys])
+        t.feed("\u{1B}[?u")
+        #expect(t.drainResponses() == Array("\u{1B}[?5u".utf8))
+    }
+
+    @Test func setFlagsAddAndRemoveBits() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[=1;1u")      // assign 0b1
+        t.feed("\u{1B}[=2;2u")      // add 0b10
+        #expect(t.state.modes.kittyKeyboardFlags == [.disambiguate, .reportEventTypes])
+        t.feed("\u{1B}[=1;3u")      // remove 0b1
+        #expect(t.state.modes.kittyKeyboardFlags == [.reportEventTypes])
+    }
+
+    @Test func pushPopRestoresPriorFlags() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[=5;1u")      // current = 0b101
+        t.feed("\u{1B}[>26u")       // push, adopt 0b11010 (all but disambiguate)
+        #expect(t.state.modes.kittyKeyboardFlags.rawValue == 0b11010)
+        t.feed("\u{1B}[<u")         // pop
+        #expect(t.state.modes.kittyKeyboardFlags.rawValue == 0b101)
+    }
+
+    @Test func flagsResetAndRestoreAcrossAlternateScreen() {
+        var t = makeTerminal()
+        t.feed("\u{1B}[>5u")        // main screen: 0b101
+        t.feed("\u{1B}[?1049h")     // enter alternate screen
+        #expect(t.state.modes.kittyKeyboardFlags == []) // fresh stack
+        t.feed("\u{1B}[>2u")        // alt screen sets its own flags
+        #expect(t.state.modes.kittyKeyboardFlags == .reportEventTypes)
+        t.feed("\u{1B}[?1049l")     // leave: main flags restored
+        #expect(t.state.modes.kittyKeyboardFlags.rawValue == 0b101)
+    }
+
+    @Test func encoderReportsEventTypes() {
+        // Press vs release of the same key encode distinct :1 / :3 event types.
+        let flags: KittyKeyboardFlags = [.disambiguate, .reportEventTypes]
+        #expect(KeyEncoder.encode(.escape, kittyFlags: flags, eventType: .press)
+                == Array("\u{1B}[27;1:1u".utf8))
+        #expect(KeyEncoder.encode(.escape, kittyFlags: flags, eventType: .release)
+                == Array("\u{1B}[27;1:3u".utf8))
+        // Functional keys gain the event field too (Up, repeat).
+        #expect(KeyEncoder.encode(.up, kittyFlags: flags, eventType: .repeat)
+                == Array("\u{1B}[1;1:2A".utf8))
+    }
+
+    @Test func encoderReportsAllKeysAsEscapeCodes() {
+        // Plain 'a' becomes a CSI u sequence rather than the byte 0x61.
+        #expect(KeyEncoder.encodeCharacter(
+            "a", modifiers: [], kittyFlags: .reportAllKeysAsEscapeCodes)
+                == Array("\u{1B}[97u".utf8))
+        // Enter / Tab / Backspace report as escape codes at this level.
+        let all: KittyKeyboardFlags = .reportAllKeysAsEscapeCodes
+        #expect(KeyEncoder.encode(.enter, kittyFlags: all) == Array("\u{1B}[13u".utf8))
+        #expect(KeyEncoder.encode(.tab, kittyFlags: all) == Array("\u{1B}[9u".utf8))
+        #expect(KeyEncoder.encode(.backspace, kittyFlags: all) == Array("\u{1B}[127u".utf8))
+    }
+
+    @Test func encoderReportsAlternateKeys() {
+        // Shift+a: base 97, shifted 65, with the shift modifier.
+        let flags: KittyKeyboardFlags = [.reportAllKeysAsEscapeCodes, .reportAlternateKeys]
+        #expect(KeyEncoder.encodeCharacter(
+            "a", modifiers: [.shift], kittyFlags: flags, shiftedScalar: "A")
+                == Array("\u{1B}[97:65;2u".utf8))
+    }
+
+    @Test func encoderReportsAssociatedText() {
+        // The text field is appended as codepoints (here 'a' = 97).
+        let flags: KittyKeyboardFlags = [.reportAllKeysAsEscapeCodes, .reportAssociatedText]
+        #expect(KeyEncoder.encodeCharacter(
+            "a", modifiers: [], kittyFlags: flags, text: "a")
+                == Array("\u{1B}[97;;97u".utf8))
+    }
+
+    @Test func encoderRegressionWithoutHigherFlags() {
+        // With [] and disambiguate-only, output is byte-identical to before.
+        #expect(KeyEncoder.encode(.up) == Array("\u{1B}[A".utf8))
+        #expect(KeyEncoder.encode(.up, modifiers: [.shift]) == Array("\u{1B}[1;2A".utf8))
+        #expect(KeyEncoder.encode(.escape, kittyFlags: .disambiguate)
+                == Array("\u{1B}[27u".utf8))
+        #expect(KeyEncoder.encode(.enter, kittyFlags: .disambiguate) == [0x0D])
+        #expect(KeyEncoder.encodeCharacter("a", modifiers: [], kittyFlags: .disambiguate) == nil)
+        #expect(KeyEncoder.encodeCharacter(
+            "i", modifiers: [.control], kittyFlags: .disambiguate)
+                == Array("\u{1B}[105;5u".utf8))
+    }
 }
 
 struct SearchTests {
