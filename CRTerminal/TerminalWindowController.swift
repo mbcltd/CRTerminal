@@ -534,6 +534,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// Closes a whole sidebar session — every pane in it (the row's ✕).
     func closeSession(at index: Int) {
         guard tabs.indices.contains(index) else { return }
+        // Confirm before terminating this session's live panes (idle
+        // shells/multiplexers don't count). Done here rather than via
+        // windowShouldClose because close(pane:) kills panes eagerly.
+        let running = tabs[index].panes.compactMap { $0.session?.runningProcessName }
+        if !running.isEmpty,
+           !CloseConfirmation.confirm(processNames: running, verb: "Close") {
+            return
+        }
         for pane in tabs[index].panes {
             close(pane: pane)
         }
@@ -776,6 +784,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     @objc func closePane(_ sender: Any?) {
         guard let pane = focusedPane else {
             window?.close()
+            return
+        }
+        // `close(pane:)` terminates the pane before any cascade to
+        // window.close(), so confirm here (windowShouldClose would see it
+        // already gone) — no double prompt results.
+        if let name = pane.session?.runningProcessName,
+           !CloseConfirmation.confirm(processNames: [name], verb: "Close") {
             return
         }
         close(pane: pane)
@@ -1063,6 +1078,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         if minutes < 1 { return "\(Int(uptime))s" }
         if minutes < 60 { return "\(minutes)m" }
         return String(format: "%dh %02dm", minutes / 60, minutes % 60)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // Closing the window kills every pane in it: confirm if any still has
+        // a foreground process running (idle shells/multiplexers don't count).
+        let running = panes.compactMap { $0.session?.runningProcessName }
+        return running.isEmpty
+            || CloseConfirmation.confirm(processNames: running, verb: "Close")
     }
 
     func windowWillClose(_ notification: Notification) {

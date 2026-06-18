@@ -532,6 +532,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         true
     }
 
+    func applicationShouldTerminate(
+        _ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Like Terminal.app/iTerm2: block the quit while any session still has
+        // a foreground process running (idle shells and multiplexers excepted).
+        let running = controllers
+            .flatMap(\.panes)
+            .compactMap { $0.session?.runningProcessName }
+        guard !running.isEmpty else { return .terminateNow }
+        return CloseConfirmation.confirm(processNames: running, verb: "Quit")
+            ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Persist *before* tearing down: the shells are still alive, so cwds
         // can be read (proc_pidinfo) before SIGHUP, and synchronous writes
