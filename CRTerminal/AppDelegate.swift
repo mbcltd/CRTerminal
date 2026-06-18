@@ -63,7 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // works regardless of the system "Close windows when quitting"
         // preference. `System` mode consults that preference directly via
         // `shouldRestoreOnLaunch`; `Always` ignores it; `Never` is off.
-        if controllers.isEmpty, shouldRestoreOnLaunch {
+        // CRT_CLEAN_LAUNCH (tests/probes) starts fresh without restoring —
+        // and, unlike `Never`, without deleting the user's saved sessions
+        // (the store is pointed at a throwaway dir for the run).
+        if controllers.isEmpty, shouldRestoreOnLaunch, !Self.isCleanLaunch {
             restoreLayoutFromDisk()
         }
 
@@ -548,6 +551,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// directly (rather than waiting for AppKit's restoration callback, which
     /// only fires under that same preference but unreliably) lets us drive the
     /// reliable on-disk path while still honouring the user's system choice.
+    /// Set by tests/probes to start from a blank slate: no restoration, and a
+    /// throwaway state store, so a test run never touches the user's real
+    /// saved sessions (and never prompts for their restored working
+    /// directories). See `SessionStateStore`'s directory selection.
+    static var isCleanLaunch: Bool {
+        ProcessInfo.processInfo.environment["CRT_CLEAN_LAUNCH"] != nil
+    }
+
     var shouldRestoreOnLaunch: Bool {
         Self.shouldRestore(
             mode: SettingsStore.shared.settings.restoration,

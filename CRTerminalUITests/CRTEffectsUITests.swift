@@ -11,7 +11,7 @@ final class CRTEffectsUITests: XCTestCase {
     @MainActor
     func testGalleryDegaussAndPresetSwitching() throws {
         let app = XCUIApplication()
-        app.launch()
+        app.launchClean()
 
         let window = app.windows["CRTerminal"]
         XCTAssertTrue(window.waitForExistence(timeout: 5))
@@ -51,7 +51,7 @@ final class CRTEffectsUITests: XCTestCase {
     @MainActor
     func testTabsSplitsAndSearch() throws {
         let app = XCUIApplication()
-        app.launch()
+        app.launchClean()
         let window = app.windows["CRTerminal"].firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 5))
 
