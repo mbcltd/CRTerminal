@@ -2,7 +2,7 @@
   "name": "Amdek 310A",
   "year": 1983,
   "blurb": "The amber classic that lived on a million office desks. Warm phosphor, honest scan lines.",
-  "phosphor": { "color": "#FFB000", "decayMs": 90, "monochrome": true },
+  "phosphor": { "color": "#FFC740", "decayMs": 90, "monochrome": true },
   "geometry": { "curvature": 0.035, "cornerRadius": 0.04, "vignette": 0.2 },
   "mask": { "type": "none" },
   "scanlines": { "lines": 350, "strength": 0.35, "beamWidth": 0.8 },

@@ -2,7 +2,7 @@
   "name": "IBM 5151",
   "year": 1981,
   "blurb": "IBM's Monochrome Display: green P39 phosphor with heavy persistence — cursor trails included at no extra charge.",
-  "phosphor": { "color": "#2EFF66", "decayMs": 350, "monochrome": true },
+  "phosphor": { "color": "#62FF8F", "decayMs": 350, "monochrome": true },
   "geometry": { "curvature": 0.035, "cornerRadius": 0.04, "vignette": 0.22 },
   "mask": { "type": "none" },
   "scanlines": { "lines": 350, "strength": 0.35, "beamWidth": 0.8 },

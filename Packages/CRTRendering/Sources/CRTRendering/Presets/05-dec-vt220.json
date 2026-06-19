@@ -2,7 +2,7 @@
   "name": "DEC VT220",
   "year": 1983,
   "blurb": "The terminal other terminals pretend to be. Fast soft-white phosphor, gentle curvature, no nonsense.",
-  "phosphor": { "color": "#DCE8FF", "decayMs": 60, "monochrome": true },
+  "phosphor": { "color": "#EDF2FF", "decayMs": 60, "monochrome": true },
   "geometry": { "curvature": 0.035, "cornerRadius": 0.04, "vignette": 0.15 },
   "mask": { "type": "none" },
   "scanlines": { "lines": 240, "strength": 0.3, "beamWidth": 0.85 },
