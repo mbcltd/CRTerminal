@@ -361,9 +361,20 @@ final class GlyphAtlas {
             uvOrigin: SIMD2(Float(slot.x) / textureSize, Float(slot.y) / textureSize),
             uvSize: SIMD2(Float(width) / textureSize, Float(height) / textureSize),
             size: SIMD2(Float(width), Float(height)),
+            // The glyph is positioned against the bitmap's bottom-left with an
+            // exact integer `pad` (see the translate above), so both bearings
+            // must be measured from that same anchored, un-rounded edge. The X
+            // bearing is the gap from the pen to the glyph's left, anchored to
+            // minX. The Y bearing is the distance from the texture's top down to
+            // the baseline; the baseline sits `pad - rect.minY*scale` up from the
+            // bottom, so from the top that is `height - pad + rect.minY*scale`.
+            // Deriving it from the rounded-up `height` (not `rect.maxY`) keeps the
+            // baseline exact: computing it from maxY instead drops the fractional
+            // part lost to height's `.rounded(.up)`, shifting each glyph's
+            // baseline down by a per-glyph, size-dependent sub-pixel amount.
             bearing: SIMD2(
                 Float(rect.minX * scale) - Float(pad),
-                Float(rect.maxY * scale) + Float(pad)),
+                Float(height - pad) + Float(rect.minY * scale)),
             isColor: color,
             isEmpty: false)
     }
