@@ -73,6 +73,21 @@ extension TerminalState {
         return nil
     }
 
+    /// Soft-wrap flag for the row at an absolute index: true means the row
+    /// continues onto the next (autowrap fired, no hard newline). Mirrors
+    /// `absoluteLine`'s scrollback/screen resolution; false when out of range.
+    public func absoluteWrapped(_ index: Int) -> Bool {
+        let scrollbackIndex = index - evictedLineCount
+        if scrollbackIndex >= 0 && scrollbackIndex < scrollbackWrapped.count {
+            return scrollbackWrapped[scrollbackIndex]
+        }
+        let screenIndex = index - absoluteScreenTop
+        if screenIndex >= 0 && screenIndex < lineWrapped.count {
+            return lineWrapped[screenIndex]
+        }
+        return false
+    }
+
     /// The viewport: `rows` lines ending `scrollOffset` lines back from live.
     public func viewportLines(scrollOffset: Int) -> [[Cell]] {
         let offset = min(max(0, scrollOffset), scrollback.count)

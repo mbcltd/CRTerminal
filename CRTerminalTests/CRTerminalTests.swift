@@ -35,6 +35,60 @@ struct URLDetectionTests {
         #expect(URLDetection.url(from: "https://example.com") != nil)
         #expect(URLDetection.url(from: "not a url") == nil)
     }
+
+    // MARK: Soft-wrapped URLs (joined across physical rows)
+
+    /// A 25-char URL on a 10-column grid spills across rows 0, 1, 2.
+    private static let wrappedURL = "https://ex.com/abcdefghij"
+
+    private func wrappedTerminal() -> Terminal {
+        var t = Terminal(columns: 10, rows: 4)
+        t.feed(Array(Self.wrappedURL.utf8))
+        return t
+    }
+
+    @Test func resolvesWrappedURLFromFirstRow() {
+        let hit = URLDetection.locate(in: wrappedTerminal().state, atRow: 0, column: 3)
+        #expect(hit?.url.absoluteString == Self.wrappedURL)
+        #expect(hit?.start == SelectionPoint(row: 0, column: 0))
+        #expect(hit?.end == SelectionPoint(row: 2, column: 4))
+    }
+
+    @Test func resolvesWrappedURLFromContinuationRow() {
+        // Clicking the middle physical row still yields the whole URL.
+        let hit = URLDetection.locate(in: wrappedTerminal().state, atRow: 1, column: 2)
+        #expect(hit?.url.absoluteString == Self.wrappedURL)
+        #expect(hit?.start == SelectionPoint(row: 0, column: 0))
+        #expect(hit?.end == SelectionPoint(row: 2, column: 4))
+    }
+
+    @Test func resolvesWrappedURLFromLastRow() {
+        let hit = URLDetection.locate(in: wrappedTerminal().state, atRow: 2, column: 4)
+        #expect(hit?.url.absoluteString == Self.wrappedURL)
+        #expect(URLDetection.detect(in: wrappedTerminal().state, atRow: 1, column: 0)?
+            .absoluteString == Self.wrappedURL)
+    }
+
+    @Test func unwrappedURLResolvesToOneRow() {
+        var t = Terminal(columns: 40, rows: 4)
+        t.feed(Array("see https://ex.com/x here".utf8))
+        let hit = URLDetection.locate(in: t.state, atRow: 0, column: 6)
+        #expect(hit?.url.absoluteString == "https://ex.com/x")
+        #expect(hit?.start == SelectionPoint(row: 0, column: 4))
+        #expect(hit?.end == SelectionPoint(row: 0, column: 19))
+        #expect(URLDetection.locate(in: t.state, atRow: 0, column: 1) == nil)
+    }
+
+    @Test func osc8SpanJoinsAcrossWrap() {
+        // An OSC 8 hyperlink whose visible text wraps spans all three rows.
+        var t = Terminal(columns: 10, rows: 4)
+        let open = "\u{1b}]8;;https://ex.com/page\u{1b}\\"
+        let close = "\u{1b}]8;;\u{1b}\\"
+        t.feed(Array((open + "linktextlinktextlinkt" + close).utf8))  // 21 visible chars
+        let span = URLDetection.osc8Span(in: t.state, atRow: 1, column: 3)
+        #expect(span?.start == SelectionPoint(row: 0, column: 0))
+        #expect(span?.end == SelectionPoint(row: 2, column: 0))
+    }
 }
 
 struct TerminalSettingsTests {
