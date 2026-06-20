@@ -835,19 +835,20 @@ final class TerminalView: NSView, NSTextInputClient {
             clearHoveredLink()
             return
         }
-        let columns: Range<Int>?
+        // Resolve the underline span, joining soft-wrapped rows so a URL that
+        // spills onto the next physical row underlines in full.
+        let ends: (start: SelectionPoint, end: SelectionPoint)?
         if line[cell.x].link != 0 {
-            columns = osc8Columns(in: line, atColumn: cell.x)
+            ends = URLDetection.osc8Span(in: state, atRow: row, column: cell.x)
         } else {
-            columns = URLDetection.locate(in: line, atColumn: cell.x)?.columns
+            ends = URLDetection.locate(in: state, atRow: row, column: cell.x)
+                .map { ($0.start, $0.end) }
         }
-        guard let columns, !columns.isEmpty else {
+        guard let ends else {
             clearHoveredLink()
             return
         }
-        let span = Selection(
-            anchor: SelectionPoint(row: row, column: columns.lowerBound),
-            head: SelectionPoint(row: row, column: columns.upperBound - 1))
+        let span = Selection(anchor: ends.start, head: ends.end)
         if span != hoveredLink {
             hoveredLink = span
             pushViewStateToRenderLoop()
@@ -868,30 +869,19 @@ final class TerminalView: NSView, NSTextInputClient {
         pushViewStateToRenderLoop()
     }
 
-    /// Column span of the contiguous OSC 8 hyperlink run containing `column`.
-    private func osc8Columns(in line: [Cell], atColumn column: Int) -> Range<Int>? {
-        let id = line[column].link
-        guard id != 0 else { return nil }
-        var lo = column
-        while lo > 0, line[lo - 1].link == id { lo -= 1 }
-        var hi = column
-        while hi + 1 < line.count, line[hi + 1].link == id { hi += 1 }
-        return lo..<(hi + 1)
-    }
-
     private func openLink(at event: NSEvent) {
         guard let state = session?.snapshot else { return }
         let point = absolutePoint(of: event)
         guard let line = state.absoluteLine(point.row),
               point.column < line.count else { return }
-        // OSC 8 hyperlink on the cell wins; otherwise scan the row's text.
+        // OSC 8 hyperlink on the cell wins; otherwise scan the (wrap-joined) text.
         if line[point.column].link != 0,
            let target = state.linkURL(line[point.column].link),
            let url = URLDetection.url(from: target) {
             NSWorkspace.shared.open(url)
             return
         }
-        if let url = URLDetection.detect(in: line, atColumn: point.column) {
+        if let url = URLDetection.detect(in: state, atRow: point.row, column: point.column) {
             NSWorkspace.shared.open(url)
         }
     }
