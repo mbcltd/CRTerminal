@@ -176,6 +176,11 @@ final class TerminalView: NSView, NSTextInputClient {
     /// Lines scrolled back from live (0 = following output).
     private var scrollOffset = 0
     private var wheelAccumulator: CGFloat = 0
+    /// The macOS-idiomatic overlay scrollbar in the right gutter.
+    private let scrollbar = ScrollbarOverlay()
+    /// While dragging the knob: distance from the knob's top edge to the
+    /// pointer, so the knob doesn't jump to the cursor on grab.
+    private var scrollbarDragGrab: CGFloat?
     private var selection: Selection?
     private var selectionAnchor: SelectionPoint?
     private var lastReportedDragCell: (x: Int, y: Int)?
@@ -239,6 +244,8 @@ final class TerminalView: NSView, NSTextInputClient {
         if clamped != scrollOffset {
             scrollOffset = clamped
             pushViewStateToRenderLoop()
+        } else {
+            updateScrollbar() // scrollback grew: refresh the knob proportion
         }
         renderLoop?.poke()
     }
@@ -326,6 +333,7 @@ final class TerminalView: NSView, NSTextInputClient {
             metalLayer.drawableSize = size
         }
         updateBottomBar()
+        updateScrollbar()
         renderLoop?.poke(force: true)
     }
 
@@ -333,6 +341,31 @@ final class TerminalView: NSView, NSTextInputClient {
         renderLoop?.setViewState(
             scrollOffset: scrollOffset, selection: selection,
             markedText: markedText, hoveredLink: hoveredLink)
+        updateScrollbar()
+    }
+
+    /// Syncs the overlay scrollbar's knob to the current scroll position and
+    /// theme. Suppressed in the alternate screen (no navigable scrollback).
+    private func updateScrollbar() {
+        guard let layer, let state = session?.snapshot else { return }
+        scrollbar.attach(to: layer)
+        let bottom = bounds.height - contentInset - bottomBarReserve
+        scrollbar.update(
+            viewSize: bounds.size, top: contentInset, bottom: bottom,
+            scrollOffset: scrollOffset, scrollbackCount: state.scrollback.count,
+            rows: state.rows,
+            isLight: ColorScheme.resolve(for: preset).isLightBackground,
+            suppressed: state.isAlternateScreen)
+    }
+
+    /// Click in the gutter above/below the knob pages the viewport one screen
+    /// toward the click.
+    private func pageScrollbar(towardY y: CGFloat, knobTop: CGFloat) {
+        guard let state = session?.snapshot else { return }
+        let delta = y < knobTop ? state.rows : -state.rows
+        scrollOffset = min(max(0, scrollOffset + delta), state.scrollback.count)
+        pushViewStateToRenderLoop()
+        scrollbar.flash()
     }
 
     private func wireSession() {
@@ -719,6 +752,20 @@ final class TerminalView: NSView, NSTextInputClient {
             openLink(at: event)
             return
         }
+        // The overlay scrollbar owns its lane while it's showing: drag the knob
+        // to seek, click the track to page.
+        if scrollbar.isVisible, let geo = scrollbar.geometry {
+            let point = convert(event.locationInWindow, from: nil)
+            if geo.hitsKnob(point) {
+                scrollbarDragGrab = point.y - geo.knob.minY
+                scrollbar.beginDrag()
+                return
+            }
+            if geo.hitsLane(point) {
+                pageScrollbar(towardY: point.y, knobTop: geo.knob.minY)
+                return
+            }
+        }
         if reportMouse(.press, button: .left, event: event) { return }
         let point = absolutePoint(of: event)
         switch event.clickCount {
@@ -736,6 +783,15 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if let grab = scrollbarDragGrab, let geo = scrollbar.geometry {
+            let point = convert(event.locationInWindow, from: nil)
+            let newOffset = geo.offset(forKnobTop: point.y - grab)
+            if newOffset != scrollOffset {
+                scrollOffset = newOffset
+                pushViewStateToRenderLoop()
+            }
+            return
+        }
         if reportMouse(.drag, button: .left, event: event) { return }
         let point = absolutePoint(of: event)
         if var current = selection, current.granularity != .character {
@@ -748,6 +804,11 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if scrollbarDragGrab != nil {
+            scrollbarDragGrab = nil
+            scrollbar.endDrag()
+            return
+        }
         lastReportedDragCell = nil
         if reportMouse(.release, button: .left, event: event) { return }
         if let selection, selection.isEmpty {
@@ -760,10 +821,13 @@ final class TerminalView: NSView, NSTextInputClient {
         updateHoveredLink(
             at: event.locationInWindow,
             commandHeld: event.modifierFlags.contains(.command))
+        let point = convert(event.locationInWindow, from: nil)
+        scrollbar.setHovering(scrollbar.geometry?.hitsLane(point) ?? false)
     }
 
     override func mouseExited(with event: NSEvent) {
         clearHoveredLink()
+        scrollbar.setHovering(false)
     }
 
     override func flagsChanged(with event: NSEvent) {
@@ -830,6 +894,7 @@ final class TerminalView: NSView, NSTextInputClient {
         let target = scrollOffset + lines
         scrollOffset = min(max(0, target), state.scrollback.count)
         pushViewStateToRenderLoop()
+        scrollbar.flash()
     }
 
     // MARK: Links
@@ -917,12 +982,14 @@ final class TerminalView: NSView, NSTextInputClient {
         } else {
             scrollOffset = 0 // past the last prompt: back to live
             pushViewStateToRenderLoop()
+            scrollbar.flash()
         }
     }
 
     private func scrollTo(absoluteRow row: Int, in state: TerminalState) {
         scrollOffset = min(max(0, state.absoluteScreenTop - row), state.scrollback.count)
         pushViewStateToRenderLoop()
+        scrollbar.flash()
     }
 
     // MARK: Search (the window's ⌘F bar drives this)
