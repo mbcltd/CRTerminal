@@ -968,9 +968,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             searchBar.focus()
             return
         }
-        let bar = SearchBar(frame: .zero)
+        let bar = SearchBar(frame: .zero, preset: activePreset)
         bar.onSearch = { [weak self] query, backward in
-            self?.focusedPane?.find(query, backward: backward)
+            self?.focusedPane?.find(query, backward: backward) ?? .none
+        }
+        bar.onQueryChange = { [weak self] query in
+            self?.focusedPane?.updateSearch(query) ?? .none
         }
         bar.onDismiss = { [weak self] in
             self?.dismissSearch()
@@ -1100,23 +1103,51 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
-/// The slide-down find bar: a search field plus prev/next, Esc dismisses.
-final class SearchBar: NSVisualEffectView, NSSearchFieldDelegate {
+/// The slide-down find bar: a `/`-led search field with a live `N / total`
+/// match counter and prev/next; Esc dismisses. Colours track the active
+/// preset so it wears the same theme as the sidebar and titlebar chrome.
+final class SearchBar: NSView, NSSearchFieldDelegate {
     private let field = NSSearchField()
-    var onSearch: ((String, Bool) -> Void)?
+    private let slash = NSTextField(labelWithString: "/")
+    private let counter = NSTextField(labelWithString: "")
+    private let theme: SidebarTheme
+    /// Stepping: query + backward flag. Returns the resulting counter summary.
+    var onSearch: ((String, Bool) -> SearchSummary)?
+    /// Live re-search as the query changes. Returns the counter summary.
+    var onQueryChange: ((String) -> SearchSummary)?
     var onDismiss: (() -> Void)?
+    private var lastSummary: SearchSummary = .none
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, preset: CRTPreset) {
+        theme = SidebarTheme(preset: preset)
         super.init(frame: frameRect)
-        material = .headerView
-        blendingMode = .withinWindow
+        wantsLayer = true
+        layer?.backgroundColor = theme.cardBackground.cgColor
+
+        let separator = NSView()
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = theme.separator.cgColor
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(separator)
+
+        slash.font = .monospacedSystemFont(ofSize: 15, weight: .heavy)
+        slash.textColor = theme.accent
+        slash.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(slash)
 
         field.placeholderString = "Search scrollback"
         field.delegate = self
         field.target = self
         field.action = #selector(searchSubmitted(_:))
+        field.textColor = theme.text
         field.translatesAutoresizingMaskIntoConstraints = false
         addSubview(field)
+
+        counter.font = .monospacedSystemFont(ofSize: 11.5, weight: .bold)
+        counter.textColor = theme.dim
+        counter.alignment = .right
+        counter.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(counter)
 
         let previous = NSButton(
             image: NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Previous match")!,
@@ -1125,6 +1156,8 @@ final class SearchBar: NSVisualEffectView, NSSearchFieldDelegate {
             image: NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Next match")!,
             target: self, action: #selector(findNext(_:)))
         let done = NSButton(title: "Done", target: self, action: #selector(dismiss(_:)))
+        previous.contentTintColor = theme.accent
+        next.contentTintColor = theme.accent
         for button in [previous, next, done] {
             button.bezelStyle = .accessoryBarAction
             button.translatesAutoresizingMaskIntoConstraints = false
@@ -1132,11 +1165,20 @@ final class SearchBar: NSVisualEffectView, NSSearchFieldDelegate {
         }
 
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            separator.leadingAnchor.constraint(equalTo: leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: bottomAnchor),
+            separator.heightAnchor.constraint(equalToConstant: 1),
+            slash.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            slash.centerYAnchor.constraint(equalTo: centerYAnchor),
+            field.leadingAnchor.constraint(equalTo: slash.trailingAnchor, constant: 6),
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
             field.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
             field.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
-            previous.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
+            counter.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 10),
+            counter.centerYAnchor.constraint(equalTo: centerYAnchor),
+            counter.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            previous.leadingAnchor.constraint(equalTo: counter.trailingAnchor, constant: 8),
             previous.centerYAnchor.constraint(equalTo: centerYAnchor),
             next.leadingAnchor.constraint(equalTo: previous.trailingAnchor, constant: 4),
             next.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -1156,7 +1198,30 @@ final class SearchBar: NSVisualEffectView, NSSearchFieldDelegate {
 
     func repeatSearch(backward: Bool) {
         guard !field.stringValue.isEmpty else { return }
-        onSearch?(field.stringValue, backward)
+        if let summary = onSearch?(field.stringValue, backward) {
+            setCounter(summary)
+        }
+    }
+
+    /// Updates the counter label. "no results" vs. blank is decided from the
+    /// field's own text (an empty query has no count to show).
+    func setCounter(_ summary: SearchSummary) {
+        lastSummary = summary
+        if field.stringValue.isEmpty {
+            counter.stringValue = ""
+        } else if summary.total == 0 {
+            counter.stringValue = "no results"
+            counter.textColor = theme.faint
+        } else {
+            counter.stringValue = "\(summary.current) / \(summary.total)"
+            counter.textColor = theme.text
+        }
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        if let summary = onQueryChange?(field.stringValue) {
+            setCounter(summary)
+        }
     }
 
     @objc private func searchSubmitted(_ sender: Any?) {
