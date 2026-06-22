@@ -92,4 +92,40 @@ struct TerminalRendererTests {
         let p = pixel(image, cellW, cellH)
         #expect(p.r > 150 && p.g < 80 && p.b < 80)
     }
+
+    @Test func searchMatchesHighlightDimAndCurrentBright() throws {
+        guard let renderer = makeRenderer() else { return }
+        // Six 'a's on row 0; the cursor lands on row 1, so row-0 cells carry
+        // no cursor inversion to confuse the background read.
+        var terminal = Terminal(columns: 6, rows: 2)
+        terminal.feed(Array("aaaaaa\r\n".utf8))
+
+        let top = terminal.state.absoluteScreenTop
+        func match(col: Int) -> Selection {
+            Selection(
+                anchor: SelectionPoint(row: top, column: col),
+                head: SelectionPoint(row: top, column: col))
+        }
+        let dim = match(col: 1)
+        let current = match(col: 3)
+        let image = try #require(renderer.renderImage(
+            terminal.state, searchMatches: [dim, current], currentMatch: current))
+
+        let cellW = Int(renderer.cellSize.width)
+        // Sample near the top of each cell, above the lowercase glyph, so the
+        // pixel is the cell background (the highlight) rather than the 'a'.
+        func bgOf(col: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
+            pixel(image, cellW * col + cellW / 2, 2)
+        }
+        let dimBG = bgOf(col: 1)
+        let currentBG = bgOf(col: 3)
+        let plainBG = bgOf(col: 5)
+
+        // Current match is the bright amber; every other match is dim amber;
+        // an unmatched cell keeps the near-black default background.
+        #expect(currentBG.r > 120 && currentBG.g > 70)
+        #expect(dimBG.r > 45 && dimBG.r < 110 && dimBG.b < 60)
+        #expect(currentBG.r > dimBG.r)
+        #expect(plainBG.r < 40 && plainBG.g < 40 && plainBG.b < 40)
+    }
 }

@@ -9,6 +9,12 @@ public struct ColorScheme: Sendable {
     /// The block/bar/underline cursor fill. Defaults to `foreground` (xterm's
     /// behaviour); OSC 12 overrides it via `applyingOverrides`.
     public var cursorColor: UInt32
+    /// Find-bar highlight for *every* match in the buffer (dim); the current
+    /// match is emphasized with `searchCurrentMatchBackground` instead.
+    public var searchMatchBackground: UInt32
+    /// Find-bar highlight for the *current* match (bright — bloom turns it into
+    /// the glow the mockup calls for under CRT presets).
+    public var searchCurrentMatchBackground: UInt32
 
     public init(
         foreground: UInt32, background: UInt32,
@@ -20,6 +26,12 @@ public struct ColorScheme: Sendable {
         self.selectionBackground = selectionBackground
         self.palette = palette
         self.cursorColor = foreground
+        // Warm amber highlights, tuned per background luma so the cell's
+        // existing foreground stays legible over them.
+        let (match, current) = Self.defaultSearchHighlights(
+            backgroundIsLight: Self.isLight(background))
+        self.searchMatchBackground = match
+        self.searchCurrentMatchBackground = current
     }
 
     /// Light gray on near-black with the standard xterm 256-color palette.
@@ -81,10 +93,25 @@ public struct ColorScheme: Sendable {
     /// Whether the background reads as light (Rec. 601 luma over half), the
     /// authoritative signal for the COLORFGBG light/dark hint regardless of how
     /// the scheme was derived (appearance flag or a custom palette's hue).
-    public var isLightBackground: Bool {
-        let (r, g, b) = backgroundRGB
-        let luma = 0.299 * Double(r) + 0.587 * Double(g) + 0.114 * Double(b)
-        return luma > 127.5
+    public var isLightBackground: Bool { Self.isLight(background) }
+
+    /// Rec. 601 luma test on a packed color — over half reads as light.
+    private static func isLight(_ packed: UInt32) -> Bool {
+        let r = Double((packed >> 24) & 0xFF)
+        let g = Double((packed >> 16) & 0xFF)
+        let b = Double((packed >> 8) & 0xFF)
+        return 0.299 * r + 0.587 * g + 0.114 * b > 127.5
+    }
+
+    /// The dim/current find-match fills for a given background. Dark schemes
+    /// get deep amber so light text stays readable; light schemes get a pale
+    /// yellow → orange pair that dark text reads cleanly over.
+    private static func defaultSearchHighlights(
+        backgroundIsLight: Bool
+    ) -> (match: UInt32, current: UInt32) {
+        backgroundIsLight
+            ? (pack(0xFF, 0xE0, 0x8A), pack(0xFF, 0xA5, 0x33))
+            : (pack(0x4A, 0x3A, 0x0E), pack(0x9C, 0x6A, 0x12))
     }
 
     private static func unpack(_ c: UInt32) -> (red: UInt8, green: UInt8, blue: UInt8) {

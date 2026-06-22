@@ -1121,6 +1121,11 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     var onQueryChange: ((String, SearchOptions) -> SearchSummary)?
     var onDismiss: (() -> Void)?
     private var lastSummary: SearchSummary = .none
+    /// Coalesces the live re-search while typing — scanning the whole
+    /// scrollback on every keystroke stutters on large buffers, so we wait for
+    /// a brief lull. Enter / next / prev / chip toggles still search at once.
+    private var liveSearchTimer: Timer?
+    private static let liveSearchDebounce: TimeInterval = 0.09
 
     init(frame frameRect: NSRect, preset: CRTPreset) {
         theme = SidebarTheme(preset: preset)
@@ -1243,14 +1248,16 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
         settings.caseSensitive = caseChip.state == .on
         settings.wholeWord = wordChip.state == .on
         settings.regex = regexChip.state == .on
-        // Re-run live against the current query.
-        if let summary = onQueryChange?(field.stringValue, currentOptions) {
-            setCounter(summary)
-        }
+        // Re-run live against the current query (toggling is a deliberate,
+        // infrequent action, so it's worth scanning at once).
+        liveSearchTimer?.invalidate()
+        runLiveSearch()
     }
 
     func repeatSearch(backward: Bool) {
         guard !field.stringValue.isEmpty else { return }
+        // A pending live scan is now redundant — this stepping search supersedes it.
+        liveSearchTimer?.invalidate()
         if let summary = onSearch?(field.stringValue, currentOptions, backward) {
             setCounter(summary)
         }
@@ -1275,6 +1282,24 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     }
 
     func controlTextDidChange(_ notification: Notification) {
+        liveSearchTimer?.invalidate()
+        // Clearing the query is cheap, so reflect it immediately; otherwise
+        // debounce so a full-scrollback scan runs at most once per typing lull.
+        guard !field.stringValue.isEmpty else {
+            runLiveSearch()
+            return
+        }
+        liveSearchTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.liveSearchDebounce, repeats: false
+        ) { [weak self] _ in
+            self?.runLiveSearch()
+        }
+    }
+
+    /// Runs the live (typing) search against the current query + options and
+    /// updates the counter. Reads the field fresh so a debounced fire uses the
+    /// latest text.
+    private func runLiveSearch() {
         if let summary = onQueryChange?(field.stringValue, currentOptions) {
             setCounter(summary)
         }
@@ -1293,11 +1318,13 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     }
 
     @objc private func dismiss(_ sender: Any?) {
+        liveSearchTimer?.invalidate()
         onDismiss?()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if selector == #selector(NSResponder.cancelOperation(_:)) {
+            liveSearchTimer?.invalidate()
             onDismiss?()
             return true
         }

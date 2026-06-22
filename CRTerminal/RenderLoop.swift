@@ -14,6 +14,22 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         var markedText: String?
         /// Cell span of the URL/path currently ⌘-hovered (drawn underlined).
         var hoveredLink: Selection?
+        /// Every find match (dim highlight); the current one is bright. This
+        /// list can span the whole scrollback, so it is deliberately excluded
+        /// from `==` — `searchGeneration` (bumped whenever the list changes)
+        /// stands in, keeping the per-frame change check O(1).
+        var searchMatches: [Selection] = []
+        var searchGeneration = 0
+        var currentMatch: Selection?
+
+        static func == (lhs: ViewState, rhs: ViewState) -> Bool {
+            lhs.scrollOffset == rhs.scrollOffset
+                && lhs.selection == rhs.selection
+                && lhs.markedText == rhs.markedText
+                && lhs.hoveredLink == rhs.hoveredLink
+                && lhs.searchGeneration == rhs.searchGeneration
+                && lhs.currentMatch == rhs.currentMatch
+        }
     }
 
     private struct Shared {
@@ -95,12 +111,15 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     func setViewState(
         scrollOffset: Int, selection: Selection?, markedText: String? = nil,
-        hoveredLink: Selection? = nil
+        hoveredLink: Selection? = nil, searchMatches: [Selection] = [],
+        searchGeneration: Int = 0, currentMatch: Selection? = nil
     ) {
         let blocked = shared.withLock { shared in
             shared.viewState = ViewState(
                 scrollOffset: scrollOffset, selection: selection,
-                markedText: markedText, hoveredLink: hoveredLink)
+                markedText: markedText, hoveredLink: hoveredLink,
+                searchMatches: searchMatches, searchGeneration: searchGeneration,
+                currentMatch: currentMatch)
             return shared.invalidated || shared.occluded
         }
         guard !blocked else { return }
@@ -188,6 +207,8 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
             selection: viewState.selection,
             markedText: viewState.markedText,
             hoveredLink: viewState.hoveredLink,
+            searchMatches: viewState.searchMatches,
+            currentMatch: viewState.currentMatch,
             contentChanged: contentChanged,
             at: now,
             preset: preset,

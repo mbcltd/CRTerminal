@@ -160,90 +160,101 @@ extension TerminalState {
     private static func matches(
         in line: [Cell], pattern: SearchPattern
     ) -> [(Int, Int)] {
-        // Flatten the row to one scalar per real cell, remembering each
-        // scalar's grid column. Wide-cell spacers are skipped so a match's
-        // end column can step past the full glyph.
-        var scalars: [UInt32] = []
-        var columnOf: [Int] = []
-        scalars.reserveCapacity(line.count)
-        for (x, cell) in line.enumerated() where !cell.attributes.contains(.wideSpacer) {
-            scalars.append(cell.glyph)
-            columnOf.append(x)
-        }
-        guard !scalars.isEmpty else { return [] }
-
-        // Maps a half-open scalar index range [lo, hi) to grid columns,
-        // expanding the end past a trailing wide glyph.
-        func columns(from lo: Int, to hi: Int) -> (Int, Int) {
-            let lastIndex = hi - 1
-            let lastCell = line[columnOf[lastIndex]]
-            let end = columnOf[lastIndex] + (lastCell.attributes.contains(.wide) ? 2 : 1)
-            return (columnOf[lo], end)
-        }
-
         switch pattern.kind {
         case let .literal(query, wholeWord, caseSensitive):
-            // Fold the row to the query's case basis so comparison is direct;
-            // word-boundary tests use the same (folded) scalars, which is
-            // fine since folding never changes a scalar's word-ness.
-            let row = caseSensitive ? scalars : scalars.map(fold)
+            // The common, hot path (every find-bar keystroke): scan the cells
+            // in place so no per-line scalar/column arrays are allocated.
             return literalMatches(
-                row: row, query: query, wholeWord: wholeWord, columns: columns)
+                in: line, query: query, wholeWord: wholeWord,
+                caseSensitive: caseSensitive)
         case let .regex(regex):
-            return regexMatches(scalars: scalars, regex: regex, columns: columns)
+            return regexMatches(in: line, regex: regex)
         }
     }
 
+    /// The folded glyph of a non-spacer cell, for direct comparison against the
+    /// (already folded) query.
+    private static func glyph(of cell: Cell, caseSensitive: Bool) -> UInt32 {
+        caseSensitive ? cell.glyph : fold(cell.glyph)
+    }
+
+    /// The next non-`wideSpacer` column at or after `column`, or `line.count`.
+    private static func nextGlyphColumn(in line: [Cell], from column: Int) -> Int {
+        var c = column
+        while c < line.count, line[c].attributes.contains(.wideSpacer) { c += 1 }
+        return c
+    }
+
+    /// Allocation-free literal scan over the cells. Wide-cell spacers are
+    /// skipped (so the query matches against full glyphs) and a match's end
+    /// column steps past a trailing wide glyph, matching the column mapping the
+    /// old flatten-then-scan path produced.
     private static func literalMatches(
-        row scalars: [UInt32], query: [UInt32], wholeWord: Bool,
-        columns: (Int, Int) -> (Int, Int)
+        in line: [Cell], query: [UInt32], wholeWord: Bool, caseSensitive: Bool
     ) -> [(Int, Int)] {
-        guard scalars.count >= query.count, !query.isEmpty else { return [] }
+        guard !query.isEmpty, !line.isEmpty else { return [] }
 
         var out: [(Int, Int)] = []
-        var i = 0
-        while i <= scalars.count - query.count {
+        var start = nextGlyphColumn(in: line, from: 0)
+        while start < line.count {
+            // Try to match the whole query from `start`, skipping spacers.
+            var col = start
+            var lastGlyph = start
             var k = 0
-            while k < query.count, scalars[i + k] == query[k] { k += 1 }
+            while k < query.count, col < line.count {
+                if line[col].attributes.contains(.wideSpacer) { col += 1; continue }
+                guard glyph(of: line[col], caseSensitive: caseSensitive) == query[k] else { break }
+                lastGlyph = col
+                k += 1
+                col += 1
+            }
             if k == query.count {
-                let last = i + query.count - 1
-                if !wholeWord || isWordBoundaryLiteral(scalars: scalars, lo: i, hi: last + 1) {
-                    out.append(columns(i, last + 1))
-                    i += query.count // non-overlapping
+                let end = lastGlyph + (line[lastGlyph].attributes.contains(.wide) ? 2 : 1)
+                if !wholeWord || isWordBoundary(in: line, start: start, end: end) {
+                    out.append((start, end))
+                    start = nextGlyphColumn(in: line, from: end) // non-overlapping
                     continue
                 }
             }
-            i += 1
+            start = nextGlyphColumn(in: line, from: start + 1)
         }
         return out
     }
 
-    /// True when [lo, hi) sits on word boundaries: no word scalar immediately
-    /// before `lo` and none immediately at `hi`.
-    private static func isWordBoundaryLiteral(scalars: [UInt32], lo: Int, hi: Int) -> Bool {
-        let beforeOK = lo == 0 || !isWordScalar(scalars[lo - 1])
-        let afterOK = hi >= scalars.count || !isWordScalar(scalars[hi])
+    /// True when [start, end) sits on word boundaries: no word glyph in the
+    /// non-spacer cell immediately before `start` and none at/after `end`.
+    private static func isWordBoundary(in line: [Cell], start: Int, end: Int) -> Bool {
+        var before = start - 1
+        while before >= 0, line[before].attributes.contains(.wideSpacer) { before -= 1 }
+        let beforeOK = before < 0 || !isWordScalar(line[before].glyph)
+        let after = nextGlyphColumn(in: line, from: end)
+        let afterOK = after >= line.count || !isWordScalar(line[after].glyph)
         return beforeOK && afterOK
     }
 
     private static func regexMatches(
-        scalars: [UInt32], regex: NSRegularExpression,
-        columns: (Int, Int) -> (Int, Int)
+        in line: [Cell], regex: NSRegularExpression
     ) -> [(Int, Int)] {
         // Reconstruct the row as a String, tracking the UTF-16 offset of each
-        // scalar so a match's NSRange (UTF-16 based) maps back to the scalar
-        // index and thus the grid column.
+        // real cell so a match's NSRange (UTF-16 based) maps back to the grid
+        // column. Wide-cell spacers are skipped, and the column for the cell
+        // after a match expands past a trailing wide glyph.
         var text = ""
-        var scalarAtUTF16: [Int: Int] = [:] // utf16 offset → scalar index
+        var columnAtUTF16: [Int: Int] = [:] // utf16 offset → grid column
+        var lastGlyphColumn = -1
         var utf16 = 0
-        for (index, value) in scalars.enumerated() {
-            guard let scalar = Unicode.Scalar(value) else { continue }
-            scalarAtUTF16[utf16] = index
+        for (column, cell) in line.enumerated() where !cell.attributes.contains(.wideSpacer) {
+            guard let scalar = Unicode.Scalar(cell.glyph) else { continue }
+            columnAtUTF16[utf16] = column
+            lastGlyphColumn = column
             text.unicodeScalars.append(scalar)
             utf16 += scalar.value > 0xFFFF ? 2 : 1
         }
         let total = utf16
         guard total > 0 else { return [] }
+        // The column one past the final glyph, for matches that reach the end.
+        let endColumn = lastGlyphColumn < 0 ? line.count
+            : lastGlyphColumn + (line[lastGlyphColumn].attributes.contains(.wide) ? 2 : 1)
 
         var out: [(Int, Int)] = []
         regex.enumerateMatches(
@@ -251,13 +262,12 @@ extension TerminalState {
         ) { result, _, _ in
             guard let result, result.range.length > 0 else { return }
             let r = result.range
-            guard let lo = scalarAtUTF16[r.location] else { return }
-            // The match end is a UTF-16 offset; find the scalar index whose
-            // start is at that offset (one past the last matched scalar).
-            let endOffset = r.location + r.length
-            let hi = scalarAtUTF16[endOffset] ?? scalars.count
+            guard let lo = columnAtUTF16[r.location] else { return }
+            // The match end is a UTF-16 offset; the grid column at that offset
+            // is the cell after the match (or the row end past a wide glyph).
+            let hi = columnAtUTF16[r.location + r.length] ?? endColumn
             guard hi > lo else { return }
-            out.append(columns(lo, hi))
+            out.append((lo, hi))
         }
         return out
     }

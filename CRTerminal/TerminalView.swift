@@ -47,7 +47,12 @@ final class TerminalView: NSView, NSTextInputClient {
     /// Every match for `searchQuery` in document order, plus the index of the
     /// highlighted one. Backs the find bar's `N / total` counter and lets
     /// next/previous step the cached list without rescanning.
-    private var searchMatches: [Selection] = []
+    private var searchMatches: [Selection] = [] {
+        didSet { searchGeneration &+= 1 }
+    }
+    /// Bumped whenever `searchMatches` is reassigned, so the render loop can
+    /// detect a changed match list without comparing the (possibly huge) array.
+    private var searchGeneration = 0
     private var currentMatchIndex: Int = -1
     /// Height (points) of the find bar overlapping the grid's top edge while a
     /// search is active. The reveal keeps matches below it so a found line in
@@ -347,7 +352,9 @@ final class TerminalView: NSView, NSTextInputClient {
     private func pushViewStateToRenderLoop() {
         renderLoop?.setViewState(
             scrollOffset: scrollOffset, selection: selection,
-            markedText: markedText, hoveredLink: hoveredLink)
+            markedText: markedText, hoveredLink: hoveredLink,
+            searchMatches: searchMatches, searchGeneration: searchGeneration,
+            currentMatch: currentMatch)
         updateScrollbar()
     }
 
