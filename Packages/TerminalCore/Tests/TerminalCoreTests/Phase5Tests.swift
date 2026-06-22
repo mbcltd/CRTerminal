@@ -543,7 +543,7 @@ struct SearchTests {
         t.feed("alpha\r\nbeta\r\nalpha again\r\n")
         let hit = t.state.search(for: "alpha")
         #expect(hit?.anchor == SelectionPoint(row: 2, column: 0))
-        #expect(hit?.head == SelectionPoint(row: 2, column: 5))
+        #expect(hit?.head == SelectionPoint(row: 2, column: 4)) // inclusive last cell
         let earlier = t.state.search(for: "alpha", from: hit?.anchor)
         #expect(earlier?.anchor == SelectionPoint(row: 0, column: 0))
     }
@@ -620,6 +620,97 @@ struct SearchTests {
         let hits = t.state.allMatches(for: "中")
         #expect(hits.count == 1)
         #expect(hits[0].anchor.column == 1)
-        #expect(hits[0].head.column == 3) // end is exclusive, past the spacer
+        #expect(hits[0].head.column == 2) // inclusive: the wide glyph's spacer cell
+    }
+
+    // MARK: SearchOptions (#43: case / whole-word / regex chips)
+
+    @Test func caseSensitiveDistinguishesCase() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("Auth auth AUTH")
+        let opts = SearchOptions(caseSensitive: true)
+        let hits = t.state.allMatches(for: "auth", options: opts)
+        #expect(hits.count == 1) // only the lowercase middle word
+        #expect(hits[0].anchor.column == 5)
+    }
+
+    @Test func wholeWordRejectsSubstrings() {
+        var t = makeTerminal(columns: 30, rows: 4)
+        t.feed("cat category scatter cat")
+        let opts = SearchOptions(wholeWord: true)
+        let hits = t.state.allMatches(for: "cat", options: opts)
+        // Matches the two standalone "cat"s, not "category" or "scatter".
+        #expect(hits.map(\.anchor.column) == [0, 21])
+    }
+
+    @Test func wholeWordHonoursUnderscoreBoundaries() {
+        var t = makeTerminal(columns: 30, rows: 4)
+        t.feed("foo foo_bar")
+        let opts = SearchOptions(wholeWord: true)
+        let hits = t.state.allMatches(for: "foo", options: opts)
+        // The underscore is a word character, so "foo_bar" is not a boundary.
+        #expect(hits.count == 1)
+        #expect(hits[0].anchor.column == 0)
+    }
+
+    @Test func regexMatchesAndMapsColumns() {
+        var t = makeTerminal(columns: 30, rows: 4)
+        t.feed("err 12 warn 345 ok")
+        let opts = SearchOptions(regex: true)
+        let hits = t.state.allMatches(for: "[0-9]+", options: opts)
+        #expect(hits.count == 2)
+        #expect(hits[0].anchor.column == 4)
+        #expect(hits[0].head.column == 5) // "12", inclusive last cell
+        #expect(hits[1].anchor.column == 12)
+        #expect(hits[1].head.column == 14) // "345", inclusive last cell
+    }
+
+    @Test func regexIsCaseInsensitiveByDefault() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("Error ERROR error")
+        let insensitive = t.state.allMatches(for: "error", options: SearchOptions(regex: true))
+        #expect(insensitive.count == 3)
+        let sensitive = t.state.allMatches(
+            for: "error", options: SearchOptions(caseSensitive: true, regex: true))
+        #expect(sensitive.count == 1)
+        #expect(sensitive[0].anchor.column == 12)
+    }
+
+    @Test func regexEndColumnSpansWideGlyphs() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("a中b") // 中 is wide
+        // `.` matches every (space-padded) cell; check the leading three to
+        // confirm the wide glyph's end column steps past its spacer.
+        let hits = t.state.allMatches(for: ".", options: SearchOptions(regex: true))
+        #expect(hits.prefix(3).map(\.anchor.column) == [0, 1, 3]) // a, 中, b
+        #expect(hits.prefix(3).map(\.head.column) == [0, 2, 3]) // inclusive last cell
+    }
+
+    @Test func regexWholeWordWrapsBoundaries() {
+        var t = makeTerminal(columns: 30, rows: 4)
+        t.feed("log logger relog")
+        let opts = SearchOptions(wholeWord: true, regex: true)
+        let hits = t.state.allMatches(for: "log", options: opts)
+        #expect(hits.count == 1)
+        #expect(hits[0].anchor.column == 0)
+    }
+
+    @Test func badRegexCompilesToNoPattern() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("anything")
+        let opts = SearchOptions(regex: true)
+        #expect(SearchPattern("[unclosed", options: opts) == nil)
+        // The string convenience entry points fall back to no matches.
+        #expect(t.state.allMatches(for: "[unclosed", options: opts).isEmpty)
+        #expect(t.state.search(for: "[unclosed", options: opts) == nil)
+    }
+
+    @Test func compiledPatternIsReusable() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("a1 b2 c3")
+        let pattern = SearchPattern("[a-z][0-9]", options: SearchOptions(regex: true))
+        #expect(pattern != nil)
+        #expect(t.state.allMatches(pattern: pattern!).count == 3)
+        #expect(t.state.search(pattern: pattern!)?.anchor.column == 6) // last: c3
     }
 }

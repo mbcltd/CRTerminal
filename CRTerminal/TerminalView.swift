@@ -4,11 +4,15 @@ import QuartzCore
 import TerminalCore
 
 /// The find bar's match counter: `current` is 1-based (0 when nothing is
-/// highlighted), `total` is the match count for the query.
+/// highlighted), `total` is the match count for the query. `badRegex` flags a
+/// query that failed to compile as a regular expression, so the bar can show
+/// its own error state instead of "no results".
 struct SearchSummary: Equatable {
     var current: Int
     var total: Int
+    var badRegex: Bool = false
     static let none = SearchSummary(current: 0, total: 0)
+    static let invalidRegex = SearchSummary(current: 0, total: 0, badRegex: true)
 }
 
 /// The terminal surface: hosts the CAMetalLayer, owns the renderer, and
@@ -36,6 +40,9 @@ final class TerminalView: NSView, NSTextInputClient {
 
     /// Search state (⌘F bar drives this).
     private var searchQuery: String?
+    /// Flag chips in effect for the cached `searchMatches`; a change re-scans
+    /// just like a changed query does.
+    private var searchOptions = SearchOptions.default
     private(set) var currentMatch: Selection?
     /// Every match for `searchQuery` in document order, plus the index of the
     /// highlighted one. Backs the find bar's `N / total` counter and lets
@@ -998,12 +1005,15 @@ final class TerminalView: NSView, NSTextInputClient {
     /// match nearest the viewport without stepping — drives the find bar's
     /// live `N / total` counter as the user types. Returns the counter summary.
     @discardableResult
-    func updateSearch(_ query: String) -> SearchSummary {
+    func updateSearch(_ query: String, options: SearchOptions = .default) -> SearchSummary {
         guard let state = session?.snapshot, !query.isEmpty else {
             clearMatches()
             return .none
         }
-        rescan(query, in: state)
+        guard rescan(query, options: options, in: state) != nil else {
+            clearMatches()
+            return .invalidRegex
+        }
         guard !searchMatches.isEmpty else {
             currentMatchIndex = -1
             currentMatch = nil
@@ -1016,16 +1026,20 @@ final class TerminalView: NSView, NSTextInputClient {
         return summary
     }
 
-    /// Steps to the next/previous match and reveals it; a changed query is
-    /// rescanned first (landing on the nearest match). Returns the summary.
+    /// Steps to the next/previous match and reveals it; a changed query or
+    /// option set is rescanned first (landing on the nearest match). Returns
+    /// the summary.
     @discardableResult
-    func find(_ query: String, backward: Bool = true) -> SearchSummary {
+    func find(_ query: String, options: SearchOptions = .default, backward: Bool = true) -> SearchSummary {
         guard let state = session?.snapshot, !query.isEmpty else {
             clearMatches()
             return .none
         }
-        if query != searchQuery {
-            rescan(query, in: state)
+        if query != searchQuery || options != searchOptions {
+            guard rescan(query, options: options, in: state) != nil else {
+                clearMatches()
+                return .invalidRegex
+            }
             currentMatchIndex = searchMatches.isEmpty ? -1 : nearestMatchIndex(in: state)
         } else if !searchMatches.isEmpty {
             let n = searchMatches.count
@@ -1045,6 +1059,7 @@ final class TerminalView: NSView, NSTextInputClient {
     func endSearch() {
         clearMatches()
         searchQuery = nil
+        searchOptions = .default
     }
 
     private var summary: SearchSummary {
@@ -1053,9 +1068,19 @@ final class TerminalView: NSView, NSTextInputClient {
             total: searchMatches.count)
     }
 
-    private func rescan(_ query: String, in state: TerminalState) {
+    /// Compiles `query` under `options` and caches every match. Returns the
+    /// compiled pattern, or `nil` when a regex query won't compile (the
+    /// caller surfaces the bad-regex state).
+    @discardableResult
+    private func rescan(_ query: String, options: SearchOptions, in state: TerminalState) -> SearchPattern? {
         searchQuery = query
-        searchMatches = state.allMatches(for: query)
+        searchOptions = options
+        guard let pattern = SearchPattern(query, options: options) else {
+            searchMatches = []
+            return nil
+        }
+        searchMatches = state.allMatches(pattern: pattern)
+        return pattern
     }
 
     private func clearMatches() {

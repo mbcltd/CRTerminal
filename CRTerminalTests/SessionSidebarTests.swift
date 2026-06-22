@@ -603,6 +603,30 @@ struct SessionTabLifecycleTests {
         suite.removePersistentDomain(forName: name)
     }
 
+    @Test @MainActor func searchSettingsDefaultAndPersist() {
+        let name = "SearchSettingsTests"
+        let suite = UserDefaults(suiteName: name)!
+        suite.removePersistentDomain(forName: name)
+        let settings = SearchSettings(defaults: suite)
+        // All flags off by default — the historic case-insensitive substring
+        // search.
+        #expect(!settings.caseSensitive)
+        #expect(!settings.wholeWord)
+        #expect(!settings.regex)
+        #expect(settings.options == .default)
+
+        settings.caseSensitive = true
+        settings.regex = true
+        #expect(settings.options == SearchOptions(caseSensitive: true, regex: true))
+        // A fresh instance over the same store sees the writes — this is what
+        // makes the chips sticky across tabs, windows, and restarts.
+        let reloaded = SearchSettings(defaults: suite)
+        #expect(reloaded.caseSensitive)
+        #expect(!reloaded.wholeWord)
+        #expect(reloaded.regex)
+        suite.removePersistentDomain(forName: name)
+    }
+
     @Test @MainActor func visualBellFlashesThePaneItself() {
         let view = TerminalView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
         #expect(!view.bellFlashing)
