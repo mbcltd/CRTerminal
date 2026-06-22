@@ -1,5 +1,29 @@
 # Performance log
 
+## Find-bar live search (2026-06-22)
+
+Release build, Apple M3 Max. The find bar re-scans the whole scrollback on
+every keystroke to drive the `N / total` counter and the all-match highlight
+(issue #44). `Scripts/bench.sh` now includes `search-*` over a full 10k-line
+buffer (120 cols):
+
+| Scan | Before | After |
+|---|---|---|
+| literal single char (44k hits) | 12.81 ms | 3.90 ms |
+| literal word "fox" (11k hits) | 11.34 ms | 2.69 ms |
+| regex `[0-9]+` (11k hits) | 85.37 ms | 73.44 ms |
+
+The literal path (the overwhelmingly common case) is now allocation-free — it
+scans the cells in place instead of flattening each line into scalar + column
+arrays, ~3.3× faster. The regex path is dominated by `String` reconstruction +
+`NSRegularExpression` and is largely unchanged. On top of this the live
+(type-ahead) search is debounced ~90 ms in the find bar, so a scan runs at most
+once per typing lull (Enter / next / prev / chip toggles still scan
+immediately); this keeps typing smooth on Debug builds too, where each scan
+costs ~10–20× the Release figures above.
+
+---
+
 Measurements recorded per phase against the budgets in ARCHITECTURE.md.
 Reproduce with the typist probe: build, then
 `open -W --env CRT_TYPIST=1 <path-to-CRTerminal.app>` and read

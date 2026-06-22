@@ -212,6 +212,8 @@ public final class TerminalRenderer {
         selection: Selection? = nil,
         markedText: String? = nil,
         hoveredLink: Selection? = nil,
+        searchMatches: [Selection] = [],
+        currentMatch: Selection? = nil,
         contentChanged: Bool = true,
         at time: CFTimeInterval = CACurrentMediaTime(),
         preset: CRTPreset? = nil,
@@ -241,6 +243,7 @@ public final class TerminalRenderer {
                 guard var surfaces = context.surfaces else { return }
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                                markedText: markedText, hoveredLink: hoveredLink,
+                               searchMatches: searchMatches, currentMatch: currentMatch,
                                in: buffer, to: surfaces.terminal,
                                scheme: resolveScheme(for: frame.preset),
                                imageCache: imageCache)
@@ -259,6 +262,7 @@ public final class TerminalRenderer {
                 // unpadded — the margin is window layout, not content).
                 encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
                                markedText: markedText, hoveredLink: hoveredLink,
+                               searchMatches: searchMatches, currentMatch: currentMatch,
                                in: buffer, to: target,
                                scheme: resolveScheme(for: frame.preset),
                                padPx: Int((CGFloat(frame.preset.contentInsetPt) * scale)
@@ -402,13 +406,16 @@ public final class TerminalRenderer {
         scrollOffset: Int = 0,
         selection: Selection? = nil,
         markedText: String? = nil,
+        searchMatches: [Selection] = [],
+        currentMatch: Selection? = nil,
         preset: CRTPreset? = nil,
         time: CFTimeInterval = 0,
         degaussPhase: Float = 1
     ) -> CGImage? {
         renderImageMeasuringGPU(
             state, scrollOffset: scrollOffset, selection: selection,
-            markedText: markedText, preset: preset, time: time,
+            markedText: markedText, searchMatches: searchMatches,
+            currentMatch: currentMatch, preset: preset, time: time,
             degaussPhase: degaussPhase)?.image
     }
 
@@ -419,6 +426,8 @@ public final class TerminalRenderer {
         scrollOffset: Int = 0,
         selection: Selection? = nil,
         markedText: String? = nil,
+        searchMatches: [Selection] = [],
+        currentMatch: Selection? = nil,
         preset: CRTPreset? = nil,
         time: CFTimeInterval = 0,
         degaussPhase: Float = 1
@@ -453,7 +462,8 @@ public final class TerminalRenderer {
             // timing matches the live chain).
             surfaces.persistenceValid = false
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                           markedText: markedText, in: buffer, to: surfaces.terminal,
+                           markedText: markedText, searchMatches: searchMatches,
+                           currentMatch: currentMatch, in: buffer, to: surfaces.terminal,
                            scheme: resolveScheme(for: preset),
                            imageCache: ImageTextureCache(device: device))
             effectPipeline.encode(
@@ -470,7 +480,8 @@ public final class TerminalRenderer {
             buffer.waitUntilCompleted()
         } else {
             encodeCellPass(state, scrollOffset: scrollOffset, selection: selection,
-                           markedText: markedText, in: buffer, to: texture,
+                           markedText: markedText, searchMatches: searchMatches,
+                           currentMatch: currentMatch, in: buffer, to: texture,
                            scheme: resolveScheme(for: preset),
                            imageCache: ImageTextureCache(device: device))
             buffer.commit()
@@ -534,12 +545,54 @@ public final class TerminalRenderer {
         return ColorScheme.resolve(for: preset, darkBase: baseScheme)
     }
 
+    /// A find-match span clipped to one viewport row, precomputed so the
+    /// per-cell pass below stays O(cells): `y` is the viewport row, `start`/
+    /// `end` are inclusive columns, `isCurrent` flags the emphasized match.
+    private struct MatchSpan {
+        var y: Int
+        var start: Int
+        var end: Int
+        var isCurrent: Bool
+    }
+
+    /// The find matches intersecting the viewport, in (row, column) order.
+    /// `matches` is the full document-ordered list (it can span the whole
+    /// scrollback), so we binary-search to the first visible row rather than
+    /// scanning all of it every frame.
+    private func visibleMatchSpans(
+        _ matches: [Selection], currentMatch: Selection?,
+        viewportTop: Int, rows: Int
+    ) -> [MatchSpan] {
+        guard !matches.isEmpty, rows > 0 else { return [] }
+        let bottom = viewportTop + rows // exclusive
+        // First match whose row is at/under the viewport top.
+        var lo = 0, hi = matches.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if matches[mid].start.row < viewportTop { lo = mid + 1 } else { hi = mid }
+        }
+        var spans: [MatchSpan] = []
+        var i = lo
+        while i < matches.count {
+            let m = matches[i]
+            let row = m.start.row
+            if row >= bottom { break }
+            spans.append(MatchSpan(
+                y: row - viewportTop, start: m.start.column, end: m.end.column,
+                isCurrent: m == currentMatch))
+            i += 1
+        }
+        return spans
+    }
+
     private func encodeCellPass(
         _ state: TerminalState,
         scrollOffset: Int,
         selection: Selection?,
         markedText: String? = nil,
         hoveredLink: Selection? = nil,
+        searchMatches: [Selection] = [],
+        currentMatch: Selection? = nil,
         in buffer: MTLCommandBuffer,
         to texture: MTLTexture,
         scheme resolvedScheme: ColorScheme = .default,
@@ -584,6 +637,15 @@ public final class TerminalRenderer {
 
         let ligatures = effectsState.withLock { $0.ligatures }
 
+        // Find-bar highlights: every match dim, the current one bright. The
+        // spans are pre-clipped to the viewport and walked with a single
+        // monotonic cursor as the cell loop advances in (row, column) order,
+        // so the whole pass is O(cells + visibleMatches).
+        let matchSpans = visibleMatchSpans(
+            searchMatches, currentMatch: currentMatch,
+            viewportTop: viewportTop, rows: viewport.count)
+        var spanCursor = 0
+
         for y in 0..<viewport.count {
             let row = viewport[y]
             // Operator runs shape first; the per-cell pass below skips the
@@ -599,6 +661,23 @@ public final class TerminalRenderer {
                     into: &glyphInstances)
             }
             for x in 0..<min(state.columns, row.count) {
+                // Advance the match cursor to the first span that could still
+                // cover this cell (skips spans on earlier rows / left of x).
+                while spanCursor < matchSpans.count {
+                    let span = matchSpans[spanCursor]
+                    if span.y < y || (span.y == y && x > span.end) { spanCursor += 1 }
+                    else { break }
+                }
+                var matchBackground: UInt32?
+                if spanCursor < matchSpans.count {
+                    let span = matchSpans[spanCursor]
+                    if span.y == y, x >= span.start, x <= span.end {
+                        matchBackground = span.isCurrent
+                            ? scheme.searchCurrentMatchBackground
+                            : scheme.searchMatchBackground
+                    }
+                }
+
                 if y == state.cursor.y, markedColumns.contains(x) {
                     bgInstances.append(BgInstance(
                         origin: SIMD2(Float(x) * cellW, Float(y) * cellH),
@@ -612,7 +691,11 @@ public final class TerminalRenderer {
                     && markedColumns.isEmpty
                 let selected = selection?.contains(row: viewportTop + y, column: x) ?? false
                 var (fg, bg) = resolveColors(cell, isCursor: isBlockCursor)
-                if selected && !isBlockCursor {
+                // A live find takes precedence over the text selection (they
+                // coincide on the current match anyway).
+                if let matchBackground, !isBlockCursor {
+                    bg = matchBackground
+                } else if selected && !isBlockCursor {
                     bg = scheme.selectionBackground
                 }
 

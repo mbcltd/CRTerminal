@@ -73,3 +73,30 @@ benchmark(
     chunk: Array("\u{1B}[5;35r".utf8) + repeated(
         "\u{1B}[35;1Hnew line entering a pinned scroll region, text text text\n",
         until: 1 << 20))
+
+// Search-as-you-type: allMatches over a full scrollback, the cost paid on
+// every find-bar keystroke (the live counter + match highlighting).
+func benchmarkSearch(_ name: String, query: String, options: SearchOptions = .default) {
+    var terminal = Terminal(columns: 120, rows: 40)
+    terminal.scrollbackLimit = 10_000
+    let line = "The quick brown fox jumps over the lazy dog 0123456789 abcdefghijk\r\n"
+    let bytes = line.utf8
+    // Fill the scrollback to its limit.
+    for _ in 0..<11_000 { terminal.feed(Array(bytes)) }
+    let state = terminal.state
+    let clock = ContinuousClock()
+    var hits = 0
+    let iterations = 50
+    let start = clock.now
+    for _ in 0..<iterations {
+        hits = state.allMatches(for: query, options: options).count
+    }
+    let elapsed = clock.now - start
+    let ms = (Double(elapsed.components.seconds) * 1000
+        + Double(elapsed.components.attoseconds) / 1e15) / Double(iterations)
+    print("\(name): \(String(format: "%.2f", ms)) ms/scan  (\(hits) hits over \(state.scrollback.count) lines)")
+}
+
+benchmarkSearch("search-literal-common", query: "o")
+benchmarkSearch("search-literal-word", query: "fox")
+benchmarkSearch("search-regex", query: "[0-9]+", options: SearchOptions(regex: true))
