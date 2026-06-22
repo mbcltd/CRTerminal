@@ -969,11 +969,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         let bar = SearchBar(frame: .zero, preset: activePreset)
-        bar.onSearch = { [weak self] query, backward in
-            self?.focusedPane?.find(query, backward: backward) ?? .none
+        bar.onSearch = { [weak self] query, options, backward in
+            self?.focusedPane?.find(query, options: options, backward: backward) ?? .none
         }
-        bar.onQueryChange = { [weak self] query in
-            self?.focusedPane?.updateSearch(query) ?? .none
+        bar.onQueryChange = { [weak self] query, options in
+            self?.focusedPane?.updateSearch(query, options: options) ?? .none
         }
         bar.onDismiss = { [weak self] in
             self?.dismissSearch()
@@ -1111,10 +1111,14 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     private let slash = NSTextField(labelWithString: "/")
     private let counter = NSTextField(labelWithString: "")
     private let theme: SidebarTheme
-    /// Stepping: query + backward flag. Returns the resulting counter summary.
-    var onSearch: ((String, Bool) -> SearchSummary)?
-    /// Live re-search as the query changes. Returns the counter summary.
-    var onQueryChange: ((String) -> SearchSummary)?
+    /// The grep-style flag chips, in bar order: match-case, whole-word, regex.
+    private var caseChip: NSButton!
+    private var wordChip: NSButton!
+    private var regexChip: NSButton!
+    /// Stepping: query + options + backward flag. Returns the counter summary.
+    var onSearch: ((String, SearchOptions, Bool) -> SearchSummary)?
+    /// Live re-search as the query or options change. Returns the summary.
+    var onQueryChange: ((String, SearchOptions) -> SearchSummary)?
     var onDismiss: (() -> Void)?
     private var lastSummary: SearchSummary = .none
 
@@ -1149,6 +1153,13 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
         counter.translatesAutoresizingMaskIntoConstraints = false
         addSubview(counter)
 
+        // grep-style flag chips; initial state restored from the shared,
+        // persisted SearchSettings so it carries across tabs and restarts.
+        let saved = SearchSettings.shared
+        caseChip = makeChip(title: "Aa", accessibility: "Match case", on: saved.caseSensitive)
+        wordChip = makeChip(title: "\\b", accessibility: "Whole word", on: saved.wholeWord)
+        regexChip = makeChip(title: ".*", accessibility: "Regular expression", on: saved.regex)
+
         let previous = NSButton(
             image: NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Previous match")!,
             target: self, action: #selector(findPrevious(_:)))
@@ -1175,7 +1186,13 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
             field.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
             field.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
-            counter.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 10),
+            caseChip.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
+            caseChip.centerYAnchor.constraint(equalTo: centerYAnchor),
+            wordChip.leadingAnchor.constraint(equalTo: caseChip.trailingAnchor, constant: 4),
+            wordChip.centerYAnchor.constraint(equalTo: centerYAnchor),
+            regexChip.leadingAnchor.constraint(equalTo: wordChip.trailingAnchor, constant: 4),
+            regexChip.centerYAnchor.constraint(equalTo: centerYAnchor),
+            counter.leadingAnchor.constraint(equalTo: regexChip.trailingAnchor, constant: 10),
             counter.centerYAnchor.constraint(equalTo: centerYAnchor),
             counter.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),
             previous.leadingAnchor.constraint(equalTo: counter.trailingAnchor, constant: 8),
@@ -1196,19 +1213,58 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
         window?.makeFirstResponder(field)
     }
 
-    func repeatSearch(backward: Bool) {
-        guard !field.stringValue.isEmpty else { return }
-        if let summary = onSearch?(field.stringValue, backward) {
+    /// A pill toggle wearing the active preset's accent when on, dim when off.
+    private func makeChip(title: String, accessibility: String, on: Bool) -> NSButton {
+        let chip = NSButton(title: title, target: self, action: #selector(chipToggled(_:)))
+        chip.setButtonType(.pushOnPushOff)
+        chip.bezelStyle = .accessoryBarAction
+        chip.font = .monospacedSystemFont(ofSize: 11.5, weight: .bold)
+        chip.setAccessibilityLabel(accessibility)
+        chip.toolTip = accessibility
+        chip.state = on ? .on : .off
+        chip.contentTintColor = on ? theme.accent : theme.dim
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(chip)
+        return chip
+    }
+
+    /// The flag chips' current state as a `SearchOptions`.
+    private var currentOptions: SearchOptions {
+        SearchOptions(
+            caseSensitive: caseChip.state == .on,
+            wholeWord: wordChip.state == .on,
+            regex: regexChip.state == .on)
+    }
+
+    @objc private func chipToggled(_ sender: NSButton) {
+        sender.contentTintColor = sender.state == .on ? theme.accent : theme.dim
+        // Persist so the choice survives across tabs, windows, and restarts.
+        let settings = SearchSettings.shared
+        settings.caseSensitive = caseChip.state == .on
+        settings.wholeWord = wordChip.state == .on
+        settings.regex = regexChip.state == .on
+        // Re-run live against the current query.
+        if let summary = onQueryChange?(field.stringValue, currentOptions) {
             setCounter(summary)
         }
     }
 
-    /// Updates the counter label. "no results" vs. blank is decided from the
-    /// field's own text (an empty query has no count to show).
+    func repeatSearch(backward: Bool) {
+        guard !field.stringValue.isEmpty else { return }
+        if let summary = onSearch?(field.stringValue, currentOptions, backward) {
+            setCounter(summary)
+        }
+    }
+
+    /// Updates the counter label. An empty query shows nothing; an invalid
+    /// regex shows "bad regex"; otherwise "N / total" or "no results".
     func setCounter(_ summary: SearchSummary) {
         lastSummary = summary
         if field.stringValue.isEmpty {
             counter.stringValue = ""
+        } else if summary.badRegex {
+            counter.stringValue = "bad regex"
+            counter.textColor = theme.amber
         } else if summary.total == 0 {
             counter.stringValue = "no results"
             counter.textColor = theme.faint
@@ -1219,7 +1275,7 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     }
 
     func controlTextDidChange(_ notification: Notification) {
-        if let summary = onQueryChange?(field.stringValue) {
+        if let summary = onQueryChange?(field.stringValue, currentOptions) {
             setCounter(summary)
         }
     }
