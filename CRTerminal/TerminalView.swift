@@ -3,6 +3,14 @@ import CRTRendering
 import QuartzCore
 import TerminalCore
 
+/// The find bar's match counter: `current` is 1-based (0 when nothing is
+/// highlighted), `total` is the match count for the query.
+struct SearchSummary: Equatable {
+    var current: Int
+    var total: Int
+    static let none = SearchSummary(current: 0, total: 0)
+}
+
 /// The terminal surface: hosts the CAMetalLayer, owns the renderer, and
 /// translates AppKit input into PTY bytes. Implements NSTextInputClient from
 /// day one so IME isn't a retrofit (ARCHITECTURE.md risks).
@@ -29,6 +37,11 @@ final class TerminalView: NSView, NSTextInputClient {
     /// Search state (⌘F bar drives this).
     private var searchQuery: String?
     private(set) var currentMatch: Selection?
+    /// Every match for `searchQuery` in document order, plus the index of the
+    /// highlighted one. Backs the find bar's `N / total` counter and lets
+    /// next/previous step the cached list without rescanning.
+    private var searchMatches: [Selection] = []
+    private var currentMatchIndex: Int = -1
     /// Height (points) of the find bar overlapping the grid's top edge while a
     /// search is active. The reveal keeps matches below it so a found line in
     /// the top rows isn't hidden behind the bar. 0 when no bar is shown.
@@ -914,20 +927,90 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // MARK: Search (the window's ⌘F bar drives this)
 
-    /// Finds and reveals the next match; returns false when there is none.
+    /// Recomputes the match list for a (possibly new) query and highlights the
+    /// match nearest the viewport without stepping — drives the find bar's
+    /// live `N / total` counter as the user types. Returns the counter summary.
     @discardableResult
-    func find(_ query: String, backward: Bool = true) -> Bool {
-        guard let state = session?.snapshot, !query.isEmpty else { return false }
-        let from = query == searchQuery ? currentMatch?.anchor : nil
-        searchQuery = query
-        var match = state.search(for: query, from: from, backward: backward)
-        if match == nil, from != nil { // wrap around
-            match = state.search(for: query, from: nil, backward: backward)
+    func updateSearch(_ query: String) -> SearchSummary {
+        guard let state = session?.snapshot, !query.isEmpty else {
+            clearMatches()
+            return .none
         }
-        guard let match else {
+        rescan(query, in: state)
+        guard !searchMatches.isEmpty else {
+            currentMatchIndex = -1
+            currentMatch = nil
+            selection = nil
+            pushViewStateToRenderLoop()
+            return SearchSummary(current: 0, total: 0)
+        }
+        currentMatchIndex = nearestMatchIndex(in: state)
+        revealCurrentMatch(in: state)
+        return summary
+    }
+
+    /// Steps to the next/previous match and reveals it; a changed query is
+    /// rescanned first (landing on the nearest match). Returns the summary.
+    @discardableResult
+    func find(_ query: String, backward: Bool = true) -> SearchSummary {
+        guard let state = session?.snapshot, !query.isEmpty else {
+            clearMatches()
+            return .none
+        }
+        if query != searchQuery {
+            rescan(query, in: state)
+            currentMatchIndex = searchMatches.isEmpty ? -1 : nearestMatchIndex(in: state)
+        } else if !searchMatches.isEmpty {
+            let n = searchMatches.count
+            currentMatchIndex = ((currentMatchIndex + (backward ? -1 : 1)) % n + n) % n
+        }
+        guard !searchMatches.isEmpty else {
             NSSound.beep()
-            return false
+            currentMatch = nil
+            selection = nil
+            pushViewStateToRenderLoop()
+            return SearchSummary(current: 0, total: 0)
         }
+        revealCurrentMatch(in: state)
+        return summary
+    }
+
+    func endSearch() {
+        clearMatches()
+        searchQuery = nil
+    }
+
+    private var summary: SearchSummary {
+        SearchSummary(
+            current: currentMatchIndex >= 0 ? currentMatchIndex + 1 : 0,
+            total: searchMatches.count)
+    }
+
+    private func rescan(_ query: String, in state: TerminalState) {
+        searchQuery = query
+        searchMatches = state.allMatches(for: query)
+    }
+
+    private func clearMatches() {
+        searchMatches = []
+        currentMatchIndex = -1
+        currentMatch = nil
+        selection = nil
+        pushViewStateToRenderLoop()
+    }
+
+    /// First match at or below the viewport's top row, so live-typing lands on
+    /// something the user can already see; falls back to the last match when
+    /// every hit is scrolled above the viewport.
+    private func nearestMatchIndex(in state: TerminalState) -> Int {
+        let top = state.absoluteScreenTop - scrollOffset
+        return searchMatches.firstIndex { $0.anchor.row >= top }
+            ?? searchMatches.count - 1
+    }
+
+    private func revealCurrentMatch(in state: TerminalState) {
+        guard searchMatches.indices.contains(currentMatchIndex) else { return }
+        let match = searchMatches[currentMatchIndex]
         currentMatch = match
         selection = match
         // Rows whose top edge falls under the find bar are visually hidden,
@@ -943,12 +1026,6 @@ final class TerminalView: NSView, NSTextInputClient {
         } else {
             pushViewStateToRenderLoop()
         }
-        return true
-    }
-
-    func endSearch() {
-        searchQuery = nil
-        currentMatch = nil
     }
 
     // MARK: Accessibility

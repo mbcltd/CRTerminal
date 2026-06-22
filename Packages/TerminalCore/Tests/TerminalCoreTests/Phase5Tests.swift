@@ -579,4 +579,47 @@ struct SearchTests {
         #expect(t.state.search(for: "zebra") == nil)
         #expect(t.state.search(for: "") == nil)
     }
+
+    @Test func allMatchesAreInDocumentOrder() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("alpha\r\nbeta\r\nalpha again\r\n")
+        let hits = t.state.allMatches(for: "alpha")
+        #expect(hits.count == 2)
+        #expect(hits[0].anchor == SelectionPoint(row: 0, column: 0))
+        #expect(hits[1].anchor == SelectionPoint(row: 2, column: 0))
+    }
+
+    @Test func allMatchesFindsRepeatsWithinARow() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("aabaab")
+        let hits = t.state.allMatches(for: "aa")
+        // Non-overlapping: columns 0 and 3, not the overlap at column 1.
+        #expect(hits.map(\.anchor.column) == [0, 3])
+        #expect(hits.allSatisfy { $0.anchor.row == 0 })
+    }
+
+    @Test func allMatchesIsCaseInsensitiveAndSpansScrollback() {
+        var t = makeTerminal(columns: 10, rows: 2)
+        t.feed("Auth\r\nxauthx\r\n\r\n\r\n")
+        #expect(t.state.scrollback.count > 0)
+        let hits = t.state.allMatches(for: "AUTH")
+        #expect(hits.count == 2)
+        #expect(hits.first?.anchor.row == 0)
+    }
+
+    @Test func allMatchesEmptyOrMissReturnsEmpty() {
+        var t = makeTerminal()
+        t.feed("haystack")
+        #expect(t.state.allMatches(for: "zebra").isEmpty)
+        #expect(t.state.allMatches(for: "").isEmpty)
+    }
+
+    @Test func allMatchesEndColumnSpansWideGlyphs() {
+        var t = makeTerminal(columns: 20, rows: 4)
+        t.feed("a中b") // 中 is wide: occupies columns 1-2, spacer at 2
+        let hits = t.state.allMatches(for: "中")
+        #expect(hits.count == 1)
+        #expect(hits[0].anchor.column == 1)
+        #expect(hits[0].head.column == 3) // end is exclusive, past the spacer
+    }
 }
