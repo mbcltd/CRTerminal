@@ -196,6 +196,13 @@ final class TerminalView: NSView, NSTextInputClient {
     private var selection: Selection?
     private var selectionAnchor: SelectionPoint?
     private var lastReportedDragCell: (x: Int, y: Int)?
+    /// Height of the hot zone at the top/bottom edges where a selection drag
+    /// starts auto-scrolling the viewport through scrollback.
+    private let autoscrollMargin: CGFloat = 24
+    private var autoscrollTimer: Timer?
+    /// Window-space pointer location of the in-flight selection drag, used to
+    /// keep extending the selection while the autoscroll timer fires.
+    private var lastDragLocationInWindow: NSPoint?
     private var keyWindowObservers: [NSObjectProtocol] = []
     /// Cell span of the URL/path under the pointer while ⌘ is held; drives
     /// the hover underline and the pointing-hand cursor.
@@ -705,7 +712,11 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     private func absolutePoint(of event: NSEvent) -> SelectionPoint {
-        let cell = cellPosition(of: event)
+        absolutePoint(at: event.locationInWindow)
+    }
+
+    private func absolutePoint(at locationInWindow: NSPoint) -> SelectionPoint {
+        let cell = cellPosition(at: locationInWindow)
         let state = session?.snapshot
         let top = (state?.absoluteScreenTop ?? 0) - scrollOffset
         return SelectionPoint(row: top + cell.y, column: cell.x)
@@ -807,14 +818,72 @@ final class TerminalView: NSView, NSTextInputClient {
             return
         }
         if reportMouse(.drag, button: .left, event: event) { return }
-        let point = absolutePoint(of: event)
+        lastDragLocationInWindow = event.locationInWindow
+        extendSelection(to: absolutePoint(of: event))
+        pushViewStateToRenderLoop()
+        // Dragging into the top/bottom hot zone scrolls scrollback into view so
+        // the selection can run past what's currently on screen.
+        updateAutoscroll()
+    }
+
+    /// Moves the live selection's head to `point`, preserving word/line
+    /// granularity, or starts a character selection from the stored anchor.
+    private func extendSelection(to point: SelectionPoint) {
         if var current = selection, current.granularity != .character {
             current.head = point
             selection = current
         } else if let anchor = selectionAnchor {
             selection = Selection(anchor: anchor, head: point)
         }
+    }
+
+    /// Lines to shift `scrollOffset` per autoscroll tick for a drag at
+    /// `locationInWindow`: positive pulls older scrollback into view (pointer
+    /// near the top), negative pulls newer content back (near the bottom), 0
+    /// when the pointer is clear of both edges or there's nothing to scroll.
+    private func autoscrollVelocity(at locationInWindow: NSPoint) -> Int {
+        guard let state = session?.snapshot, state.scrollback.count > 0 else { return 0 }
+        let point = convert(locationInWindow, from: nil)
+        let topEdge = contentInset
+        let bottomEdge = bounds.height - contentInset - bottomBarReserve
+        let speed = { (depth: CGFloat) in
+            min(state.rows, max(1, Int((self.autoscrollMargin - depth) / 6)))
+        }
+        if point.y - topEdge < autoscrollMargin { return speed(point.y - topEdge) }
+        if bottomEdge - point.y < autoscrollMargin { return -speed(bottomEdge - point.y) }
+        return 0
+    }
+
+    /// Starts (or keeps running) the autoscroll timer while a selection drag
+    /// sits in an edge hot zone, and stops it otherwise. Runs in `.common` mode
+    /// so it keeps firing during the mouse-tracking run-loop.
+    private func updateAutoscroll() {
+        guard let location = lastDragLocationInWindow,
+              autoscrollVelocity(at: location) != 0 else { return endAutoscroll() }
+        guard autoscrollTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepAutoscroll() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        autoscrollTimer = timer
+    }
+
+    private func stepAutoscroll() {
+        guard let location = lastDragLocationInWindow,
+              let state = session?.snapshot else { return endAutoscroll() }
+        let velocity = autoscrollVelocity(at: location)
+        guard velocity != 0 else { return endAutoscroll() }
+        let newOffset = min(max(0, scrollOffset + velocity), state.scrollback.count)
+        guard newOffset != scrollOffset else { return }  // already at that end
+        scrollOffset = newOffset
+        extendSelection(to: absolutePoint(at: location))
         pushViewStateToRenderLoop()
+        scrollbar.flash()
+    }
+
+    private func endAutoscroll() {
+        autoscrollTimer?.invalidate()
+        autoscrollTimer = nil
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -823,6 +892,8 @@ final class TerminalView: NSView, NSTextInputClient {
             scrollbar.endDrag()
             return
         }
+        endAutoscroll()
+        lastDragLocationInWindow = nil
         lastReportedDragCell = nil
         if reportMouse(.release, button: .left, event: event) { return }
         if let selection, selection.isEmpty {
