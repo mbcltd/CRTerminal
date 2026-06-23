@@ -847,7 +847,7 @@ final class TerminalView: NSView, NSTextInputClient {
         let topEdge = contentInset
         let bottomEdge = bounds.height - contentInset - bottomBarReserve
         let speed = { (depth: CGFloat) in
-            min(state.rows, max(1, Int((self.autoscrollMargin - depth) / 6)))
+            min(state.rows, max(1, Int((self.autoscrollMargin - depth) / 18)))
         }
         if point.y - topEdge < autoscrollMargin { return speed(point.y - topEdge) }
         if bottomEdge - point.y < autoscrollMargin { return -speed(bottomEdge - point.y) }
