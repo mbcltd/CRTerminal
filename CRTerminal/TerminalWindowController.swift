@@ -839,11 +839,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
                 ?? SessionInfo.workingDirectory(of: shellPID)
             var metaLine: String
+            let cwdName = cwd.map(SessionInfo.displayName(path:))
             if isRunning {
+                // The pulsing green dot already signals "live", so pair the
+                // foreground command with its directory's name instead.
                 let name = SessionInfo.processName(of: foreground) ?? "…"
-                metaLine = "\(name) · live"
+                metaLine = cwdName.map { "\(name) · \($0)" } ?? name
             } else {
-                metaLine = cwd.map(SessionInfo.displayName(path:)) ?? shellName
+                metaLine = cwdName ?? shellName
             }
             let progress = session.snapshot.progress
             if let progress, progress.state != .indeterminate {
