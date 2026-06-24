@@ -187,6 +187,11 @@ final class TerminalView: NSView, NSTextInputClient {
 
     /// Lines scrolled back from live (0 = following output).
     private var scrollOffset = 0
+    /// Live screen top (`absoluteScreenTop`) and viewport size seen at the last
+    /// update, used to keep the viewport pinned to the same content as output
+    /// scrolls past while the user is scrolled up. See `sessionDidUpdate`.
+    private var lastAbsoluteScreenTop = 0
+    private var lastViewportSize = (columns: 0, rows: 0)
     private var wheelAccumulator: CGFloat = 0
     /// The macOS-idiomatic overlay scrollbar in the right gutter.
     private let scrollbar = ScrollbarOverlay()
@@ -239,6 +244,24 @@ final class TerminalView: NSView, NSTextInputClient {
         CAMetalLayer()
     }
 
+    /// Viewport-pinning rule used on every session update. Given the current
+    /// scroll offset and how far the live screen top (`absoluteScreenTop`)
+    /// advanced since the last frame, returns the offset that keeps the same
+    /// content anchored on screen: while scrolled up, the offset grows with the
+    /// screen top so output scrolling past doesn't drag the view; at live
+    /// (offset 0) it stays 0 and keeps following the tail. The bump is skipped
+    /// across a resize (reflow moves the screen top non-monotonically), and the
+    /// result is clamped to the scrollback so a vanished anchor drifts to live.
+    static func pinnedScrollOffset(
+        current: Int, screenTopGrowth: Int, resized: Bool, scrollbackCount: Int
+    ) -> Int {
+        var offset = current
+        if current > 0 && screenTopGrowth > 0 && !resized {
+            offset += screenTopGrowth
+        }
+        return min(max(0, offset), scrollbackCount)
+    }
+
     /// Main-thread reaction to session updates: side effects (bell, title,
     /// offset clamping) plus waking the render thread. Drawing itself happens
     /// on the RenderLoop's CAMetalDisplayLink thread.
@@ -259,9 +282,25 @@ final class TerminalView: NSView, NSTextInputClient {
            window?.firstResponder === self {
             window?.title = title
         }
-        let clamped = min(scrollOffset, state.scrollback.count)
-        if clamped != scrollOffset {
-            scrollOffset = clamped
+        // Pin the viewport to the content the user is looking at. As lines
+        // scroll into scrollback, `absoluteScreenTop` grows; bump the offset by
+        // the same amount so the anchored rows stay put rather than sliding up
+        // the screen. At live (offset 0) we leave it 0 and keep following the
+        // tail. Skip the bump across a resize, whose reflow moves
+        // absoluteScreenTop non-monotonically. Eviction leaves absoluteScreenTop
+        // unchanged, so the anchor only drifts once it falls off the top of
+        // scrollback, where the clamp below takes over.
+        let originalOffset = scrollOffset
+        let resized = state.columns != lastViewportSize.columns
+            || state.rows != lastViewportSize.rows
+        scrollOffset = Self.pinnedScrollOffset(
+            current: scrollOffset,
+            screenTopGrowth: state.absoluteScreenTop - lastAbsoluteScreenTop,
+            resized: resized, scrollbackCount: state.scrollback.count)
+        lastAbsoluteScreenTop = state.absoluteScreenTop
+        lastViewportSize = (state.columns, state.rows)
+
+        if scrollOffset != originalOffset {
             pushViewStateToRenderLoop()
         } else {
             updateScrollbar() // scrollback grew: refresh the knob proportion
