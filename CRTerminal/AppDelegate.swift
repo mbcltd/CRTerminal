@@ -41,10 +41,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Start the updater before building the menu so the "Check for Updates…"
-        // item can target it. `startingUpdater: true` also schedules the
-        // background check governed by SUEnableAutomaticChecks.
+        // item can target it.
         updaterController = SPUStandardUpdaterController(
             startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        // Updates are strictly user-initiated: no scheduled background checks
+        // (so Sparkle never nags with an unsolicited "update available" dialog)
+        // and no silent downloads — the only path to an update is the user
+        // choosing "Check for Updates…". Set on the updater rather than relying
+        // on Info.plist alone so it also overrides any value an earlier build
+        // (which shipped with automatic checks on) persisted to user defaults.
+        if let updater = updaterController?.updater {
+            updater.automaticallyChecksForUpdates = false
+            updater.automaticallyDownloadsUpdates = false
+        }
         NSApp.mainMenu = makeMainMenu()
         NotificationPoster.shared.activate()
         SettingsStore.shared.onChange = { [weak self] in
