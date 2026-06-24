@@ -13,6 +13,11 @@ public enum BundledFonts {
     /// The Commodore 64 PETSCII character set (CC0 public domain) — the
     /// Commodore 1702 preset wears it. Mixed-case, monospace.
     public static let c64 = "C64-Regular"
+    /// The classic chunky 8-bit arcade face (SIL OFL) — the "RPG"
+    /// theme wears it for that JRPG dialogue-box look. Monospace, but with
+    /// sparse coverage (basic Latin + common punctuation); anything it
+    /// lacks falls back through GlyphAtlas like any other face.
+    public static let pressStart2P = "PressStart2P-Regular"
     /// Symbols-only Nerd Font (MIT): the icon glyphs Powerline, Nerd Fonts
     /// and friends park in the Unicode private-use areas. Not a user-facing
     /// typeface — GlyphAtlas pulls it in as a fallback layer for PUA scalars
@@ -21,7 +26,7 @@ public enum BundledFonts {
     /// Family names, for font pickers (process-registered fonts don't
     /// always surface in NSFontManager's lists). The symbols font is
     /// deliberately absent — it's a fallback layer, not a typeface choice.
-    public static let families = ["Geist Mono", "Departure Mono", "C64"]
+    public static let families = ["Geist Mono", "Departure Mono", "C64", "Press Start 2P"]
 
     /// Registers exactly once per process, however many threads call it.
     /// Registration is graphics-font based — parsed from the file data

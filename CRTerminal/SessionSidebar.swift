@@ -27,6 +27,11 @@ struct SidebarTheme: Equatable {
     var background: NSColor
     var cardBackground: NSColor
     var cardBorder: NSColor
+    /// PostScript name of the face this session's row/card title wears, when
+    /// the session's preset names one — so a themed tab carries its own
+    /// typeface into the rail (the RPG theme's 8-bit "game over" font, the
+    /// Commodore's PETSCII). nil uses the standard system title font.
+    var titleFontName: String?
 
     /// A whole-surface theme — the rail chrome, or a session's own
     /// self-contained hover card — taking both surface and accent from one
@@ -80,12 +85,29 @@ struct SidebarTheme: Equatable {
         chip = accent.withAlphaComponent(mode == .light ? 0.14 : 0.09)
         separator = (mode == .light ? NSColor.black : accent).withAlphaComponent(0.16)
         cardBorder = accent.withAlphaComponent(0.3)
+
+        // The row/card title wears the session's own face when its preset
+        // names one — the rail "wears the tube" right down to the typeface.
+        titleFontName = accentPreset.fontName
+    }
+
+    /// The face a session title draws in: its preset's own (bundled pixel
+    /// faces run at the chunkier `pixelSize` so they sit at the same visual
+    /// weight as the system default), else `standard`.
+    func titleFont(standard: NSFont, pixelSize: CGFloat) -> NSFont {
+        if let name = titleFontName, let face = NSFont(name: name, size: pixelSize) {
+            return face
+        }
+        return standard
     }
 
     /// A session's identity colour: a CRT tube glows in its phosphor; the
     /// plain presets use their own scheme's ink — a near-white glow for the
     /// dark standard, a dark slate for the light one.
     private static func identityColor(for preset: CRTPreset) -> NSColor {
+        // An explicit identity hue wins over every default (the RPG theme's
+        // dark blue, so its row doesn't read as red like "Danger").
+        if let accent = preset.accentColor { return NSColor(accent) }
         if preset.effects { return NSColor(preset.phosphor.color) }
         // A custom palette identifies itself by its accent hue (the bright
         // red of the "Danger" theme), so the rail wears its colour too.
@@ -1140,7 +1162,8 @@ final class SessionRowView: NSView {
         paragraph.lineBreakMode = .byTruncatingTail
 
         let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
+            .font: theme.titleFont(
+                standard: .systemFont(ofSize: 12.5, weight: .semibold), pixelSize: 9.5),
             .foregroundColor: model.isActive ? theme.text : theme.dim,
             .paragraphStyle: paragraph,
         ]
@@ -1294,7 +1317,8 @@ final class SessionHoverCard: NSView {
                 x: chipRect.maxX + 10, y: chipRect.midY - 8,
                 width: pillRect.minX - chipRect.maxX - 18, height: 17),
             withAttributes: [
-                .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                .font: theme.titleFont(
+                    standard: .systemFont(ofSize: 13, weight: .bold), pixelSize: 10),
                 .foregroundColor: theme.text,
                 .paragraphStyle: paragraph,
             ])

@@ -16,6 +16,40 @@ struct Phase2RenderTests {
         return (data[offset + 2], data[offset + 1], data[offset])
     }
 
+    @Test func rpgPaintsBoldGoldNotBright() throws {
+        // The RPG theme renders bold as a flat gold accent (#FFD23F) instead
+        // of brightening — so a bold cell shows gold, a plain cell white.
+        guard let renderer = RenderTestSupport.renderer(
+            face: BundledFonts.pressStart2P, scale: 2) else { return }
+        let rpg = try #require(CRTPresetLibrary.preset(named: "RPG"))
+        var terminal = Terminal(columns: 2, rows: 1)
+        terminal.feed(Array("\u{1B}[1mW\u{1B}[0mW".utf8)) // bold W, plain W
+        let image = try #require(renderer.renderImage(terminal.state, preset: rpg))
+        let cellW = Int(renderer.cellSize.width * renderer.scale)
+        let cellH = Int(renderer.cellSize.height * renderer.scale)
+
+        func hasGold(inCell col: Int) -> Bool {
+            for y in 0..<cellH {
+                for x in (col * cellW)..<min((col + 1) * cellW, image.width) {
+                    let p = pixel(image, x, y)
+                    if p.r > 200, p.g > 160, p.g < 230, p.b < 120 { return true }
+                }
+            }
+            return false
+        }
+        func hasWhite(inCell col: Int) -> Bool {
+            for y in 0..<cellH {
+                for x in (col * cellW)..<min((col + 1) * cellW, image.width) {
+                    let p = pixel(image, x, y)
+                    if p.r > 220, p.g > 220, p.b > 220 { return true }
+                }
+            }
+            return false
+        }
+        #expect(hasGold(inCell: 0))  // bold → gold
+        #expect(hasWhite(inCell: 1)) // plain → white
+    }
+
     @Test func scrolledViewportShowsScrollback() throws {
         guard let renderer = makeRenderer() else { return }
         var terminal = Terminal(columns: 4, rows: 2)

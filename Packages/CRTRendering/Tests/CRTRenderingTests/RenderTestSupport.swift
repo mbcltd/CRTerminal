@@ -27,7 +27,8 @@ enum RenderTestSupport {
         // tests touch, once, serially, before anything else can.
         for name in [
             BundledFonts.geistMono, BundledFonts.departureMono,
-            BundledFonts.c64, BundledFonts.symbolsNerdFont, "Menlo",
+            BundledFonts.c64, BundledFonts.pressStart2P,
+            BundledFonts.symbolsNerdFont, "Menlo",
         ] {
             _ = CTFontCreateWithName(name as CFString, 12, nil)
         }

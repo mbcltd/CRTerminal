@@ -22,6 +22,13 @@ public final class TerminalRenderer {
     /// (light presets switch to `ColorScheme.light`).
     private let baseScheme: ColorScheme
 
+    /// The active preset's stylised text rendering and the frame's clock,
+    /// adopted at the top of `encodeCellPass` under `encodeLock` so the
+    /// encode-path readers (resolveColors, the glyph emit, emitShapedRuns)
+    /// see a stable value even though panes share one renderer.
+    private var textEffects = CRTPreset.TextEffects()
+    private var frameTime: CFTimeInterval = 0
+
     private let commandQueue: MTLCommandQueue
     private let bgPipeline: MTLRenderPipelineState
     private let glyphPipeline: MTLRenderPipelineState
@@ -246,6 +253,7 @@ public final class TerminalRenderer {
                                searchMatches: searchMatches, currentMatch: currentMatch,
                                in: buffer, to: surfaces.terminal,
                                scheme: resolveScheme(for: frame.preset),
+                               textEffects: frame.preset.text, time: frame.time,
                                imageCache: imageCache)
                 effectPipeline.encode(
                     into: buffer, surfaces: &surfaces, output: target,
@@ -265,6 +273,7 @@ public final class TerminalRenderer {
                                searchMatches: searchMatches, currentMatch: currentMatch,
                                in: buffer, to: target,
                                scheme: resolveScheme(for: frame.preset),
+                               textEffects: frame.preset.text, time: frame.time,
                                padPx: Int((CGFloat(frame.preset.contentInsetPt) * scale)
                                    .rounded()),
                                imageCache: imageCache)
@@ -314,6 +323,9 @@ public final class TerminalRenderer {
     ) -> Bool {
         let (fallback, degaussStart) = effectsState.withLock { ($0.preset, $0.degaussStart) }
         let preset = panePreset ?? fallback
+        // Shaking bold text animates with no new terminal output and is
+        // independent of the CRT effect chain (the RPG theme runs effects off).
+        if preset.text.shakes { return true }
         guard preset.effects else { return false }
         if let degaussStart, time - degaussStart < Self.degaussDuration + 0.1 { return true }
         if preset.artifacts.isAnimated { return true }
@@ -465,6 +477,7 @@ public final class TerminalRenderer {
                            markedText: markedText, searchMatches: searchMatches,
                            currentMatch: currentMatch, in: buffer, to: surfaces.terminal,
                            scheme: resolveScheme(for: preset),
+                           textEffects: preset.text, time: time,
                            imageCache: ImageTextureCache(device: device))
             effectPipeline.encode(
                 into: buffer, surfaces: &surfaces, output: texture,
@@ -483,6 +496,7 @@ public final class TerminalRenderer {
                            markedText: markedText, searchMatches: searchMatches,
                            currentMatch: currentMatch, in: buffer, to: texture,
                            scheme: resolveScheme(for: preset),
+                           textEffects: preset?.text ?? CRTPreset.TextEffects(), time: time,
                            imageCache: ImageTextureCache(device: device))
             buffer.commit()
             buffer.waitUntilCompleted()
@@ -596,6 +610,8 @@ public final class TerminalRenderer {
         in buffer: MTLCommandBuffer,
         to texture: MTLTexture,
         scheme resolvedScheme: ColorScheme = .default,
+        textEffects: CRTPreset.TextEffects = CRTPreset.TextEffects(),
+        time: CFTimeInterval = 0,
         padPx: Int = 0,
         imageCache: ImageTextureCache? = nil
     ) {
@@ -606,10 +622,19 @@ public final class TerminalRenderer {
         // terminal's runtime OSC color overrides (4/10/11/12) on top of the
         // preset scheme so program-set colors win (issue #25).
         scheme = resolvedScheme.applyingOverrides(state.colorOverrides)
+        self.textEffects = textEffects
+        self.frameTime = time
         let cellW = Float(cellSize.width * scale)
         let cellH = Float(cellSize.height * scale)
         let baselineOffset = Float(ascent * scale)
         let lineThickness = max(1, Float(scale))
+
+        // RPG text styling, resolved once per pass.
+        let shadowColor = textEffects.shadowColor.map {
+            ColorScheme.pack($0.red, $0.green, $0.blue)
+        }
+        let shadowOffsetPx = Float(textEffects.shadowOffsetPt * scale)
+        let shakeAmpPx = Float(textEffects.boldShakePt * scale)
 
         let offset = min(max(0, scrollOffset), state.scrollback.count)
         let viewport = state.viewportLines(scrollOffset: offset)
@@ -622,6 +647,30 @@ public final class TerminalRenderer {
         var overlayInstances: [BgInstance] = [] // decorations + thin cursors
         bgInstances.reserveCapacity(64)
         glyphInstances.reserveCapacity(state.columns * state.rows / 2)
+
+        // Emits one glyph quad and, when the theme calls for it, a drop-shadow
+        // copy behind it. `glyphX`/`baselineY` are the cell's pen origin and
+        // baseline; `shake` is the per-glyph jitter already resolved (zero for
+        // unstyled glyphs). Shadows are drawn only for the grayscale atlas —
+        // colour (emoji) glyphs keep their own pixels.
+        func appendGlyph(
+            _ entry: GlyphAtlas.Entry, glyphX: Float, baselineY: Float,
+            color: UInt32, shake: SIMD2<Float> = .zero
+        ) {
+            let ox = glyphX + entry.bearing.x + shake.x
+            let oy = baselineY - entry.bearing.y + shake.y
+            if let shadowColor, !entry.isColor {
+                glyphInstances.append(GlyphInstance(
+                    origin: SIMD2(ox + shadowOffsetPx, oy + shadowOffsetPx),
+                    size: entry.size, uvOrigin: entry.uvOrigin,
+                    uvSize: entry.uvSize, color: shadowColor))
+            }
+            let instance = GlyphInstance(
+                origin: SIMD2(ox, oy), size: entry.size,
+                uvOrigin: entry.uvOrigin, uvSize: entry.uvSize, color: color)
+            if entry.isColor { colorGlyphInstances.append(instance) }
+            else { glyphInstances.append(instance) }
+        }
 
         // IME marked text composes over the cursor cell onward; the cells
         // underneath are masked out and the composition drawn in their place.
@@ -704,23 +753,23 @@ public final class TerminalRenderer {
                     bgInstances.append(BgInstance(
                         origin: origin, size: SIMD2(cellW, cellH), color: bg))
                 }
+                // The theme can swap emoji for blocky geometric stand-ins.
+                let glyphScalar = textEffects.replaceEmoji
+                    ? (Self.emojiSubstitutions[cell.glyph] ?? cell.glyph)
+                    : cell.glyph
                 if cell.glyph != Cell.blank.glyph,
                    !cell.attributes.contains(.wideSpacer),
                    !(x < shapedColumns.count && shapedColumns[x]),
-                   let entry = atlas.entry(forScalar: cell.glyph), !entry.isEmpty {
-                    let instance = GlyphInstance(
-                        origin: SIMD2(
-                            origin.x + entry.bearing.x,
-                            origin.y + baselineOffset - entry.bearing.y),
-                        size: entry.size,
-                        uvOrigin: entry.uvOrigin,
-                        uvSize: entry.uvSize,
-                        color: fg)
-                    if entry.isColor {
-                        colorGlyphInstances.append(instance)
-                    } else {
-                        glyphInstances.append(instance)
+                   let entry = atlas.entry(forScalar: glyphScalar), !entry.isEmpty {
+                    // Bold cells shake in place rather than rendering heavier.
+                    var shake = SIMD2<Float>(0, 0)
+                    if shakeAmpPx > 0, cell.attributes.contains(.bold) {
+                        shake = shakeOffset(
+                            seed: (viewportTop + y) &* 131 &+ x,
+                            time: frameTime, ampPx: shakeAmpPx)
                     }
+                    appendGlyph(entry, glyphX: origin.x, baselineY: origin.y + baselineOffset,
+                                color: fg, shake: shake)
                 }
                 let cellSpan = cell.attributes.contains(.wide) ? cellW * 2 : cellW
                 if cell.attributes.contains(.underlined) {
@@ -758,19 +807,8 @@ public final class TerminalRenderer {
             for (scalar, width) in markedScalars {
                 guard x < markedColumns.upperBound else { break }
                 if let entry = atlas.entry(forScalar: scalar.value), !entry.isEmpty {
-                    let instance = GlyphInstance(
-                        origin: SIMD2(
-                            Float(x) * cellW + entry.bearing.x,
-                            rowY + baselineOffset - entry.bearing.y),
-                        size: entry.size,
-                        uvOrigin: entry.uvOrigin,
-                        uvSize: entry.uvSize,
-                        color: scheme.foreground)
-                    if entry.isColor {
-                        colorGlyphInstances.append(instance)
-                    } else {
-                        glyphInstances.append(instance)
-                    }
+                    appendGlyph(entry, glyphX: Float(x) * cellW,
+                                baselineY: rowY + baselineOffset, color: scheme.foreground)
                 }
                 x += width
             }
@@ -963,13 +1001,23 @@ public final class TerminalRenderer {
                   let glyphs = atlas.shape(text), !glyphs.isEmpty else { continue }
             let fg = resolveColors(cell, isCursor: false).fg
             let originX = Float(x) * cellW
+            let shadowColor = textEffects.shadowColor.map {
+                ColorScheme.pack($0.red, $0.green, $0.blue)
+            }
+            let shadowOffsetPx = Float(textEffects.shadowOffsetPt * scale)
             for shapedGlyph in glyphs {
                 guard let entry = atlas.entry(forPrimaryGlyph: shapedGlyph.glyph),
                       !entry.isEmpty else { continue }
+                let ox = originX + shapedGlyph.xOffsetPx + entry.bearing.x
+                let oy = rowY + baselineOffset - entry.bearing.y
+                if let shadowColor {
+                    glyphInstances.append(GlyphInstance(
+                        origin: SIMD2(ox + shadowOffsetPx, oy + shadowOffsetPx),
+                        size: entry.size, uvOrigin: entry.uvOrigin,
+                        uvSize: entry.uvSize, color: shadowColor))
+                }
                 glyphInstances.append(GlyphInstance(
-                    origin: SIMD2(
-                        originX + shapedGlyph.xOffsetPx + entry.bearing.x,
-                        rowY + baselineOffset - entry.bearing.y),
+                    origin: SIMD2(ox, oy),
                     size: entry.size,
                     uvOrigin: entry.uvOrigin,
                     uvSize: entry.uvSize,
@@ -997,8 +1045,72 @@ public final class TerminalRenderer {
         if attrs.contains(.faint) {
             fg = Self.dim(fg)
         }
+        // The RPG theme paints bold as a flat accent colour instead of
+        // brightening — applied last so it wins, but never over a hidden cell
+        // (its text must stay invisible) or the inverted block cursor cut-out.
+        if let boldColor = textEffects.boldColor,
+           attrs.contains(.bold), !attrs.contains(.hidden), !isCursor {
+            fg = ColorScheme.pack(boldColor.red, boldColor.green, boldColor.blue)
+        }
         return (fg, bg)
     }
+
+    /// Choppy, pixel-snapped per-glyph jitter that re-rolls ~`fps` times a
+    /// second — the JRPG "shaking bold text" wobble. Deterministic in
+    /// (`seed`, time) so neighbouring glyphs shake independently but a single
+    /// glyph is steady within each ~1/fps step.
+    private func shakeOffset(
+        seed: Int, time: CFTimeInterval, ampPx: Float, fps: Double = 13
+    ) -> SIMD2<Float> {
+        let f = (time * fps).rounded(.down)
+        let a = sin(Double(seed) * 12.9898 + f * 78.233) * 43758.5453
+        let b = sin(Double(seed) * 39.346 + f * 11.135) * 24634.6331
+        let rx = Float(a - a.rounded(.down))
+        let ry = Float(b - b.rounded(.down))
+        return SIMD2(((rx * 2 - 1) * ampPx).rounded(), ((ry * 2 - 1) * ampPx).rounded())
+    }
+
+    /// Emoji the RPG theme swaps for blocky geometric glyphs that read in an
+    /// 8-bit face. The design itself dresses its HUD in these symbols (hearts,
+    /// stars, diamonds) rather than colour emoji; this carries that across to
+    /// real terminal output. Keys are the base scalars; presentation selectors
+    /// (U+FE0F) and skin-tone modifiers sit in their own cells and fall away.
+    static let emojiSubstitutions: [UInt32: UInt32] = {
+        var map: [UInt32: UInt32] = [:]
+        let heart: UInt32 = 0x2665      // ♥
+        let star: UInt32 = 0x2605       // ★
+        let sparkle: UInt32 = 0x2726    // ✦
+        let diamond: UInt32 = 0x25C6    // ◆
+        let check: UInt32 = 0x2713      // ✓
+        let cross: UInt32 = 0x2717      // ✗
+        let circle: UInt32 = 0x25CF     // ●
+        let block: UInt32 = 0x2588      // █  (BoxDrawing renders this crisply)
+        let tri: UInt32 = 0x25B2        // ▲
+        // Hearts of every hue → ♥
+        for s: UInt32 in [0x2764, 0x2665, 0x1F495, 0x1F496, 0x1F497, 0x1F49B,
+                          0x1F49A, 0x1F499, 0x1F49C, 0x1F90D, 0x1F90E, 0x1F5A4] {
+            map[s] = heart
+        }
+        // Stars / sparkles
+        for s: UInt32 in [0x2B50, 0x1F31F, 0x1F320, 0x1F4AB] { map[s] = star }
+        for s: UInt32 in [0x2728, 0x1F389, 0x1F38A, 0x1F387, 0x1F386] { map[s] = sparkle }
+        // Gems / power
+        for s: UInt32 in [0x1F48E, 0x1F537, 0x1F536] { map[s] = diamond }
+        map[0x26A1] = sparkle           // ⚡
+        map[0x1F525] = tri              // 🔥 → ▲
+        map[0x1F680] = tri              // 🚀 → ▲
+        map[0x26A0] = tri               // ⚠ → ▲
+        // Checks / crosses
+        for s: UInt32 in [0x2705, 0x2714, 0x1F44D, 0x1F197] { map[s] = check }
+        for s: UInt32 in [0x274C, 0x2716, 0x1F44E, 0x1F6AB] { map[s] = cross }
+        // Coloured dots → ●
+        for s: UInt32 in [0x1F534, 0x1F7E0, 0x1F7E1, 0x1F7E2, 0x1F535, 0x1F7E3,
+                          0x1F7E4, 0x26AB, 0x26AA] { map[s] = circle }
+        // Coloured squares → █
+        for s: UInt32 in [0x1F7E5, 0x1F7E7, 0x1F7E8, 0x1F7E9, 0x1F7E6, 0x1F7EA,
+                          0x1F7EB, 0x2B1B, 0x2B1C] { map[s] = block }
+        return map
+    }()
 
     private static func dim(_ color: UInt32) -> UInt32 {
         let r = UInt32(Double((color >> 24) & 0xFF) * 0.6)

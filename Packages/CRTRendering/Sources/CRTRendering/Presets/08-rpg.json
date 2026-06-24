@@ -1,0 +1,38 @@
+{
+  "name": "RPG",
+  "blurb": "Your shell, narrated like a JRPG. A mid-blue dungeon palette in a chunky 8-bit face, every glyph throwing a classic drop shadow — and bold text turns gold and shakes instead of going heavy.",
+  "effects": false,
+  "appearance": "dark",
+  "degaussButton": false,
+  "fontName": "PressStart2P-Regular",
+  "fontSizeScale": 1.5,
+  "accentColor": "#3A56B8",
+  "text": {
+    "shadowColor": "#000000",
+    "shadowOffsetPt": 4,
+    "boldColor": "#FFD23F",
+    "boldShakePt": 0.75,
+    "replaceEmoji": true
+  },
+  "colors": {
+    "background": "#16276B",
+    "foreground": "#FFFFFF",
+    "selection": "#3A56B8",
+    "black": "#0A1030",
+    "red": "#FF5D7A",
+    "green": "#5DFF9B",
+    "yellow": "#FFD23F",
+    "blue": "#6D8BFF",
+    "magenta": "#FF7AD9",
+    "cyan": "#7FE9FF",
+    "white": "#FFFFFF",
+    "brightBlack": "#5A6BA8",
+    "brightRed": "#FF8FA3",
+    "brightGreen": "#93FFC2",
+    "brightYellow": "#FFE08A",
+    "brightBlue": "#A8BEFF",
+    "brightMagenta": "#FFA8E6",
+    "brightCyan": "#B0F4FF",
+    "brightWhite": "#FFFFFF"
+  }
+}
