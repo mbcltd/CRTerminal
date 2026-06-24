@@ -11,7 +11,14 @@
 	<string>https://github.com/mbcltd/CRTerminal/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>4+vBKrgfLtlBoDvReotMPcJj5CiUJ+fZVCndEJ5f3N4=</string>
+	<!-- Updates are strictly user-initiated: no scheduled background checks
+	     (so Sparkle never pops an unsolicited "update available" nag) and no
+	     silent downloads. The "Check for Updates…" menu item is the only path
+	     to an update. Enforced again at runtime in AppDelegate so it also wins
+	     over any value an earlier build persisted to a user's defaults. -->
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
 </dict>
 </plist>
