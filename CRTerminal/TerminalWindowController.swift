@@ -1149,8 +1149,6 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
 
         field.placeholderString = "Search scrollback"
         field.delegate = self
-        field.target = self
-        field.action = #selector(searchSubmitted(_:))
         field.textColor = theme.text
         field.translatesAutoresizingMaskIntoConstraints = false
         addSubview(field)
@@ -1308,10 +1306,6 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
         }
     }
 
-    @objc private func searchSubmitted(_ sender: Any?) {
-        repeatSearch(backward: true)
-    }
-
     @objc private func findNext(_ sender: Any?) {
         repeatSearch(backward: false)
     }
@@ -1326,11 +1320,22 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        if selector == #selector(NSResponder.cancelOperation(_:)) {
+        switch selector {
+        case #selector(NSResponder.cancelOperation(_:)):
             liveSearchTimer?.invalidate()
             onDismiss?()
             return true
+        case #selector(NSResponder.insertNewline(_:)),
+             #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            // Enter steps to the next match (forward, toward the bottom);
+            // Shift-Enter steps to the previous one. Both Return variants land
+            // here, so the held Shift — not the specific selector — picks the
+            // direction (plain Return doesn't reliably map to insertNewline:).
+            let backward = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+            repeatSearch(backward: backward)
+            return true
+        default:
+            return false
         }
-        return false
     }
 }
