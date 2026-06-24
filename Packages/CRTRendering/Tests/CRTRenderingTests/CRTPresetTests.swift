@@ -8,6 +8,7 @@ struct CRTPresetTests {
         #expect(names == [
             "Dark", "Light", "Danger",
             "IBM 5151", "DEC VT220", "Amdek 310A", "Commodore 1702",
+            "RPG",
         ])
     }
 
@@ -100,6 +101,35 @@ struct CRTPresetTests {
         #expect(preset.colors == nil)
         #expect(preset.bottomBar == nil)
         #expect(preset.degaussButton)
+        #expect(preset.text.isEmpty) // no stylised text by default
+        #expect(!preset.text.shakes)
+    }
+
+    @Test func rpgCarriesItsTextStyle() throws {
+        let rpg = try #require(CRTPresetLibrary.preset(named: "RPG"))
+        #expect(!rpg.effects)                                 // a flat theme, no tube
+        #expect(rpg.fontName == BundledFonts.pressStart2P)    // the 8-bit face
+        #expect(!rpg.text.isEmpty)
+        #expect(rpg.text.shakes)                              // bold wobbles
+        #expect(rpg.text.shadowColor == HexColor(0x00, 0x00, 0x00))
+        #expect(rpg.text.shadowOffsetPt == 4)
+        #expect(rpg.text.boldColor == HexColor(0xFF, 0xD2, 0x3F)) // gold emphasis
+        #expect(rpg.text.replaceEmoji)
+        #expect(rpg.accentColor == HexColor(0x3A, 0x56, 0xB8)) // dark-blue sidebar hue
+        // A mid-blue dungeon background.
+        let scheme = ColorScheme.resolve(for: rpg)
+        #expect(scheme.background == ColorScheme.pack(0x16, 0x27, 0x6B))
+        #expect(!scheme.isLightBackground)
+    }
+
+    @Test func emojiSubstitutionsMapToGeometricGlyphs() {
+        // The curated swaps the RPG theme applies in place of colour emoji.
+        #expect(TerminalRenderer.emojiSubstitutions[0x2B50] == 0x2605)  // ⭐ → ★
+        #expect(TerminalRenderer.emojiSubstitutions[0x2764] == 0x2665)  // ❤ → ♥
+        #expect(TerminalRenderer.emojiSubstitutions[0x1F48E] == 0x25C6) // 💎 → ◆
+        #expect(TerminalRenderer.emojiSubstitutions[0x2705] == 0x2713)  // ✅ → ✓
+        #expect(TerminalRenderer.emojiSubstitutions[0x1F7E5] == 0x2588) // 🟥 → █
+        #expect(TerminalRenderer.emojiSubstitutions[Character("a").unicodeScalars.first!.value] == nil)
     }
 
     @Test func commodore1702HasNoDegaussButton() throws {

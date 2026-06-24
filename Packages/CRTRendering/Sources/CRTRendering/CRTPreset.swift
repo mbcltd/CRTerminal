@@ -263,6 +263,55 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         }
     }
 
+    /// Stylised glyph rendering layered on top of the normal cell pass — the
+    /// "RPG" theme's JRPG dialogue look. Every field defaults to off, so
+    /// a preset that omits the `text` section renders exactly as before.
+    public struct TextEffects: Codable, Equatable, Sendable {
+        /// A classic offset drop shadow: each glyph is drawn again in
+        /// `shadowColor`, `shadowOffsetPt` points down and to the right,
+        /// behind the glyph. nil colour leaves text flat.
+        public var shadowColor: HexColor?
+        public var shadowOffsetPt: Double
+        /// Bold cells render in this colour instead of brightening — the theme
+        /// paints emphasis gold rather than heavier (the bundled 8-bit face has
+        /// no bold weight anyway). nil keeps the normal bold treatment.
+        public var boldColor: HexColor?
+        /// Per-cell, pixel-snapped jitter applied to bold glyphs, in points
+        /// (0 = steady). While bold text is on screen this drives continuous
+        /// redraw, so the words visibly shake.
+        public var boldShakePt: Double
+        /// Swap a curated set of emoji for blocky geometric glyphs that read in
+        /// an 8-bit face (hearts, stars, checks…). Off leaves emoji untouched.
+        public var replaceEmoji: Bool
+
+        public init(shadowColor: HexColor? = nil, shadowOffsetPt: Double = 0,
+                    boldColor: HexColor? = nil, boldShakePt: Double = 0,
+                    replaceEmoji: Bool = false) {
+            self.shadowColor = shadowColor
+            self.shadowOffsetPt = shadowOffsetPt
+            self.boldColor = boldColor
+            self.boldShakePt = boldShakePt
+            self.replaceEmoji = replaceEmoji
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let d = TextEffects()
+            shadowColor = try c.decodeIfPresent(HexColor.self, forKey: .shadowColor) ?? d.shadowColor
+            shadowOffsetPt = try c.decodeIfPresent(Double.self, forKey: .shadowOffsetPt) ?? d.shadowOffsetPt
+            boldColor = try c.decodeIfPresent(HexColor.self, forKey: .boldColor) ?? d.boldColor
+            boldShakePt = try c.decodeIfPresent(Double.self, forKey: .boldShakePt) ?? d.boldShakePt
+            replaceEmoji = try c.decodeIfPresent(Bool.self, forKey: .replaceEmoji) ?? d.replaceEmoji
+        }
+
+        /// Nothing to do — the renderer's plain fast path applies.
+        public var isEmpty: Bool {
+            shadowColor == nil && boldColor == nil && boldShakePt == 0 && !replaceEmoji
+        }
+        /// Whether bold glyphs animate (and the render loop must keep ticking).
+        public var shakes: Bool { boldShakePt > 0 }
+    }
+
     public var phosphor: Phosphor
     public var geometry: Geometry
     public var mask: Mask
@@ -270,6 +319,15 @@ public struct CRTPreset: Codable, Equatable, Sendable {
     public var bloom: Bloom
     public var artifacts: Artifacts
     public var bezel: Bezel
+    /// Stylised glyph rendering (drop shadow, coloured/shaking bold, emoji
+    /// substitution); the default value is a no-op.
+    public var text: TextEffects
+    /// The hue this session flies in the sidebar — its row accent bar, icon
+    /// chip and hover card. nil falls back to the palette's red (then the
+    /// foreground) or, for a CRT preset, the phosphor glow. Set it when a
+    /// theme's identity colour isn't its reddest slot: the RPG theme hoists a
+    /// dark blue here rather than its pink "red".
+    public var accentColor: HexColor?
     /// An explicit color scheme; nil derives the scheme from `appearance`.
     public var colors: Palette?
     /// A thick accent stripe along the pane's bottom edge — the "Danger"
@@ -311,6 +369,7 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         phosphor: Phosphor = Phosphor(), geometry: Geometry = Geometry(),
         mask: Mask = Mask(), scanlines: Scanlines = Scanlines(),
         bloom: Bloom = Bloom(), artifacts: Artifacts = Artifacts(), bezel: Bezel = Bezel(),
+        text: TextEffects = TextEffects(), accentColor: HexColor? = nil,
         colors: Palette? = nil, bottomBar: BottomBar? = nil,
         degaussButton: Bool = true, fontSizeScale: Double = 1,
         fontName: String? = nil
@@ -327,6 +386,8 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         self.bloom = bloom
         self.artifacts = artifacts
         self.bezel = bezel
+        self.text = text
+        self.accentColor = accentColor
         self.colors = colors
         self.bottomBar = bottomBar
         self.degaussButton = degaussButton
@@ -349,6 +410,8 @@ public struct CRTPreset: Codable, Equatable, Sendable {
         bloom = try container.decodeIfPresent(Bloom.self, forKey: .bloom) ?? Bloom()
         artifacts = try container.decodeIfPresent(Artifacts.self, forKey: .artifacts) ?? Artifacts()
         bezel = try container.decodeIfPresent(Bezel.self, forKey: .bezel) ?? Bezel()
+        text = try container.decodeIfPresent(TextEffects.self, forKey: .text) ?? TextEffects()
+        accentColor = try container.decodeIfPresent(HexColor.self, forKey: .accentColor)
         colors = try container.decodeIfPresent(Palette.self, forKey: .colors)
         bottomBar = try container.decodeIfPresent(BottomBar.self, forKey: .bottomBar)
         degaussButton = try container.decodeIfPresent(Bool.self, forKey: .degaussButton) ?? true
