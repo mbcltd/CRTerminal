@@ -1135,6 +1135,12 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = theme.cardBackground.cgColor
+        // Pin the bar (and the native search field it hosts) to the active
+        // preset's light/dark mode. Otherwise the field draws the window's
+        // appearance — a light bezel under a light-mode window — while its
+        // text is `theme.text`, which for a dark preset is near-white and so
+        // vanishes on that light field (issue: RPG's white-on-white search).
+        appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
 
         let separator = NSView()
         separator.wantsLayer = true

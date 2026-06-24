@@ -721,4 +721,15 @@ struct SessionTabLifecycleTests {
         controller.selectTab(0)
         #expect(controller.currentPresetName == before.name)
     }
+
+    @Test @MainActor func searchBarAppearanceFollowsPresetMode() throws {
+        // A dark preset's find bar must render dark, so its near-white query
+        // text stays legible instead of vanishing on a light native field.
+        let rpg = try #require(CRTPresetLibrary.preset(named: "RPG"))
+        let darkBar = SearchBar(frame: .zero, preset: rpg)
+        #expect(darkBar.appearance?.name == .darkAqua)
+        // A light preset keeps the light field (dark text on a light bezel).
+        let lightBar = SearchBar(frame: .zero, preset: .lightStandard)
+        #expect(lightBar.appearance?.name == .aqua)
+    }
 }
