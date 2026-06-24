@@ -1149,8 +1149,6 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
 
         field.placeholderString = "Search scrollback"
         field.delegate = self
-        field.target = self
-        field.action = #selector(searchSubmitted(_:))
         field.textColor = theme.text
         field.translatesAutoresizingMaskIntoConstraints = false
         addSubview(field)
@@ -1308,10 +1306,6 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
         }
     }
 
-    @objc private func searchSubmitted(_ sender: Any?) {
-        repeatSearch(backward: true)
-    }
-
     @objc private func findNext(_ sender: Any?) {
         repeatSearch(backward: false)
     }
@@ -1326,11 +1320,21 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        if selector == #selector(NSResponder.cancelOperation(_:)) {
+        switch selector {
+        case #selector(NSResponder.cancelOperation(_:)):
             liveSearchTimer?.invalidate()
             onDismiss?()
             return true
+        case #selector(NSResponder.insertNewline(_:)):
+            // Enter steps to the next match (forward, toward the bottom).
+            repeatSearch(backward: false)
+            return true
+        case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            // Shift-Enter steps to the previous match (backward, up the scrollback).
+            repeatSearch(backward: true)
+            return true
+        default:
+            return false
         }
-        return false
     }
 }
