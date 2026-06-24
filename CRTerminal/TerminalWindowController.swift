@@ -1325,13 +1325,14 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
             liveSearchTimer?.invalidate()
             onDismiss?()
             return true
-        case #selector(NSResponder.insertNewline(_:)):
-            // Enter steps to the next match (forward, toward the bottom).
-            repeatSearch(backward: false)
-            return true
-        case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
-            // Shift-Enter steps to the previous match (backward, up the scrollback).
-            repeatSearch(backward: true)
+        case #selector(NSResponder.insertNewline(_:)),
+             #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            // Enter steps to the next match (forward, toward the bottom);
+            // Shift-Enter steps to the previous one. Both Return variants land
+            // here, so the held Shift — not the specific selector — picks the
+            // direction (plain Return doesn't reliably map to insertNewline:).
+            let backward = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+            repeatSearch(backward: backward)
             return true
         default:
             return false
