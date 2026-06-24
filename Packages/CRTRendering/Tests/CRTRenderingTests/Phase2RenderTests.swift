@@ -16,6 +16,38 @@ struct Phase2RenderTests {
         return (data[offset + 2], data[offset + 1], data[offset])
     }
 
+    @Test func rpgSkipsDropShadowOnLightCells() throws {
+        // The block cursor fills a cell white; the dark drop shadow must not
+        // smear over it (it only reads on a dark surface). With the fix the
+        // cursor cell holds the white fill and a coloured cut-out glyph — but
+        // no near-black shadow pixels.
+        guard let renderer = RenderTestSupport.renderer(
+            face: BundledFonts.pressStart2P, scale: 2) else { return }
+        let rpg = try #require(CRTPresetLibrary.preset(named: "RPG"))
+        var terminal = Terminal(columns: 3, rows: 1)
+        terminal.feed(Array("W".utf8))             // 'W' at column 0
+        terminal.feed(Array("\u{1B}[1;1H".utf8))   // cursor home → block over 'W'
+        let image = try #require(renderer.renderImage(terminal.state, preset: rpg))
+        let cellW = Int(renderer.cellSize.width * renderer.scale)
+        let cellH = Int(renderer.cellSize.height * renderer.scale)
+        var nearBlack = 0
+        for y in 0..<cellH {
+            for x in 0..<min(cellW, image.width) {
+                let p = pixel(image, x, y)
+                if p.r < 40, p.g < 40, p.b < 40 { nearBlack += 1 }
+            }
+        }
+        #expect(nearBlack == 0) // no shadow smear on the white cursor
+    }
+
+    @Test func isLightClassifiesShadowSurfaces() {
+        // Drives whether the RPG drop shadow is drawn: white cursor / light
+        // cells skip it, the dark palette and its selection keep it.
+        #expect(TerminalRenderer.isLight(ColorScheme.pack(0xFF, 0xFF, 0xFF)))  // cursor
+        #expect(!TerminalRenderer.isLight(ColorScheme.pack(0x16, 0x27, 0x6B))) // RPG bg
+        #expect(!TerminalRenderer.isLight(ColorScheme.pack(0x3A, 0x56, 0xB8))) // selection
+    }
+
     @Test func rpgPaintsBoldGoldNotBright() throws {
         // The RPG theme renders bold as a flat gold accent (#FFD23F) instead
         // of brightening — so a bold cell shows gold, a plain cell white.

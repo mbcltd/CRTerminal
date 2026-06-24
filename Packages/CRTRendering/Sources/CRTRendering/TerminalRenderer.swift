@@ -652,14 +652,17 @@ public final class TerminalRenderer {
         // copy behind it. `glyphX`/`baselineY` are the cell's pen origin and
         // baseline; `shake` is the per-glyph jitter already resolved (zero for
         // unstyled glyphs). Shadows are drawn only for the grayscale atlas —
-        // colour (emoji) glyphs keep their own pixels.
+        // colour (emoji) glyphs keep their own pixels — and only over a dark
+        // cell: the dark shadow exists to lift text off a dark surface, so on
+        // a light cell (the block cursor, a selection or search highlight,
+        // inverse video) it is skipped rather than smeared black-on-light.
         func appendGlyph(
             _ entry: GlyphAtlas.Entry, glyphX: Float, baselineY: Float,
-            color: UInt32, shake: SIMD2<Float> = .zero
+            color: UInt32, shake: SIMD2<Float> = .zero, onLightCell: Bool = false
         ) {
             let ox = glyphX + entry.bearing.x + shake.x
             let oy = baselineY - entry.bearing.y + shake.y
-            if let shadowColor, !entry.isColor {
+            if let shadowColor, !entry.isColor, !onLightCell {
                 glyphInstances.append(GlyphInstance(
                     origin: SIMD2(ox + shadowOffsetPx, oy + shadowOffsetPx),
                     size: entry.size, uvOrigin: entry.uvOrigin,
@@ -769,7 +772,7 @@ public final class TerminalRenderer {
                             time: frameTime, ampPx: shakeAmpPx)
                     }
                     appendGlyph(entry, glyphX: origin.x, baselineY: origin.y + baselineOffset,
-                                color: fg, shake: shake)
+                                color: fg, shake: shake, onLightCell: Self.isLight(bg))
                 }
                 let cellSpan = cell.attributes.contains(.wide) ? cellW * 2 : cellW
                 if cell.attributes.contains(.underlined) {
@@ -808,7 +811,8 @@ public final class TerminalRenderer {
                 guard x < markedColumns.upperBound else { break }
                 if let entry = atlas.entry(forScalar: scalar.value), !entry.isEmpty {
                     appendGlyph(entry, glyphX: Float(x) * cellW,
-                                baselineY: rowY + baselineOffset, color: scheme.foreground)
+                                baselineY: rowY + baselineOffset, color: scheme.foreground,
+                                onLightCell: Self.isLight(scheme.selectionBackground))
                 }
                 x += width
             }
@@ -999,9 +1003,11 @@ public final class TerminalRenderer {
             }
             guard text.count == end - x,
                   let glyphs = atlas.shape(text), !glyphs.isEmpty else { continue }
-            let fg = resolveColors(cell, isCursor: false).fg
+            let (fg, runBackground) = resolveColors(cell, isCursor: false)
             let originX = Float(x) * cellW
-            let shadowColor = textEffects.shadowColor.map {
+            // Skip the shadow over a light run background, matching the
+            // per-cell pass — the dark shadow only reads on a dark surface.
+            let shadowColor = Self.isLight(runBackground) ? nil : textEffects.shadowColor.map {
                 ColorScheme.pack($0.red, $0.green, $0.blue)
             }
             let shadowOffsetPx = Float(textEffects.shadowOffsetPt * scale)
@@ -1111,6 +1117,18 @@ public final class TerminalRenderer {
                           0x1F7EB, 0x2B1B, 0x2B1C] { map[s] = block }
         return map
     }()
+
+    /// Whether a packed cell background reads as light — Rec. 601 luma over a
+    /// mid threshold. Drives whether a glyph's dark drop shadow is drawn (it
+    /// only reads on a dark cell). The threshold sits a touch above mid so a
+    /// medium tube/palette background still counts as dark and keeps its
+    /// shadow, while the cursor/selection/inverse white surfaces drop it.
+    static func isLight(_ packed: UInt32) -> Bool {
+        let r = Double((packed >> 24) & 0xFF)
+        let g = Double((packed >> 16) & 0xFF)
+        let b = Double((packed >> 8) & 0xFF)
+        return 0.299 * r + 0.587 * g + 0.114 * b > 140
+    }
 
     private static func dim(_ color: UInt32) -> UInt32 {
         let r = UInt32(Double((color >> 24) & 0xFF) * 0.6)
