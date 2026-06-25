@@ -756,9 +756,9 @@ public final class TerminalRenderer {
                     bgInstances.append(BgInstance(
                         origin: origin, size: SIMD2(cellW, cellH), color: bg))
                 }
-                // The theme can swap emoji for blocky geometric stand-ins.
+                // The theme can fold emoji/symbols onto lo-fi font-native glyphs.
                 let glyphScalar = textEffects.replaceEmoji
-                    ? (Self.emojiSubstitutions[cell.glyph] ?? cell.glyph)
+                    ? (Self.glyphSubstitutions[cell.glyph] ?? cell.glyph)
                     : cell.glyph
                 if cell.glyph != Cell.blank.glyph,
                    !cell.attributes.contains(.wideSpacer),
@@ -1076,45 +1076,77 @@ public final class TerminalRenderer {
         return SIMD2(((rx * 2 - 1) * ampPx).rounded(), ((ry * 2 - 1) * ampPx).rounded())
     }
 
-    /// Emoji the RPG theme swaps for blocky geometric glyphs that read in an
-    /// 8-bit face. The design itself dresses its HUD in these symbols (hearts,
-    /// stars, diamonds) rather than colour emoji; this carries that across to
-    /// real terminal output. Keys are the base scalars; presentation selectors
-    /// (U+FE0F) and skin-tone modifiers sit in their own cells and fall away.
-    static let emojiSubstitutions: [UInt32: UInt32] = {
+    /// Glyphs the RPG theme folds onto PressStart2P-native characters, keeping
+    /// everything 8-bit and lo-fi. The pixel face has no colour emoji and lacks
+    /// most symbol glyphs, so anything it is missing would otherwise resolve to
+    /// a metrics-foreign system fallback — the thin, oversized ○ that prompted
+    /// this. Every *target* below is confirmed present in PressStart2P (█ is
+    /// drawn by BoxDrawing); keys are only glyphs the face lacks, so the symbols
+    /// it does have (• ← → ↑ ↓ ▲ ▶ ▼ ◀ ★ ♥ ♦ ♪ « ») pass through untouched.
+    /// Applied when `replaceEmoji` is set; presentation selectors (U+FE0F) and
+    /// skin-tone modifiers sit in their own cells and fall away.
+    static let glyphSubstitutions: [UInt32: UInt32] = {
         var map: [UInt32: UInt32] = [:]
-        let heart: UInt32 = 0x2665      // ♥
-        let star: UInt32 = 0x2605       // ★
-        let sparkle: UInt32 = 0x2726    // ✦
-        let diamond: UInt32 = 0x25C6    // ◆
-        let check: UInt32 = 0x2713      // ✓
-        let cross: UInt32 = 0x2717      // ✗
-        let circle: UInt32 = 0x25CF     // ●
-        let block: UInt32 = 0x2588      // █  (BoxDrawing renders this crisply)
-        let tri: UInt32 = 0x25B2        // ▲
-        // Hearts of every hue → ♥
-        for s: UInt32 in [0x2764, 0x2665, 0x1F495, 0x1F496, 0x1F497, 0x1F49B,
-                          0x1F49A, 0x1F499, 0x1F49C, 0x1F90D, 0x1F90E, 0x1F5A4] {
-            map[s] = heart
+        func fold(_ sources: [UInt32], to target: UInt32) {
+            for s in sources { map[s] = target }
         }
-        // Stars / sparkles
-        for s: UInt32 in [0x2B50, 0x1F31F, 0x1F320, 0x1F4AB] { map[s] = star }
-        for s: UInt32 in [0x2728, 0x1F389, 0x1F38A, 0x1F387, 0x1F386] { map[s] = sparkle }
-        // Gems / power
-        for s: UInt32 in [0x1F48E, 0x1F537, 0x1F536] { map[s] = diamond }
-        map[0x26A1] = sparkle           // ⚡
-        map[0x1F525] = tri              // 🔥 → ▲
-        map[0x1F680] = tri              // 🚀 → ▲
-        map[0x26A0] = tri               // ⚠ → ▲
-        // Checks / crosses
-        for s: UInt32 in [0x2705, 0x2714, 0x1F44D, 0x1F197] { map[s] = check }
-        for s: UInt32 in [0x274C, 0x2716, 0x1F44E, 0x1F6AB] { map[s] = cross }
-        // Coloured dots → ●
-        for s: UInt32 in [0x1F534, 0x1F7E0, 0x1F7E1, 0x1F7E2, 0x1F535, 0x1F7E3,
-                          0x1F7E4, 0x26AB, 0x26AA] { map[s] = circle }
-        // Coloured squares → █
-        for s: UInt32 in [0x1F7E5, 0x1F7E7, 0x1F7E8, 0x1F7E9, 0x1F7E6, 0x1F7EA,
-                          0x1F7EB, 0x2B1B, 0x2B1C] { map[s] = block }
+
+        // Targets — all confirmed in PressStart2P's cmap.
+        let bullet: UInt32 = 0x2022     // •
+        let right: UInt32 = 0x2192      // →
+        let left: UInt32 = 0x2190       // ←
+        let up: UInt32 = 0x2191         // ↑
+        let down: UInt32 = 0x2193       // ↓
+        let triRight: UInt32 = 0x25B6   // ▶
+        let triLeft: UInt32 = 0x25C0    // ◀
+        let triUp: UInt32 = 0x25B2      // ▲
+        let triDown: UInt32 = 0x25BC    // ▼
+        let heart: UInt32 = 0x2665      // ♥
+        let diamond: UInt32 = 0x2666    // ♦
+        let star: UInt32 = 0x2605       // ★
+        let check: UInt32 = 0x221A      // √  (the closest native tick)
+        let cross: UInt32 = 0x00D7      // ×
+        let block: UInt32 = 0x2588      // █  (BoxDrawing renders this crisply)
+
+        // Round bullets / dots → •  (filled, outline, fisheye, the lot)
+        fold([0x25CF, 0x25CB, 0x25E6, 0x25C9, 0x25CE, 0x25CC, 0x25CD, 0x25D8,
+              0x25D9, 0x2B24, 0x29BF, 0x2218, 0x2219, 0x26AB, 0x26AA,
+              0x1F534, 0x1F7E0, 0x1F7E1, 0x1F7E2, 0x1F535, 0x1F7E3, 0x1F7E4,
+              0x1F7E3, 0x1F518], to: bullet)
+
+        // Arrow variants → the four native arrows (heavy, double, hooked, …).
+        fold([0x21D2, 0x27F6, 0x27A1, 0x2794, 0x2799, 0x279C, 0x279D, 0x279E,
+              0x279F, 0x21A6, 0x21AA, 0x21E8, 0x2B95, 0x2B62, 0x276F, 0x21FE], to: right)
+        fold([0x21D0, 0x27F5, 0x2B05, 0x21A9, 0x21E6, 0x2B60, 0x276E, 0x21FD], to: left)
+        fold([0x21D1, 0x2B06, 0x21E7, 0x2B61], to: up)
+        fold([0x21D3, 0x2B07, 0x21E9, 0x2B63], to: down)
+        // Small directional triangles → the full-size ones the face ships.
+        fold([0x25B8, 0x25B9], to: triRight)
+        fold([0x25C2, 0x25C3], to: triLeft)
+        fold([0x25B4, 0x25B5], to: triUp)
+        fold([0x25BE, 0x25BF], to: triDown)
+
+        // Hearts of every hue → ♥
+        fold([0x2764, 0x1F495, 0x1F496, 0x1F497, 0x1F498, 0x1F499, 0x1F49A,
+              0x1F49B, 0x1F49C, 0x1F49D, 0x1F49F, 0x1F493, 0x1F90D, 0x1F90E,
+              0x1F5A4], to: heart)
+        // Stars / sparkles / celebration → ★
+        fold([0x2726, 0x2727, 0x2728, 0x2729, 0x272A, 0x272B, 0x272C, 0x272D,
+              0x272E, 0x272F, 0x2730, 0x2B50, 0x26A1, 0x1F31F, 0x1F320, 0x1F4AB,
+              0x1F389, 0x1F38A, 0x1F387, 0x1F386], to: star)
+        // Gems → ♦
+        fold([0x25C6, 0x25C7, 0x2B25, 0x2B26, 0x1F48E, 0x1F537, 0x1F536,
+              0x1F539, 0x1F538], to: diamond)
+        // Fire / launch / warning → ▲
+        fold([0x1F525, 0x1F680, 0x26A0], to: triUp)
+        // Checks → √, crosses → ×
+        fold([0x2713, 0x2714, 0x2705, 0x2611, 0x1F44D, 0x1F197], to: check)
+        fold([0x2717, 0x2718, 0x2716, 0x2715, 0x2612, 0x274C, 0x1F44E,
+              0x1F6AB], to: cross)
+        // Squares (geometric + coloured emoji) → █
+        fold([0x25A0, 0x25A1, 0x25AA, 0x25AB, 0x25FC, 0x25FB, 0x25FE, 0x25FD,
+              0x2B1B, 0x2B1C, 0x1F7E5, 0x1F7E7, 0x1F7E8, 0x1F7E9, 0x1F7E6,
+              0x1F7EA, 0x1F7EB], to: block)
         return map
     }()
 
