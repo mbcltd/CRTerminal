@@ -1108,9 +1108,10 @@ public final class TerminalRenderer {
         let cross: UInt32 = 0x00D7      // ×
         let block: UInt32 = 0x2588      // █  (BoxDrawing renders this crisply)
 
-        // Round bullets / dots → •  (filled, outline, fisheye, the lot)
+        // Round bullets / dots → •  (filled, outline, fisheye, the lot).
+        // 0x23FA ⏺ is the record-circle TUIs (Claude Code's own) use as a bullet.
         fold([0x25CF, 0x25CB, 0x25E6, 0x25C9, 0x25CE, 0x25CC, 0x25CD, 0x25D8,
-              0x25D9, 0x2B24, 0x29BF, 0x2218, 0x2219, 0x26AB, 0x26AA,
+              0x25D9, 0x2B24, 0x29BF, 0x2218, 0x2219, 0x26AB, 0x26AA, 0x23FA,
               0x1F534, 0x1F7E0, 0x1F7E1, 0x1F7E2, 0x1F535, 0x1F7E3, 0x1F7E4,
               0x1F7E3, 0x1F518], to: bullet)
 
@@ -1120,11 +1121,13 @@ public final class TerminalRenderer {
         fold([0x21D0, 0x27F5, 0x2B05, 0x21A9, 0x21E6, 0x2B60, 0x276E, 0x21FD], to: left)
         fold([0x21D1, 0x2B06, 0x21E7, 0x2B61], to: up)
         fold([0x21D3, 0x2B07, 0x21E9, 0x2B63], to: down)
-        // Small directional triangles → the full-size ones the face ships.
-        fold([0x25B8, 0x25B9], to: triRight)
-        fold([0x25C2, 0x25C3], to: triLeft)
-        fold([0x25B4, 0x25B5], to: triUp)
-        fold([0x25BE, 0x25BF], to: triDown)
+        // Small + media-control directional triangles → the full-size ones the
+        // face ships. 0x23F4–0x23F7 (⏴⏵⏶⏷) are the media triangles TUIs use for
+        // cues like Claude Code's "⏵⏵ accept edits" indicator.
+        fold([0x25B8, 0x25B9, 0x23F5], to: triRight)
+        fold([0x25C2, 0x25C3, 0x23F4], to: triLeft)
+        fold([0x25B4, 0x25B5, 0x23F6], to: triUp)
+        fold([0x25BE, 0x25BF, 0x23F7], to: triDown)
 
         // Hearts of every hue → ♥
         fold([0x2764, 0x1F495, 0x1F496, 0x1F497, 0x1F498, 0x1F499, 0x1F49A,

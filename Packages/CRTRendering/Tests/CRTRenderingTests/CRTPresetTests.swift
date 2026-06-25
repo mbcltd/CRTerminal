@@ -129,6 +129,9 @@ struct CRTPresetTests {
         let sub = TerminalRenderer.glyphSubstitutions
         #expect(sub[0x25CB] == 0x2022)  // ○ → •  (the bug that started this)
         #expect(sub[0x25CF] == 0x2022)  // ● → •
+        #expect(sub[0x23FA] == 0x2022)  // ⏺ → •  (Claude Code's TUI bullet)
+        #expect(sub[0x23F5] == 0x25B6)  // ⏵ → ▶  ("accept edits" indicator)
+        #expect(sub[0x23F4] == 0x25C0)  // ⏴ → ◀
         #expect(sub[0x21D2] == 0x2192)  // ⇒ → →
         #expect(sub[0x21D0] == 0x2190)  // ⇐ → ←
         #expect(sub[0x2B50] == 0x2605)  // ⭐ → ★
