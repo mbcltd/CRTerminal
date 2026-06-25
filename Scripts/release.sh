@@ -97,6 +97,43 @@ fi
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
 
+# --- Verification gate ------------------------------------------------------
+# `stapler validate` above only proves the *disk image* carries a notarisation
+# ticket. Sparkle, though, throws the .app out of the DMG and validates *that* —
+# so a DMG that staples fine can still ship an app whose code signature is
+# broken/unnotarised, surfacing to users as "The update is improperly signed and
+# could not be validated." This gate mounts the finished DMG and verifies the
+# exact app a Sparkle update would run, refusing to publish if anything is off.
+echo "==> Verifying notarised app inside the DMG (publish gate)"
+MOUNT=$(mktemp -d)
+hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT" >/dev/null
+trap 'hdiutil detach "$MOUNT" >/dev/null 2>&1 || true; rmdir "$MOUNT" 2>/dev/null || true' EXIT
+MOUNTED_APP=$(/bin/ls -d "$MOUNT"/*.app 2>/dev/null | head -1)
+fail=0
+if [ -z "$MOUNTED_APP" ]; then
+  echo "  ✗ no .app found inside the DMG" >&2; fail=1
+else
+  # Code signature intact across the whole bundle (nested frameworks/helpers too).
+  codesign --verify --deep --strict --verbose=2 "$MOUNTED_APP" \
+    || { echo "  ✗ codesign --verify failed" >&2; fail=1; }
+  # Gatekeeper would accept it for execution — only passes once notarised.
+  spctl --assess --type execute -vvv "$MOUNTED_APP" \
+    || { echo "  ✗ Gatekeeper (spctl) rejects the app for execution" >&2; fail=1; }
+  # Signed with a Developer ID Application identity (not ad-hoc/development) and
+  # with the hardened runtime — both are prerequisites notarisation can't add
+  # after the fact, and a Sparkle host/update identity mismatch shows here.
+  desc=$(codesign --display --verbose=4 "$MOUNTED_APP" 2>&1)
+  grep -q 'Authority=Developer ID Application' <<<"$desc" \
+    || { echo "  ✗ not signed with a Developer ID Application identity" >&2; fail=1; }
+  grep -Eq 'flags=.*runtime' <<<"$desc" \
+    || { echo "  ✗ hardened runtime flag missing" >&2; fail=1; }
+fi
+hdiutil detach "$MOUNT" >/dev/null 2>&1 || true
+rmdir "$MOUNT" 2>/dev/null || true
+trap - EXIT
+[ "$fail" -eq 0 ] || { echo "error: release verification failed — refusing to publish a bad update" >&2; exit 1; }
+echo "  ✓ notarised app verified"
+
 # --- Sparkle appcast (optional) ---------------------------------------------
 # Skipped until a Sparkle EdDSA key exists. Once Sparkle is embedded in the app
 # (its public key in Info.plist as SUPublicEDKey, feed URL as SUFeedURL), set the
