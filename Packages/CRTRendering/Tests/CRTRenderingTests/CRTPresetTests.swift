@@ -1,3 +1,4 @@
+import CoreText
 import Foundation
 import Testing
 @testable import CRTRendering
@@ -122,14 +123,41 @@ struct CRTPresetTests {
         #expect(!scheme.isLightBackground)
     }
 
-    @Test func emojiSubstitutionsMapToGeometricGlyphs() {
-        // The curated swaps the RPG theme applies in place of colour emoji.
-        #expect(TerminalRenderer.emojiSubstitutions[0x2B50] == 0x2605)  // ⭐ → ★
-        #expect(TerminalRenderer.emojiSubstitutions[0x2764] == 0x2665)  // ❤ → ♥
-        #expect(TerminalRenderer.emojiSubstitutions[0x1F48E] == 0x25C6) // 💎 → ◆
-        #expect(TerminalRenderer.emojiSubstitutions[0x2705] == 0x2713)  // ✅ → ✓
-        #expect(TerminalRenderer.emojiSubstitutions[0x1F7E5] == 0x2588) // 🟥 → █
-        #expect(TerminalRenderer.emojiSubstitutions[Character("a").unicodeScalars.first!.value] == nil)
+    @Test func glyphSubstitutionsFoldOntoFontNativeGlyphs() {
+        // The curated lo-fi swaps the RPG theme applies. Each target is a glyph
+        // PressStart2P actually ships (see the invariant test below).
+        let sub = TerminalRenderer.glyphSubstitutions
+        #expect(sub[0x25CB] == 0x2022)  // ○ → •  (the bug that started this)
+        #expect(sub[0x25CF] == 0x2022)  // ● → •
+        #expect(sub[0x21D2] == 0x2192)  // ⇒ → →
+        #expect(sub[0x21D0] == 0x2190)  // ⇐ → ←
+        #expect(sub[0x2B50] == 0x2605)  // ⭐ → ★
+        #expect(sub[0x2764] == 0x2665)  // ❤ → ♥
+        #expect(sub[0x1F48E] == 0x2666) // 💎 → ♦
+        #expect(sub[0x2705] == 0x221A)  // ✅ → √
+        #expect(sub[0x274C] == 0x00D7)  // ❌ → ×
+        #expect(sub[0x1F7E5] == 0x2588) // 🟥 → █
+        // Glyphs the face already has are left alone.
+        #expect(sub[0x2192] == nil)     // → stays →
+        #expect(sub[Character("a").unicodeScalars.first!.value] == nil)
+    }
+
+    /// Every substitution *target* must be a glyph PressStart2P actually has
+    /// (or one BoxDrawing synthesizes from cell geometry, like █) — otherwise
+    /// the swap just trades one missing glyph for another that falls back to a
+    /// metrics-foreign system face, the very thing the map exists to avoid.
+    @Test func everyGlyphSubstitutionTargetExistsInPressStart2P() {
+        RenderTestSupport.ready()
+        let font = CTFontCreateWithName(BundledFonts.pressStart2P as CFString, 12, nil)
+        for target in Set(TerminalRenderer.glyphSubstitutions.values) {
+            if BoxDrawing.covers(target) { continue }
+            let scalar = Unicode.Scalar(target)!
+            var units = Array(String(scalar).utf16)
+            var glyphs = [CGGlyph](repeating: 0, count: units.count)
+            let ok = CTFontGetGlyphsForCharacters(font, &units, &glyphs, units.count)
+            #expect(ok && glyphs[0] != 0,
+                    "U+\(String(target, radix: 16, uppercase: true)) missing in PressStart2P")
+        }
     }
 
     @Test func commodore1702HasNoDegaussButton() throws {

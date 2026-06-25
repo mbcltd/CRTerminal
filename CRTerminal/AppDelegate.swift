@@ -931,6 +931,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         settingsWindow?.makeKeyAndOrderFront(sender)
     }
 
+    /// ⌘W fallback: the "Close Pane" menu item dispatches `closePane(_:)` down
+    /// the responder chain, where `TerminalWindowController` handles it for
+    /// terminal windows. Auxiliary windows (Settings) have no such controller in
+    /// their chain, so the action would otherwise fall through and ⌘W would be
+    /// dead. AppDelegate sits at the chain's tail, so this only runs when no
+    /// terminal window is key — close whatever auxiliary window is focused.
+    @objc func closePane(_ sender: Any?) {
+        NSApp.keyWindow?.performClose(sender)
+    }
+
     @objc private func showAboutPanel(_ sender: Any?) {
         let credits = NSMutableAttributedString()
         let smallFont = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
