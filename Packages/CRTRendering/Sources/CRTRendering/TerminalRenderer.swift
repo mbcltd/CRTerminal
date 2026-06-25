@@ -1150,6 +1150,9 @@ public final class TerminalRenderer {
         fold([0x25A0, 0x25A1, 0x25AA, 0x25AB, 0x25FC, 0x25FB, 0x25FE, 0x25FD,
               0x2B1B, 0x2B1C, 0x1F7E5, 0x1F7E7, 0x1F7E8, 0x1F7E9, 0x1F7E6,
               0x1F7EA, 0x1F7EB], to: block)
+        // 0x23BF ⎿ (the result-branch connector TUIs draw) → └ U+2514, which
+        // BoxDrawing renders crisply on-grid.
+        fold([0x23BF], to: 0x2514)
         return map
     }()
 
