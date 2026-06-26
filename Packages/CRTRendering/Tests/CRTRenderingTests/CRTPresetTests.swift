@@ -127,9 +127,14 @@ struct CRTPresetTests {
         // The curated lo-fi swaps the RPG theme applies. Each target is a glyph
         // PressStart2P actually ships (see the invariant test below).
         let sub = TerminalRenderer.glyphSubstitutions
-        #expect(sub[0x25CB] == 0x2022)  // ○ → •  (the bug that started this)
-        #expect(sub[0x25CF] == 0x2022)  // ● → •
-        #expect(sub[0x23FA] == 0x2022)  // ⏺ → •  (Claude Code's TUI bullet)
+        // Radio buttons split by fill so selected/unselected stays legible:
+        // hollow rings → ◊ (lozenge), filled discs → ♦.
+        #expect(sub[0x25CB] == 0x25CA)  // ○ → ◊  (the bug that started this)
+        #expect(sub[0x25EF] == 0x25CA)  // ◯ → ◊  (large unselected radio)
+        #expect(sub[0x25CF] == 0x2666)  // ● → ♦  (filled radio / selected)
+        #expect(sub[0x25C9] == 0x2666)  // ◉ → ♦  (fisheye selected indicator)
+        #expect(sub[0x23FA] == 0x2022)  // ⏺ → •  (Claude Code's TUI bullet stays a dot)
+        #expect(sub[0x26AA] == 0x2022)  // ⚪ → •  (emoji status dot, not a radio)
         #expect(sub[0x23F5] == 0x25B6)  // ⏵ → ▶  ("accept edits" indicator)
         #expect(sub[0x23F4] == 0x25C0)  // ⏴ → ◀
         #expect(sub[0x23BF] == 0x2514)  // ⎿ → └  (result-branch connector)
@@ -138,6 +143,8 @@ struct CRTPresetTests {
         #expect(sub[0x2B50] == 0x2605)  // ⭐ → ★
         #expect(sub[0x2764] == 0x2665)  // ❤ → ♥
         #expect(sub[0x1F48E] == 0x2666) // 💎 → ♦
+        #expect(sub[0x25C7] == 0x25CA)  // ◇ → ◊  (hollow gem stays hollow)
+        #expect(sub[0x2B26] == 0x25CA)  // ⬦ → ◊
         #expect(sub[0x2705] == 0x221A)  // ✅ → √
         #expect(sub[0x274C] == 0x00D7)  // ❌ → ×
         #expect(sub[0x1F7E5] == 0x2588) // 🟥 → █

@@ -1102,18 +1102,24 @@ public final class TerminalRenderer {
         let triUp: UInt32 = 0x25B2      // ▲
         let triDown: UInt32 = 0x25BC    // ▼
         let heart: UInt32 = 0x2665      // ♥
-        let diamond: UInt32 = 0x2666    // ♦
+        let diamond: UInt32 = 0x2666    // ♦  (filled)
+        let lozenge: UInt32 = 0x25CA    // ◊  (the hollow diamond; PressStart2P's only outline diamond)
         let star: UInt32 = 0x2605       // ★
         let check: UInt32 = 0x221A      // √  (the closest native tick)
         let cross: UInt32 = 0x00D7      // ×
         let block: UInt32 = 0x2588      // █  (BoxDrawing renders this crisply)
 
-        // Round bullets / dots → •  (filled, outline, fisheye, the lot).
-        // 0x23FA ⏺ is the record-circle TUIs (Claude Code's own) use as a bullet.
-        fold([0x25CF, 0x25CB, 0x25E6, 0x25C9, 0x25CE, 0x25CC, 0x25CD, 0x25D8,
-              0x25D9, 0x2B24, 0x29BF, 0x2218, 0x2219, 0x26AB, 0x26AA, 0x23FA,
+        // Plain dots & bullets → •  (tiny dots, CP437 inverse discs, coloured
+        // emoji status dots).  0x23FA ⏺ is the record-circle TUIs (Claude Code's
+        // own) use as a bullet, and the emoji circles read as status, not radios.
+        fold([0x25E6, 0x25D8, 0x25D9, 0x2218, 0x2219, 0x26AB, 0x26AA, 0x23FA,
               0x1F534, 0x1F7E0, 0x1F7E1, 0x1F7E2, 0x1F535, 0x1F7E3, 0x1F7E4,
               0x1F7E3, 0x1F518], to: bullet)
+        // Radio buttons keep their selected/unselected reading in the RPG face:
+        // filled discs → ♦, hollow rings → ◊.  Folding both to • (as we used to)
+        // collapsed the pair into one glyph.  ⏺/⚪ above are deliberately NOT here.
+        fold([0x25CF, 0x25C9, 0x29BF, 0x2B24], to: diamond)         // ● ◉ ⦿ ⬤
+        fold([0x25CB, 0x25EF, 0x25CE, 0x25CC, 0x25CD, 0x2B55], to: lozenge)  // ○ ◯ ◎ ◌ ◍ ⭕
 
         // Arrow variants → the four native arrows (heavy, double, hooked, …).
         fold([0x21D2, 0x27F6, 0x27A1, 0x2794, 0x2799, 0x279C, 0x279D, 0x279E,
@@ -1137,9 +1143,9 @@ public final class TerminalRenderer {
         fold([0x2726, 0x2727, 0x2728, 0x2729, 0x272A, 0x272B, 0x272C, 0x272D,
               0x272E, 0x272F, 0x2730, 0x2B50, 0x26A1, 0x1F31F, 0x1F320, 0x1F4AB,
               0x1F389, 0x1F38A, 0x1F387, 0x1F386], to: star)
-        // Gems → ♦
-        fold([0x25C6, 0x25C7, 0x2B25, 0x2B26, 0x1F48E, 0x1F537, 0x1F536,
-              0x1F539, 0x1F538], to: diamond)
+        // Gems → ♦ (filled), but the outline diamonds → ◊ so hollow stays hollow.
+        fold([0x25C6, 0x2B25, 0x1F48E, 0x1F537, 0x1F536, 0x1F539, 0x1F538], to: diamond)
+        fold([0x25C7, 0x2B26], to: lozenge)  // ◇ ⬦ → ◊
         // Fire / launch / warning → ▲
         fold([0x1F525, 0x1F680, 0x26A0], to: triUp)
         // Checks → √, crosses → ×
