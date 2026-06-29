@@ -962,6 +962,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 .paragraphStyle: paragraph,
             ]))
 
+        // Bundled fonts — each registered in-process by CRTRendering. Attribute
+        // the original projects and their licences (the full texts ship beside
+        // the font files in CRTRendering's Fonts/ resource directory).
+        let fontParagraph = NSMutableParagraphStyle()
+        fontParagraph.alignment = .center
+        fontParagraph.paragraphSpacing = 2
+        let heading = NSMutableParagraphStyle()
+        heading.alignment = .center
+        heading.paragraphSpacing = 4
+        heading.paragraphSpacingBefore = 12
+        credits.append(NSAttributedString(
+            string: "\nBundled fonts\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+                .paragraphStyle: heading,
+            ]))
+        let fonts: [(name: String, url: String, licence: String)] = [
+            ("Geist Mono", "https://github.com/vercel/geist-font", "SIL OFL 1.1"),
+            ("Departure Mono", "https://departuremono.com", "SIL OFL 1.1"),
+            ("Press Start 2P", "https://www.zone38.net/font/", "SIL OFL 1.1"),
+            ("C64", "https://creativecommons.org/publicdomain/zero/1.0/", "CC0 public domain"),
+            ("Symbols Nerd Font", "https://github.com/ryanoasis/nerd-fonts", "MIT"),
+        ]
+        for font in fonts {
+            let line = NSMutableAttributedString()
+            line.append(NSAttributedString(
+                string: font.name,
+                attributes: [
+                    .link: URL(string: font.url)!,
+                    .font: smallFont,
+                    .paragraphStyle: fontParagraph,
+                ]))
+            line.append(NSAttributedString(
+                string: " · \(font.licence)\n",
+                attributes: [
+                    .font: smallFont,
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .paragraphStyle: fontParagraph,
+                ]))
+            credits.append(line)
+        }
+
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
     }
