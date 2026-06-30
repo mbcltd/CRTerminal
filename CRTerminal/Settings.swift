@@ -157,6 +157,11 @@ enum MonospacedFonts {
 
     private static func isMonospaced(_ family: String) -> Bool {
         let descriptor = NSFontDescriptor(fontAttributes: [.family: family])
-        return NSFont(descriptor: descriptor, size: 12)?.isFixedPitch ?? false
+        guard let font = NSFont(descriptor: descriptor, size: 12) else { return false }
+        // `isFixedPitch` only reflects the author-set flag in the font's `post`
+        // table, which many genuinely monospaced faces leave unset. CoreText's
+        // `monoSpace` symbolic trait is derived from the actual glyph metrics,
+        // so it catches those the flag misses; OR the two to cover both.
+        return font.fontDescriptor.symbolicTraits.contains(.monoSpace) || font.isFixedPitch
     }
 }
