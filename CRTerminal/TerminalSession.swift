@@ -93,6 +93,21 @@ nonisolated final class TerminalSession: @unchecked Sendable {
         pty.send(bytes)
     }
 
+    /// Clears the visible screen and scrollback for a fresh prompt (⌘L). Erases
+    /// our buffer directly — home the cursor (CSI H), wipe the screen (CSI 2 J),
+    /// drop scrollback (CSI 3 J) — then sends the shell a form feed so it
+    /// repaints its prompt on the now-blank screen, the way the `clear` command
+    /// and readline's Ctrl-L do. Works whether the shell is idle or a
+    /// full-screen program owns the foreground (which redraws on the form feed).
+    func clear() {
+        let sequence: [UInt8] = Array("\u{1B}[H\u{1B}[2J\u{1B}[3J".utf8)
+        terminal.withLock { terminal in
+            sequence.withUnsafeBufferPointer { terminal.feed($0) }
+        }
+        pty.send([0x0C])
+        scheduleUpdate()
+    }
+
     /// Device-pixel cell size from the renderer; lets the graphics protocols
     /// map image pixels to cells and answer CSI 14/16 t.
     func setCellPixelSize(width: Int, height: Int) {
