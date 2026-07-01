@@ -702,6 +702,45 @@ struct SessionTabLifecycleTests {
         #expect(!view.showsBellBadge)
     }
 
+    @Test @MainActor func sidebarCollapseIsWindowStateThatPersistsAndSeedsNewWindows() {
+        let controller = TerminalWindowController(settings: TerminalSettings())
+        defer { controller.window?.close() }
+        controller.addSession()  // 2 sessions → the rail earns its space
+        #expect(!controller.sidebarCollapsed)
+
+        controller.setSidebarCollapsed(true, animated: false)
+        #expect(controller.sidebarCollapsed)
+        // The flag rides into the layout snapshot for restoration.
+        #expect(controller.captureLayout().sidebarCollapsed)
+
+        controller.setSidebarCollapsed(false, animated: false)
+        #expect(!controller.sidebarCollapsed)
+        #expect(!controller.captureLayout().sidebarCollapsed)
+
+        // A window seeded collapsed (the new-window inheritance path) starts
+        // collapsed and captures it.
+        let seeded = TerminalWindowController(
+            settings: TerminalSettings(), initialSidebarCollapsed: true)
+        defer { seeded.window?.close() }
+        #expect(seeded.sidebarCollapsed)
+        #expect(seeded.captureLayout().sidebarCollapsed)
+    }
+
+    @Test @MainActor func collapsedRowChipCentresAndLabelsFade() {
+        let view = SessionRowView()
+        view.frame = NSRect(x: 0, y: 0, width: SessionSidebarView.collapsedWidth, height: 50)
+        view.model = SessionRowModel(
+            id: UUID(), index: 1, title: "one", metaLine: "~", isActive: true,
+            isRunning: true, dirtyCount: nil, theme: SidebarTheme(preset: .darkStandard))
+        // Expanded then fully collapsed both render without trapping (exercises
+        // the icon-centring + fade branches and the on-chip decorator).
+        view.collapseProgress = 0
+        view.layoutSubtreeIfNeeded()
+        view.collapseProgress = 1
+        view.layoutSubtreeIfNeeded()
+        #expect(view.collapseProgress == 1)
+    }
+
     @Test @MainActor func presetsApplyPerSessionNotPerWindow() {
         let controller = TerminalWindowController(settings: TerminalSettings())
         defer { controller.window?.close() }

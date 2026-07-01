@@ -24,7 +24,7 @@ struct LayoutSnapshotTests {
         ]
         let window = WindowNode(
             frame: CGRect(x: 40, y: 60, width: 1000, height: 700),
-            activeTabIndex: 1, tabs: tabs)
+            activeTabIndex: 1, tabs: tabs, sidebarCollapsed: true)
         return LayoutSnapshot(windows: [window])
     }
 
@@ -83,6 +83,32 @@ struct LayoutSnapshotTests {
         let decoded = try PropertyListDecoder().decode(TabNode.self, from: data)
         #expect(decoded.customName == nil)
         #expect(decoded.presetName == "Dark")
+    }
+
+    @Test func sidebarCollapsedSurvivesEncoding() throws {
+        let layout = sample()
+        let data = try PropertyListEncoder().encode(layout)
+        let decoded = try PropertyListDecoder().decode(LayoutSnapshot.self, from: data)
+        #expect(decoded.windows[0].sidebarCollapsed == true)
+    }
+
+    /// Backward compatibility: a WindowNode written before `sidebarCollapsed`
+    /// existed decodes to `false` (rail expanded) rather than failing, so older
+    /// restore files still load without a schema version bump.
+    @Test func legacyWindowNodeWithoutCollapsedDecodes() throws {
+        struct LegacyWindowNode: Codable {
+            var frame: CGRect
+            var activeTabIndex: Int
+            var tabs: [TabNode]
+        }
+        let legacy = LegacyWindowNode(
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            activeTabIndex: 0,
+            tabs: [TabNode(uuid: UUID(), presetName: "Dark",
+                           root: .leaf(sessionID: UUID()))])
+        let data = try PropertyListEncoder().encode(legacy)
+        let decoded = try PropertyListDecoder().decode(WindowNode.self, from: data)
+        #expect(decoded.sidebarCollapsed == false)
     }
 
     @Test func frameSurvivesEncoding() throws {

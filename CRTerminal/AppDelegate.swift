@@ -672,12 +672,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // MARK: Windows & tabs
 
     func makeWindowController(
-        spawnInitialSession: Bool = true, initialWorkingDirectory: String? = nil
+        spawnInitialSession: Bool = true, initialWorkingDirectory: String? = nil,
+        initialSidebarCollapsed: Bool = false
     ) -> TerminalWindowController {
         let controller = TerminalWindowController(
             settings: SettingsStore.shared.settings,
             spawnInitialSession: spawnInitialSession,
-            initialWorkingDirectory: initialWorkingDirectory)
+            initialWorkingDirectory: initialWorkingDirectory,
+            initialSidebarCollapsed: initialSidebarCollapsed)
         controller.onClose = { [weak self] closed in
             self?.controllers.removeAll { $0 === closed }
             self?.refreshDockBadge()
@@ -764,9 +766,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func newWindow(_ sender: Any?) {
         // Open the new window where the currently focused window is working,
-        // matching new-tab/split behaviour.
+        // matching new-tab/split behaviour, and inheriting its rail collapse
+        // state so a collapsed workflow stays collapsed across new windows.
         makeWindowController(
-            initialWorkingDirectory: keyController?.focusedWorkingDirectory
+            initialWorkingDirectory: keyController?.focusedWorkingDirectory,
+            initialSidebarCollapsed: keyController?.sidebarCollapsed ?? false
         ).showWindow(sender)
     }
 

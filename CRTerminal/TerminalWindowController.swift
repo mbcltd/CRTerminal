@@ -47,6 +47,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// The area right of the sidebar; hosts tab containers + search bar.
     private let contentHost = NSView()
     private let sidebar: SessionSidebarView
+    /// Whether the session rail is collapsed to its icon-only width. Window-
+    /// owned, persisted in `WindowNode`, and inherited by new windows.
+    private(set) var sidebarCollapsed: Bool
+    /// Leading-titlebar button that toggles the rail; nil until installed.
+    private var sidebarToggle: SidebarToggleButton?
+    /// Drives the collapse/expand animation (nil when idle).
+    private var collapseAnimation: SidebarCollapseAnimation?
     private var hoverCard: SessionHoverCard?
     private var hoveredTabID: UUID?
     private var searchBar: SearchBar?
@@ -79,9 +86,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// `spawnInitialSession: false` makes an empty shell of a window for
     /// adopting a torn-off session; callers must adopt one immediately.
     init(settings: TerminalSettings, spawnInitialSession: Bool = true,
-         initialWorkingDirectory: String? = nil) {
+         initialWorkingDirectory: String? = nil,
+         initialSidebarCollapsed: Bool = false) {
         self.settings = settings
         self.initialWorkingDirectory = initialWorkingDirectory
+        self.sidebarCollapsed = initialSidebarCollapsed
         sidebar = SessionSidebarView(
             theme: SidebarTheme(preset: settings.preset(in: PresetCatalog.all)))
         let window = NSWindow(
@@ -260,16 +269,76 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// make: a lone session uses the full window width and the pane tree
     /// reflows to fill whatever the sidebar leaves behind. Called from
     /// `selectTab`, the chokepoint every session add/close/move passes
-    /// through.
+    /// through. Collapse is a second, orthogonal axis: a shown rail is either
+    /// its full width or the icon-only `collapsedWidth`.
     private func updateSidebarVisibility() {
         let showSidebar = tabs.count > 1
-        guard sidebar.isHidden == showSidebar else { return }
         sidebar.isHidden = !showSidebar
-        let inset = showSidebar ? SessionSidebarView.width : 0
-        contentHost.frame = NSRect(
-            x: inset, y: 0,
-            width: rootView.bounds.width - inset,
-            height: rootView.bounds.height)
+        // Snap to the current (possibly collapsed) width, cancelling any
+        // in-flight collapse animation. `applySidebarWidth` is idempotent, so
+        // the common case (tab switch, geometry unchanged) reflows nothing.
+        collapseAnimation?.cancel()
+        collapseAnimation = nil
+        applySidebarWidth(sidebarWidthForState)
+        updateSidebarToggle()
+    }
+
+    /// The rail's width for the current collapse state.
+    private var sidebarWidthForState: CGFloat {
+        sidebarCollapsed ? SessionSidebarView.collapsedWidth : SessionSidebarView.width
+    }
+
+    /// Sets the rail frame and the content inset in lockstep, so the terminal
+    /// reflows to exactly the space the rail leaves. `width` is the rail's
+    /// current (possibly mid-animation) width. Idempotent: identical frames
+    /// are skipped so repeated calls don't churn the terminal grid.
+    private func applySidebarWidth(_ width: CGFloat) {
+        let height = rootView.bounds.height
+        let railFrame = NSRect(x: 0, y: 0, width: width, height: height)
+        if sidebar.frame != railFrame { sidebar.frame = railFrame }
+        let inset = sidebar.isHidden ? 0 : width
+        let hostFrame = NSRect(
+            x: inset, y: 0, width: rootView.bounds.width - inset, height: height)
+        if contentHost.frame != hostFrame { contentHost.frame = hostFrame }
+    }
+
+    /// Collapses or expands the rail, animating the width (and the terminal it
+    /// reveals) when asked. The collapse flag is window state: it persists and
+    /// seeds new windows.
+    func setSidebarCollapsed(_ collapsed: Bool, animated: Bool) {
+        guard sidebarCollapsed != collapsed else { return }
+        sidebarCollapsed = collapsed
+        updateSidebarToggle()
+        noteSignificantChange()
+        let target = sidebarWidthForState
+        collapseAnimation?.cancel()
+        collapseAnimation = nil
+        // Nothing to animate for a hidden rail (lone session) or an off-screen
+        // window — snap silently.
+        guard animated, !sidebar.isHidden, window?.isVisible == true else {
+            applySidebarWidth(target)
+            return
+        }
+        let start = sidebar.frame.width
+        guard start != target else { return }
+        let animation = SidebarCollapseAnimation(
+            from: start, to: target, duration: 0.3,
+            step: { [weak self] width in self?.applySidebarWidth(width) },
+            completion: { [weak self] in self?.collapseAnimation = nil })
+        collapseAnimation = animation
+        animation.start()
+    }
+
+    /// Titlebar toggle (leading accessory) and ⌥⌘S both land here.
+    @objc func toggleSidebarCollapsed(_ sender: Any?) {
+        // Only meaningful while the rail shows (2+ sessions).
+        guard tabs.count > 1 else { return }
+        setSidebarCollapsed(!sidebarCollapsed, animated: true)
+    }
+
+    private func updateSidebarToggle() {
+        sidebarToggle?.isHidden = tabs.count <= 1
+        sidebarToggle?.setCollapsed(sidebarCollapsed)
     }
 
     @objc func nextSession(_ sender: Any?) {
@@ -614,7 +683,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         return WindowNode(
             frame: window?.frame ?? .zero,
             activeTabIndex: activeTabIndex,
-            tabs: tabNodes)
+            tabs: tabNodes,
+            sidebarCollapsed: sidebarCollapsed)
     }
 
     private static func captureSplitNode(from view: NSView) -> SplitNode? {
@@ -657,6 +727,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         if let window, node.frame.width > 1, node.frame.height > 1 {
             window.setFrame(node.frame, display: false)
         }
+        // Set before the `selectTab` below so its `updateSidebarVisibility`
+        // snaps straight to the restored (collapsed) width — no post-restore
+        // animation flicker.
+        sidebarCollapsed = node.sidebarCollapsed
         var roots: [(SplitNode, NSView)] = []
         for tabNode in node.tabs {
             let preset = PresetCatalog.all.first { $0.name == tabNode.presetName }
@@ -931,8 +1005,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         let y = min(
             max(8, rowInRoot.maxY + 8 - height),
             rootView.bounds.height - height - 8)
+        // Anchor to the rail's live edge so the card hugs it whether expanded
+        // or collapsed to the icon width.
         card.frame = NSRect(
-            x: SessionSidebarView.width + 12, y: y,
+            x: sidebar.frame.maxX + 12, y: y,
             width: SessionHoverCard.width, height: height)
         card.isHidden = false
 
@@ -1077,6 +1153,18 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         accessory.layoutAttribute = .trailing
         window.addTitlebarAccessoryViewController(accessory)
         titlebarControls = cluster
+
+        // Leading toggle, by the traffic lights, that collapses the rail into
+        // an icon-only strip. Hidden until a second session earns a rail.
+        let toggle = SidebarToggleButton()
+        toggle.onClick = { [weak self] in self?.toggleSidebarCollapsed(nil) }
+        toggle.setCollapsed(sidebarCollapsed)
+        toggle.isHidden = true
+        let leading = NSTitlebarAccessoryViewController()
+        leading.view = toggle
+        leading.layoutAttribute = .leading
+        window.addTitlebarAccessoryViewController(leading)
+        sidebarToggle = toggle
     }
 
     private static func format(uptime: TimeInterval) -> String {
