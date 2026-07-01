@@ -15,6 +15,8 @@
   window; drag it back to recombine.
 - **Vertical tab rail** Live titles, preview and bell attention badges.
 - **Move by keyboard.** ⌘⇧] / ⌘⇧[ to step through sessions, ⌘1–9 to leap to one.
+- **Rebind anything.** Every app shortcut above is customisable — open Settings
+  and record a new combination for it under *Keyboard shortcuts*.
 
 ![⌘K search palette](screenshots/search.png)
 

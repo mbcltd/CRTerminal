@@ -93,6 +93,8 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            KeybindingsEditor(settings: settings)
+
             alertSections
         }
         .formStyle(.grouped)
@@ -163,5 +165,267 @@ enum MonospacedFonts {
         // `monoSpace` symbolic trait is derived from the actual glyph metrics,
         // so it catches those the flag misses; OR the two to cover both.
         return font.fontDescriptor.symbolicTraits.contains(.monoSpace) || font.isFixedPitch
+    }
+}
+
+/// The "Keyboard shortcuts" section: one recorder row per editable `AppCommand`,
+/// grouped by the menu it lives under. Writes overrides through the passed-in
+/// settings binding, so a rebind persists and rebuilds the menu live (via
+/// SettingsStore's broadcast). Only shortcuts that differ from the factory
+/// default are stored.
+struct KeybindingsEditor: View {
+    @Binding var settings: TerminalSettings
+    /// Transient validation feedback (conflict / missing ⌘), cleared on success.
+    @State private var message: String?
+
+    var body: some View {
+        ForEach(AppCommand.Section.allCases, id: \.self) { section in
+            Section(sectionHeader(section)) {
+                ForEach(AppCommand.allCases.filter { $0.section == section }, id: \.self) {
+                    row(for: $0)
+                }
+            }
+        }
+        Section {
+            HStack {
+                if let message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Spacer()
+                Button("Reset all to defaults") {
+                    settings.keyBindings = [:]
+                    message = nil
+                }
+                .disabled(settings.keyBindings.isEmpty)
+            }
+        } footer: {
+            Text("Click a shortcut, then press the new combination — every "
+                + "shortcut must include ⌘. Press ⎋ to cancel or ⌫ to restore "
+                + "the default. Changed shortcuts sit on a paper background. Two "
+                + "commands may share a shortcut (handy for swapping): they're "
+                + "outlined in red, and only the first keeps it in the menu.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Commands whose effective binding collides with another command's — both
+    /// sides of every clash. Marked with a red border in the editor.
+    private var duplicated: Set<AppCommand> {
+        var result: Set<AppCommand> = []
+        let all = AppCommand.allCases
+        for i in all.indices {
+            for j in all.indices where j > i {
+                if settings.binding(for: all[i]).conflicts(with: settings.binding(for: all[j])) {
+                    result.insert(all[i])
+                    result.insert(all[j])
+                }
+            }
+        }
+        return result
+    }
+
+    private func sectionHeader(_ section: AppCommand.Section) -> String {
+        section == AppCommand.Section.allCases.first
+            ? "Keyboard shortcuts — \(section.title) menu"
+            : "\(section.title) menu"
+    }
+
+    private func row(for command: AppCommand) -> some View {
+        let binding = settings.binding(for: command)
+        let customised = settings.keyBindings[command.rawValue] != nil
+        let isDuplicated = duplicated.contains(command)
+        return HStack {
+            Text(command.title)
+            Spacer()
+            ShortcutRecorderField(
+                binding: binding,
+                isCustomised: customised,
+                isDuplicated: isDuplicated,
+                onCapture: { apply($0, to: command) },
+                onClear: { clear(command) })
+                .frame(width: 130, height: 22)
+        }
+    }
+
+    /// Stores a freshly recorded combo as an override (or drops the override when
+    /// it equals the default). Combos without ⌘ are refused; duplicates across
+    /// commands are allowed and flagged in the UI rather than blocked.
+    private func apply(_ captured: KeyBinding, to command: AppCommand) {
+        guard captured.includesCommand else {
+            message = "Shortcuts must include ⌘."
+            return
+        }
+        if captured == command.defaultBinding {
+            settings.keyBindings[command.rawValue] = nil
+        } else {
+            settings.keyBindings[command.rawValue] = captured
+        }
+        message = nil
+    }
+
+    private func clear(_ command: AppCommand) {
+        settings.keyBindings[command.rawValue] = nil
+        message = nil
+    }
+}
+
+/// A click-to-record shortcut field. Idle it shows the current combo; clicked it
+/// captures the next keystroke as a `KeyBinding` and hands it to `onCapture`
+/// (the parent validates). ⎋ cancels; ⌫ clears via `onClear`.
+struct ShortcutRecorderField: NSViewRepresentable {
+    let binding: KeyBinding
+    let isCustomised: Bool
+    let isDuplicated: Bool
+    let onCapture: (KeyBinding) -> Void
+    let onClear: () -> Void
+
+    func makeNSView(context: Context) -> RecorderButton {
+        let view = RecorderButton()
+        view.onCapture = onCapture
+        view.onClear = onClear
+        view.display(binding: binding, customised: isCustomised, duplicated: isDuplicated)
+        return view
+    }
+
+    func updateNSView(_ nsView: RecorderButton, context: Context) {
+        nsView.onCapture = onCapture
+        nsView.onClear = onClear
+        nsView.display(binding: binding, customised: isCustomised, duplicated: isDuplicated)
+    }
+}
+
+/// The AppKit control behind `ShortcutRecorderField`. A bordered, focusable
+/// field that, while recording, becomes first responder and captures the next
+/// key event — intercepting ⌘-equivalents in `performKeyEquivalent` so they
+/// don't fire a menu item instead.
+final class RecorderButton: NSView {
+    var onCapture: ((KeyBinding) -> Void)?
+    var onClear: (() -> Void)?
+
+    /// A warm off-white for overridden shortcuts, and a burgundy outline for
+    /// ones that share a binding with another command. Both are fixed (not
+    /// system-derived) so "paper" reads as paper in either appearance.
+    private static let paper = NSColor(srgbRed: 0.98, green: 0.95, blue: 0.86, alpha: 1)
+    private static let paperInk = NSColor(srgbRed: 0.22, green: 0.18, blue: 0.11, alpha: 1)
+    private static let burgundy = NSColor(srgbRed: 0.50, green: 0.11, blue: 0.18, alpha: 1)
+
+    private var title = ""
+    private var customised = false
+    private var duplicated = false
+    private var recording = false
+
+    override var acceptsFirstResponder: Bool { recording }
+    override var intrinsicContentSize: NSSize { NSSize(width: 110, height: 22) }
+
+    func display(binding: KeyBinding, customised: Bool, duplicated: Bool) {
+        title = binding.displayString
+        self.customised = customised
+        self.duplicated = duplicated
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if recording { endRecording() } else { beginRecording() }
+    }
+
+    private func beginRecording() {
+        recording = true
+        window?.makeFirstResponder(self)
+        needsDisplay = true
+    }
+
+    private func endRecording() {
+        recording = false
+        if window?.firstResponder === self { window?.makeFirstResponder(nil) }
+        needsDisplay = true
+    }
+
+    override func resignFirstResponder() -> Bool {
+        recording = false
+        needsDisplay = true
+        return true
+    }
+
+    /// While recording, ⌘-combos arrive here (menu key-equivalent dispatch runs
+    /// before `keyDown`); swallow and capture them so no menu item fires.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard recording else { return super.performKeyEquivalent(with: event) }
+        handle(event)
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard recording else { super.keyDown(with: event); return }
+        handle(event)
+    }
+
+    private func handle(_ event: NSEvent) {
+        switch event.keyCode {
+        case 53:                       // Escape — cancel, keep current binding
+            endRecording()
+        case 51, 117:                  // Delete / forward-delete — restore default
+            onClear?()
+            endRecording()
+        default:
+            if let chars = event.charactersIgnoringModifiers, let first = chars.first {
+                // Letters normalise to lowercase with Shift carried in the
+                // modifiers, matching AppKit's keyEquivalent convention; arrows
+                // and punctuation pass through as typed.
+                let key = first.isLetter ? String(first).lowercased() : String(first)
+                onCapture?(KeyBinding(key: key, modifiers: event.modifierFlags))
+            }
+            endRecording()
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 1, dy: 1)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+
+        let fill: NSColor
+        if recording {
+            fill = NSColor.controlAccentColor.withAlphaComponent(0.15)
+        } else if customised {
+            fill = Self.paper
+        } else {
+            fill = NSColor.controlBackgroundColor
+        }
+        fill.setFill()
+        path.fill()
+
+        let stroke: NSColor
+        let width: CGFloat
+        if recording {
+            (stroke, width) = (.controlAccentColor, 2)
+        } else if duplicated {
+            (stroke, width) = (Self.burgundy, 2)
+        } else {
+            (stroke, width) = (.separatorColor, 1)
+        }
+        stroke.setStroke()
+        path.lineWidth = width
+        path.stroke()
+
+        let text = recording ? "Type shortcut…" : (title.isEmpty ? "—" : title)
+        let textColor: NSColor
+        if recording {
+            textColor = .controlAccentColor
+        } else if customised {
+            textColor = Self.paperInk       // keep contrast on the light paper fill
+        } else {
+            textColor = .labelColor
+        }
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(
+                ofSize: 12, weight: customised && !recording ? .semibold : .regular),
+            .foregroundColor: textColor,
+        ]
+        let size = (text as NSString).size(withAttributes: attributes)
+        let origin = NSPoint(
+            x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2)
+        (text as NSString).draw(at: origin, withAttributes: attributes)
     }
 }

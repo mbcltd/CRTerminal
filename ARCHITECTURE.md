@@ -354,9 +354,20 @@ the same pipeline at thumbnail size).
   graphite front-panel button (engraved label, pressed-in state) that only
   appears while the active preset has effects enabled.
 - **Settings** — one global set of terminal settings (font, palette, preset, shell,
-  scrollback), a live-preview preset gallery, and alerts, in a single scrolling pane
-  written as declarative SwiftUI hosted in a settings window; settings persist via
-  `UserDefaults`-backed codable models (`SettingsStore`).
+  scrollback), a live-preview preset gallery, alerts, and editable keyboard shortcuts,
+  in a single scrolling pane written as declarative SwiftUI hosted in a settings window;
+  settings persist via `UserDefaults`-backed codable models (`SettingsStore`).
+- **Keyboard shortcuts** — the app's editable menu commands live in a central
+  registry (`AppCommand` in `KeyBindings.swift`), each with a title and factory
+  `KeyBinding`. `AppDelegate.makeMainMenu` builds those items from the registry,
+  applying any per-command override stored in `TerminalSettings.keyBindings`; the
+  Settings *Keyboard shortcuts* section records new combinations (a
+  `ShortcutRecorderField` AppKit view), refusing only combos without ⌘. Overrides
+  show on a paper background; duplicate bindings are allowed (so two commands can
+  be swapped) and outlined in burgundy — only the first command in registry order
+  keeps the equivalent in the menu, later duplicates appear without one. A rebind
+  broadcasts through `SettingsStore` and rebuilds the menu live. Standard items
+  (Copy/Paste/Quit…) and the ⌘1–9 / ⌃⌘1–9 index families stay fixed.
 - **Accessibility** — the grid is exposed through `NSAccessibility` as static text
   lines so VoiceOver can read the screen; effects never affect the accessibility tree.
 - **Shell integration** — optional shipped shell snippets emit prompt marks
