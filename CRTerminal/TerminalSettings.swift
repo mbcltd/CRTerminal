@@ -31,6 +31,16 @@ struct TerminalSettings: Codable, Equatable {
     var ligatures = true
     /// Whether relaunch restores the previous windows/sessions.
     var restoration: RestorationMode = .always
+    /// User overrides for editable menu shortcuts, keyed by `AppCommand`'s raw
+    /// value. Only changed commands are stored, so factory defaults can evolve
+    /// without stale copies lingering here. See `binding(for:)`.
+    var keyBindings: [String: KeyBinding] = [:]
+
+    /// The effective shortcut for a command: the user's override when present,
+    /// otherwise the command's factory default.
+    func binding(for command: AppCommand) -> KeyBinding {
+        keyBindings[command.rawValue] ?? command.defaultBinding
+    }
 
     /// Resolves the configured typeface to a sized `NSFont`. `name` is an
     /// explicit override (a preset's PostScript `fontName`); when nil it
@@ -84,7 +94,8 @@ struct TerminalSettings: Codable, Equatable {
 extension TerminalSettings {
     private enum CodingKeys: String, CodingKey {
         case fontSize, presetName, shellPath,
-             workingDirectory, scrollbackLines, fontName, ligatures, restoration
+             workingDirectory, scrollbackLines, fontName, ligatures, restoration,
+             keyBindings
     }
 
     /// Tolerant decoding, in an extension so the memberwise init survives:
@@ -105,6 +116,8 @@ extension TerminalSettings {
         ligatures = try container.decodeIfPresent(Bool.self, forKey: .ligatures) ?? true
         restoration = try container.decodeIfPresent(
             RestorationMode.self, forKey: .restoration) ?? .always
+        keyBindings = try container.decodeIfPresent(
+            [String: KeyBinding].self, forKey: .keyBindings) ?? [:]
     }
 }
 

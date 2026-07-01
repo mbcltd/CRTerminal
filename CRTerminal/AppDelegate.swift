@@ -884,6 +884,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             controller.apply(settings: settings)
         }
         applyRestorationMode()
+        // Rebuild the menu so any rebound shortcut takes effect immediately —
+        // the menu is the single source of truth for Command-key equivalents.
+        NSApp.mainMenu = makeMainMenu()
     }
 
     // MARK: CRT presets
@@ -1030,6 +1033,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Menu
 
+    /// Adds a menu item for an editable command, applying the user's current
+    /// binding. The selector and target live here (not on `AppCommand`) because
+    /// several handlers are `private` to AppDelegate and can't be named from
+    /// another file.
+    @discardableResult
+    private func addCommandItem(to menu: NSMenu, _ command: AppCommand) -> NSMenuItem {
+        let binding = SettingsStore.shared.settings.binding(for: command)
+        // Duplicate bindings are allowed (handy for swapping two commands), but
+        // only the first command in registry order keeps the equivalent — later
+        // duplicates appear in the menu without one, so AppKit never has to pick
+        // arbitrarily between them.
+        let primary = bindingIsPrimary(command)
+        let item = menu.addItem(
+            withTitle: command.title,
+            action: commandSelector(for: command),
+            keyEquivalent: primary ? binding.key : "")
+        item.keyEquivalentModifierMask = primary ? binding.flags : []
+        if commandTargetsAppDelegate(command) { item.target = self }
+        return item
+    }
+
+    /// Whether `command` is the first (in `AppCommand.allCases` order) to resolve
+    /// to its effective binding — i.e. the one that keeps the menu shortcut when
+    /// several commands share a binding.
+    private func bindingIsPrimary(_ command: AppCommand) -> Bool {
+        let settings = SettingsStore.shared.settings
+        let binding = settings.binding(for: command)
+        for other in AppCommand.allCases {
+            if other == command { return true }
+            if settings.binding(for: other).conflicts(with: binding) { return false }
+        }
+        return true
+    }
+
+    private func commandSelector(for command: AppCommand) -> Selector {
+        switch command {
+        case .newWindow: return #selector(newWindow(_:))
+        case .newSession: return #selector(newSession(_:))
+        case .nextSession: return #selector(TerminalWindowController.nextSession(_:))
+        case .previousSession:
+            return #selector(TerminalWindowController.previousSession(_:))
+        case .jumpToSession: return #selector(showJumpMenu(_:))
+        case .searchCommandHistory: return #selector(showCommandHistory(_:))
+        case .searchAllCommandHistory: return #selector(showAllCommandHistory(_:))
+        case .clear: return #selector(TerminalView.clearScreen(_:))
+        case .splitRight: return #selector(TerminalWindowController.splitRight(_:))
+        case .splitDown: return #selector(TerminalWindowController.splitDown(_:))
+        case .closePane: return #selector(TerminalWindowController.closePane(_:))
+        case .find: return #selector(TerminalWindowController.toggleSearch(_:))
+        case .findNext: return #selector(TerminalWindowController.findNext(_:))
+        case .findPrevious: return #selector(TerminalWindowController.findPrevious(_:))
+        case .previousPrompt: return #selector(TerminalView.jumpToPreviousPrompt(_:))
+        case .nextPrompt: return #selector(TerminalView.jumpToNextPrompt(_:))
+        }
+    }
+
+    /// Commands whose handler is on AppDelegate itself take an explicit target;
+    /// the rest dispatch down the responder chain (nil target) to whichever
+    /// window/view is key.
+    private func commandTargetsAppDelegate(_ command: AppCommand) -> Bool {
+        switch command {
+        case .newWindow, .newSession, .jumpToSession,
+             .searchCommandHistory, .searchAllCommandHistory:
+            return true
+        default:
+            return false
+        }
+    }
+
     private func makeMainMenu() -> NSMenu {
         let mainMenu = NSMenu()
 
@@ -1068,50 +1140,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         mainMenu.addItem(appMenuItem)
 
         let shellMenu = NSMenu(title: "Shell")
-        let newWindowItem = shellMenu.addItem(
-            withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
-        newWindowItem.target = self
-        let newSessionItem = shellMenu.addItem(
-            withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "t")
-        newSessionItem.target = self
-        let nextSession = shellMenu.addItem(
-            withTitle: "Next Session",
-            action: #selector(TerminalWindowController.nextSession(_:)), keyEquivalent: "]")
-        nextSession.keyEquivalentModifierMask = [.command, .shift]
-        let previousSession = shellMenu.addItem(
-            withTitle: "Previous Session",
-            action: #selector(TerminalWindowController.previousSession(_:)), keyEquivalent: "[")
-        previousSession.keyEquivalentModifierMask = [.command, .shift]
-        let jumpMenuItem = shellMenu.addItem(
-            withTitle: "Jump to Session…",
-            action: #selector(showJumpMenu(_:)), keyEquivalent: "k")
-        jumpMenuItem.target = self
-        let commandHistoryItem = shellMenu.addItem(
-            withTitle: "Search Command History…",
-            action: #selector(showCommandHistory(_:)), keyEquivalent: "k")
-        commandHistoryItem.keyEquivalentModifierMask = [.command, .shift]
-        commandHistoryItem.target = self
-        let allCommandHistoryItem = shellMenu.addItem(
-            withTitle: "Search All Command History…",
-            action: #selector(showAllCommandHistory(_:)), keyEquivalent: "k")
-        allCommandHistoryItem.keyEquivalentModifierMask = [.command, .option]
-        allCommandHistoryItem.target = self
+        addCommandItem(to: shellMenu, .newWindow)
+        addCommandItem(to: shellMenu, .newSession)
+        addCommandItem(to: shellMenu, .nextSession)
+        addCommandItem(to: shellMenu, .previousSession)
+        addCommandItem(to: shellMenu, .jumpToSession)
+        addCommandItem(to: shellMenu, .searchCommandHistory)
+        addCommandItem(to: shellMenu, .searchAllCommandHistory)
         shellMenu.addItem(.separator())
-        shellMenu.addItem(
-            withTitle: "Clear",
-            action: #selector(TerminalView.clearScreen(_:)), keyEquivalent: "l")
+        addCommandItem(to: shellMenu, .clear)
         shellMenu.addItem(.separator())
-        shellMenu.addItem(
-            withTitle: "Split Right",
-            action: #selector(TerminalWindowController.splitRight(_:)), keyEquivalent: "d")
-        let splitDown = shellMenu.addItem(
-            withTitle: "Split Down",
-            action: #selector(TerminalWindowController.splitDown(_:)), keyEquivalent: "d")
-        splitDown.keyEquivalentModifierMask = [.command, .shift]
+        addCommandItem(to: shellMenu, .splitRight)
+        addCommandItem(to: shellMenu, .splitDown)
         shellMenu.addItem(.separator())
-        shellMenu.addItem(
-            withTitle: "Close Pane",
-            action: #selector(TerminalWindowController.closePane(_:)), keyEquivalent: "w")
+        addCommandItem(to: shellMenu, .closePane)
         let shellMenuItem = NSMenuItem()
         shellMenuItem.submenu = shellMenu
         mainMenu.addItem(shellMenuItem)
@@ -1129,16 +1171,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             withTitle: "Select All",
             action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(.separator())
-        editMenu.addItem(
-            withTitle: "Find…",
-            action: #selector(TerminalWindowController.toggleSearch(_:)), keyEquivalent: "f")
-        editMenu.addItem(
-            withTitle: "Find Next",
-            action: #selector(TerminalWindowController.findNext(_:)), keyEquivalent: "g")
-        let findPrevious = editMenu.addItem(
-            withTitle: "Find Previous",
-            action: #selector(TerminalWindowController.findPrevious(_:)), keyEquivalent: "g")
-        findPrevious.keyEquivalentModifierMask = [.command, .shift]
+        addCommandItem(to: editMenu, .find)
+        addCommandItem(to: editMenu, .findNext)
+        addCommandItem(to: editMenu, .findPrevious)
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -1155,16 +1190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             item.representedObject = preset.name
         }
         viewMenu.addItem(.separator())
-        let previousPrompt = viewMenu.addItem(
-            withTitle: "Jump to Previous Prompt",
-            action: #selector(TerminalView.jumpToPreviousPrompt(_:)),
-            keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!))
-        previousPrompt.keyEquivalentModifierMask = [.command]
-        let nextPrompt = viewMenu.addItem(
-            withTitle: "Jump to Next Prompt",
-            action: #selector(TerminalView.jumpToNextPrompt(_:)),
-            keyEquivalent: String(UnicodeScalar(NSDownArrowFunctionKey)!))
-        nextPrompt.keyEquivalentModifierMask = [.command]
+        addCommandItem(to: viewMenu, .previousPrompt)
+        addCommandItem(to: viewMenu, .nextPrompt)
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
