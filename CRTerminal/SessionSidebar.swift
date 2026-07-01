@@ -218,6 +218,17 @@ extension NSPasteboard.PasteboardType {
 
 final class SessionSidebarView: NSView {
     static let width: CGFloat = 240
+    /// Icon-only rail width when collapsed.
+    static let collapsedWidth: CGFloat = 64
+
+    /// 0 = fully expanded, 1 = collapsed to the icon rail. Derived from the
+    /// live width in `layout()`, so the controller's width tween is the single
+    /// clock driving every fade and reflow. Pushed to each row for its chip
+    /// centring and label fade.
+    private(set) var collapseProgress: CGFloat = 0
+    /// Header height for the current collapse state — shrinks toward a thin
+    /// top as SESSIONS fades, so the collapsed rail isn't topped by a blank band.
+    private var effectiveHeaderHeight: CGFloat = 42
 
     var onSelect: ((Int) -> Void)?
     /// The row's hover ✕: close the session at this index.
@@ -340,6 +351,9 @@ final class SessionSidebarView: NSView {
         }
         while rowViews.count < models.count {
             let row = SessionRowView()
+            // Seed the collapse state so a row added while collapsed (e.g. a
+            // metadata refresh) never flashes its expanded layout for a frame.
+            row.collapseProgress = collapseProgress
             row.onClick = { [weak self, weak row] in
                 guard let self, let row,
                       let index = self.rowViews.firstIndex(of: row) else { return }
@@ -549,16 +563,39 @@ final class SessionSidebarView: NSView {
 
     override func layout() {
         super.layout()
+        // Derive the collapse fraction from the live width the controller is
+        // tweening, then reflow every part around it.
+        let denom = Self.width - Self.collapsedWidth
+        collapseProgress = denom > 0
+            ? min(1, max(0, (Self.width - bounds.width) / denom)) : 0
+        let progress = collapseProgress
+
+        // Header thins and footer disappears; both fade their controls and drop
+        // out of hit-testing as they go.
+        let headerH = headerHeight - (headerHeight - 12) * progress
+        let footerH = footerHeight * (1 - progress)
+        effectiveHeaderHeight = headerH
+        let chromeAlpha = Double(max(0, 1 - progress * 1.6))
+        plusButton.alphaValue = chromeAlpha
+        plusButton.isHidden = progress > 0.5
+        footer.alphaValue = chromeAlpha
+        footer.isHidden = progress > 0.5
+
         plusButton.frame = NSRect(
-            x: bounds.width - 10 - 24, y: (headerHeight - 24) / 2, width: 24, height: 24)
+            x: bounds.width - 10 - 24, y: (headerH - 24) / 2, width: 24, height: 24)
         // 1px short of the right edge so the sidebar's border stays visible.
         scrollView.frame = NSRect(
-            x: 0, y: headerHeight, width: max(0, bounds.width - 1),
-            height: max(0, bounds.height - headerHeight - footerHeight))
+            x: 0, y: headerH, width: max(0, bounds.width - 1),
+            height: max(0, bounds.height - headerH - footerH))
         layoutRows()
         footer.frame = NSRect(
-            x: 0, y: bounds.height - footerHeight,
-            width: bounds.width, height: footerHeight)
+            x: 0, y: bounds.height - footerH,
+            width: bounds.width, height: footerH)
+
+        for row in rowViews { row.collapseProgress = progress }
+        // The header fade is drawn in `draw`; a width change alone won't mark it
+        // dirty, so refresh it each tween tick.
+        needsDisplay = true
     }
 
     /// Positions the rows inside the scrolling document view and sizes the
@@ -571,7 +608,9 @@ final class SessionSidebarView: NSView {
         rowContainer.frame = NSRect(x: 0, y: 0, width: width, height: contentHeight)
         var y = rowTopInset
         for row in rowViews {
-            row.frame = NSRect(x: 8, y: y, width: width - 16, height: rowHeight)
+            // Full-width rows so the active-session highlight reaches edge to
+            // edge; the row insets its own content.
+            row.frame = NSRect(x: 0, y: y, width: width, height: rowHeight)
             y += slot
         }
     }
@@ -612,23 +651,28 @@ final class SessionSidebarView: NSView {
         theme.separator.setFill()
         NSRect(x: bounds.width - 1, y: 0, width: 1, height: bounds.height).fill()
 
+        // The SESSIONS label + count fade out (and stop being drawn) as the
+        // rail collapses, tracking the thinning header.
+        let headerAlpha = max(0, 1 - collapseProgress * 1.6)
+        guard headerAlpha > 0.01 else { return }
+        let h = effectiveHeaderHeight
         ("SESSIONS" as NSString).draw(
-            at: NSPoint(x: 16, y: (headerHeight - 13) / 2),
+            at: NSPoint(x: 16, y: (h - 13) / 2),
             withAttributes: [
                 .font: NSFont.systemFont(ofSize: 10, weight: .bold),
                 .kern: 1.0,
-                .foregroundColor: theme.faint,
+                .foregroundColor: theme.faint.withAlphaComponent(headerAlpha),
             ])
         let count = "\(sessionCount)" as NSString
         let countAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11, weight: .bold),
-            .foregroundColor: theme.faint,
+            .foregroundColor: theme.faint.withAlphaComponent(headerAlpha),
         ]
         let countSize = count.size(withAttributes: countAttrs)
         count.draw(
             at: NSPoint(
                 x: plusButton.frame.minX - 8 - countSize.width,
-                y: (headerHeight - countSize.height) / 2),
+                y: (h - countSize.height) / 2),
             withAttributes: countAttrs)
     }
 }
@@ -814,6 +858,12 @@ final class SessionRowView: NSView {
     private var isCloseHovered = false
     private var isPenHovered = false
     private var mouseDownLocation: NSPoint?
+    /// 0 = expanded row, 1 = collapsed icon rail (set by the sidebar).
+    var collapseProgress: CGFloat = 0 {
+        didSet {
+            if collapseProgress != oldValue { needsDisplay = true }
+        }
+    }
     private let pulseDot = CALayer()
     /// Amber attention dot, pulsing until the session is viewed.
     private let bellDot = CALayer()
@@ -833,9 +883,9 @@ final class SessionRowView: NSView {
     }
 
     /// The hover-only rename pen: a leading accessory just right of the icon
-    /// chip (chip ends at x 38), vertically centred like the chip.
+    /// chip (chip ends at x 44), vertically centred like the chip.
     private var penRect: NSRect {
-        NSRect(x: 42, y: bounds.midY - 8, width: 16, height: 16)
+        NSRect(x: 48, y: bounds.midY - 8, width: 16, height: 16)
     }
 
     override var isFlipped: Bool { true }
@@ -1001,6 +1051,12 @@ final class SessionRowView: NSView {
         mouseDownLocation = nil
         let point = convert(event.locationInWindow, from: nil)
         guard bounds.contains(point) else { return }
+        // Collapsed rail: the whole row is one big icon hit-target — the pen
+        // and ✕ aren't drawn, so never act on their (hidden) rects.
+        if collapseProgress >= 0.5 {
+            onClick?()
+            return
+        }
         if isHovered && closeRect.contains(point) {
             onClose?()
         } else if isHovered && penRect.contains(point) {
@@ -1045,29 +1101,35 @@ final class SessionRowView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let model else { return }
         let theme = model.theme
-        let path = NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10)
+        let progress = collapseProgress
+        // Labels/accessories fade out well before the rail reaches its icon
+        // width; the chip stays.
+        let textAlpha = max(0, 1 - progress * 1.6)
+        let decorateOnChip = progress >= 0.5
+
+        // Layer repositions this pass must not implicit-animate — they'd trail
+        // the controller's per-frame width tween.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        // Selection / hover background — edge to edge, no rounded inset panel.
         if model.isActive {
             theme.chip.setFill()
-            path.fill()
-            theme.separator.setStroke()
-            path.lineWidth = 1
-            path.stroke()
+            bounds.fill()
+            // Squared accent bar hugging the left edge (design `inset 3px 0 0`).
+            theme.accent.setFill()
+            NSRect(x: 0, y: 0, width: 3, height: bounds.height).fill()
         } else if isHovered {
             theme.accent.withAlphaComponent(0.05).setFill()
-            path.fill()
+            bounds.fill()
         }
 
-        // Active accent bar hugging the left edge.
-        if model.isActive {
-            theme.accent.setFill()
-            NSBezierPath(
-                roundedRect: NSRect(x: 0, y: 12, width: 3, height: bounds.height - 24),
-                xRadius: 1.5, yRadius: 1.5
-            ).fill()
-        }
-
-        // Icon chip.
-        let chipRect = NSRect(x: 10, y: bounds.midY - 14, width: 28, height: 28)
+        // Icon chip — slides from its inset toward centre as the rail collapses.
+        let chipSize: CGFloat = 28
+        let chipX = 16 + ((bounds.width - chipSize) / 2 - 16) * progress
+        let chipRect = NSRect(
+            x: chipX, y: bounds.midY - chipSize / 2, width: chipSize, height: chipSize)
         theme.chip.setFill()
         NSBezierPath(roundedRect: chipRect, xRadius: 8, yRadius: 8).fill()
         let glyphAttrs: [NSAttributedString.Key: Any] = [
@@ -1082,6 +1144,37 @@ final class SessionRowView: NSView {
                 y: chipRect.midY - glyphSize.height / 2),
             withAttributes: glyphAttrs)
 
+        // The collapsed rail is icon-only: fade the whole text column out
+        // (uniform alpha via the graphics context — no per-colour rewrites so
+        // the expanded look is byte-for-byte unchanged at alpha 1).
+        if textAlpha > 0.01 {
+            NSGraphicsContext.current?.saveGraphicsState()
+            NSGraphicsContext.current?.cgContext.setAlpha(textAlpha)
+            drawRowContent(model: model, theme: theme, chipRect: chipRect)
+            NSGraphicsContext.current?.restoreGraphicsState()
+        }
+
+        // Running/attention indicator becomes a decorator on the icon's
+        // top-right corner when collapsed (top-left when it shares the chip
+        // with the other dot). Runs after the text pass so it wins in the
+        // brief overlap where both position the dots.
+        if decorateOnChip {
+            let topRight = CGPoint(x: chipRect.maxX - 2, y: chipRect.minY + 2)
+            let hasBells = (model.attentionCount ?? 0) > 0
+            if hasBells { bellDot.position = topRight }
+            if model.isRunning {
+                pulseDot.position = hasBells
+                    ? CGPoint(x: chipRect.minX + 2, y: chipRect.minY + 2)
+                    : topRight
+            }
+        }
+    }
+
+    /// The fading text column: rename pen, close ✕, badges, title and meta.
+    /// Only drawn while the rail is wide enough to show them.
+    private func drawRowContent(
+        model: SessionRowModel, theme: SidebarTheme, chipRect: NSRect
+    ) {
         // Title/meta start past the chip, nudging right on hover to make room
         // for the leading rename pen.
         let textX = isHovered ? penRect.maxX + 6 : chipRect.maxX + 10

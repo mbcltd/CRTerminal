@@ -18,6 +18,28 @@ struct WindowNode: Codable, Equatable {
     var frame: CGRect
     var activeTabIndex: Int
     var tabs: [TabNode]
+    /// Whether the session rail was collapsed to its icon-only width.
+    var sidebarCollapsed: Bool = false
+}
+
+extension WindowNode {
+    private enum CodingKeys: String, CodingKey {
+        case frame, activeTabIndex, tabs, sidebarCollapsed
+    }
+
+    /// Hand-rolled decode so a snapshot written before `sidebarCollapsed`
+    /// existed defaults to `false` rather than failing — the synthesized
+    /// decoder requires every non-optional key, so it wouldn't tolerate the
+    /// missing one (unlike `TabNode.customName`, which is Optional). Keeping
+    /// the memberwise init means this lives in an extension; `encode` stays
+    /// synthesized off `CodingKeys`.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        frame = try c.decode(CGRect.self, forKey: .frame)
+        activeTabIndex = try c.decode(Int.self, forKey: .activeTabIndex)
+        tabs = try c.decode([TabNode].self, forKey: .tabs)
+        sidebarCollapsed = try c.decodeIfPresent(Bool.self, forKey: .sidebarCollapsed) ?? false
+    }
 }
 
 /// One sidebar session: stable id, its theme, and the root of its pane tree.
