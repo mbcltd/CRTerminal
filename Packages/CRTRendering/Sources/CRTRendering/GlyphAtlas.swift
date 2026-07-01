@@ -293,6 +293,29 @@ final class GlyphAtlas {
 
     // MARK: Rasterization
 
+    /// Configures a bitmap context for glyph rasterisation so the rendered ink
+    /// lands at exactly the continuous baseline `bearing.y` records — for every
+    /// glyph, at every size and scale.
+    ///
+    /// By default Core Graphics grid-fits (hints) each glyph, snapping its
+    /// baseline to a whole device pixel. The snap amount is the fractional part
+    /// of the rasterise translate (`pad - rect.minY*scale`), which differs per
+    /// glyph and per size, so grid-fitting pushes each glyph's baseline off
+    /// `bearing.y` by a different sub-pixel (often ±1 px) amount — a ragged,
+    /// size-dependent baseline that the #40 atlas-rounding fix could not reach
+    /// because it lives in the rasteriser, not the bearing. It only bites at
+    /// scale 1 (a 1×, non-Retina or scaled display); at 2× the grid is fine
+    /// enough to absorb it. Turning on subpixel positioning (and off the
+    /// quantiser that would re-snap it to quarter-pixels) removes the snap.
+    static func configureGlyphRendering(_ context: CGContext) {
+        context.setShouldAntialias(true)
+        context.setAllowsFontSmoothing(false)
+        context.setAllowsFontSubpixelPositioning(true)
+        context.setShouldSubpixelPositionFonts(true)
+        context.setAllowsFontSubpixelQuantization(false)
+        context.setShouldSubpixelQuantizeFonts(false)
+    }
+
     private func rasterize(_ font: CTFont, _ glyph: CGGlyph, color: Bool) -> Entry {
         var glyph = glyph
         var rect = CGRect.zero
@@ -328,8 +351,7 @@ final class GlyphAtlas {
                     bitmapInfo: CGImageAlphaInfo.none.rawValue)
             }
             guard let context else { return }
-            context.setShouldAntialias(true)
-            context.setAllowsFontSmoothing(false)
+            Self.configureGlyphRendering(context)
             context.translateBy(
                 x: CGFloat(pad) - rect.minX * scale,
                 y: CGFloat(pad) - rect.minY * scale)
