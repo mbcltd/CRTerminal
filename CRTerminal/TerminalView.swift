@@ -1090,6 +1090,12 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // MARK: Prompt jumping (OSC 133 shell integration)
 
+    @objc func clearScreen(_ sender: Any?) {
+        guard let session else { return }
+        scrollOffset = 0 // scrollback is gone: snap the viewport back to live
+        session.clear()
+    }
+
     @objc func jumpToPreviousPrompt(_ sender: Any?) {
         guard let state = session?.snapshot else { return }
         let currentTop = state.absoluteScreenTop - scrollOffset

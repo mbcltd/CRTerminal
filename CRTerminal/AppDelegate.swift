@@ -1098,6 +1098,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         allCommandHistoryItem.target = self
         shellMenu.addItem(.separator())
         shellMenu.addItem(
+            withTitle: "Clear",
+            action: #selector(TerminalView.clearScreen(_:)), keyEquivalent: "l")
+        shellMenu.addItem(.separator())
+        shellMenu.addItem(
             withTitle: "Split Right",
             action: #selector(TerminalWindowController.splitRight(_:)), keyEquivalent: "d")
         let splitDown = shellMenu.addItem(
