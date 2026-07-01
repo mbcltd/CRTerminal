@@ -18,6 +18,8 @@ final class TitlebarControlCluster: NSView {
     private lazy var preview = PresetPreviewRenderer()
     private var thumbnails: [String: NSImage] = [:]
 
+    /// Initial height only — AppKit resizes titlebar accessories to the
+    /// actual titlebar height, which varies by OS.
     private static let height: CGFloat = 28
     private static let controlHeight: CGFloat = 22
     private static let gap: CGFloat = 7
@@ -51,18 +53,25 @@ final class TitlebarControlCluster: NSView {
     }
 
     private func relayout() {
-        let y = (Self.height - Self.controlHeight) / 2
-        var x: CGFloat = 0
-        themeButton.frame = NSRect(
-            x: x, y: y, width: themeButton.fittingWidth, height: Self.controlHeight)
-        x = themeButton.frame.maxX
+        var width = themeButton.fittingWidth
         if !degaussButton.isHidden {
-            x += Self.gap
-            degaussButton.frame = NSRect(
-                x: x, y: y, width: degaussButton.fittingWidth, height: Self.controlHeight)
-            x = degaussButton.frame.maxX
+            width += Self.gap + degaussButton.fittingWidth
         }
-        setFrameSize(NSSize(width: x + 6, height: Self.height))
+        setFrameSize(NSSize(width: width + 6, height: frame.height))
+    }
+
+    /// Center the controls in whatever height AppKit hands us — it stretches
+    /// the accessory to the titlebar height, so a fixed offset sits low.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        let y = ((bounds.height - Self.controlHeight) / 2).rounded()
+        themeButton.frame = NSRect(
+            x: 0, y: y, width: themeButton.fittingWidth, height: Self.controlHeight)
+        if !degaussButton.isHidden {
+            degaussButton.frame = NSRect(
+                x: themeButton.frame.maxX + Self.gap, y: y,
+                width: degaussButton.fittingWidth, height: Self.controlHeight)
+        }
     }
 
     // MARK: Theme menu
