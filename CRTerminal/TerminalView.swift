@@ -688,7 +688,7 @@ final class TerminalView: NSView, NSTextInputClient {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let paths = droppedFileURLs(sender).map(\.path)
         let bracketed = session?.snapshot.modes.bracketedPaste ?? false
-        let payload = FileDrop.payload(for: paths, bracketedPaste: bracketed)
+        let payload = FileDrop.payload(for: paths)
         guard !payload.isEmpty else { return false }
         window?.makeFirstResponder(self)
         sendKeyboard(KeyEncoder.encodePaste(payload, bracketed: bracketed))
