@@ -3,6 +3,8 @@
 #
 # Output (build/release/ — gitignored):
 #   CRTerminal.dmg   Developer ID-signed, hardened-runtime, notarised, stapled.
+#                    The .app inside is notarised + stapled in its own right
+#                    (issue #59), so the extracted app validates offline.
 #                    Stable name => stable Sparkle download URL.
 #   appcast.xml      Sparkle update feed for this build (only when a Sparkle
 #                    signing key is provided — see below).
@@ -65,6 +67,43 @@ xcodebuild -exportArchive \
 APP="$EXPORT/$APP_NAME.app"
 [ -d "$APP" ] || { echo "error: export produced no $APP" >&2; ls -la "$EXPORT" >&2; exit 1; }
 
+# Submit a file to the notary service using whichever credentials are set.
+notarize() {
+  local target=$1
+  if [ -n "${NOTARY_PROFILE:-}" ]; then
+    xcrun notarytool submit "$target" --keychain-profile "$NOTARY_PROFILE" --wait
+  elif [ -n "${AC_API_KEY_ID:-}" ]; then
+    # Strip stray whitespace/newlines — pasted secrets often carry a trailing \n,
+    # which notarytool rejects ("Key ID contains invalid characters").
+    local key_id issuer_id
+    key_id=$(printf '%s' "$AC_API_KEY_ID" | tr -d '[:space:]')
+    issuer_id=$(printf '%s' "${AC_API_ISSUER_ID:?set AC_API_ISSUER_ID}" | tr -d '[:space:]')
+    xcrun notarytool submit "$target" \
+      --key "${AC_API_KEY_PATH:?set AC_API_KEY_PATH}" \
+      --key-id "$key_id" \
+      --issuer "$issuer_id" --wait
+  else
+    echo "error: no notarisation credentials (set NOTARY_PROFILE or AC_API_KEY_ID/ISSUER/PATH)" >&2
+    exit 1
+  fi
+}
+
+# Notarise and staple the app itself before it goes into the DMG (issue #59).
+# The DMG staple below travels with the disk image only — an app copied out of
+# it would otherwise depend on an online notary lookup at first launch (which
+# fails offline or where Apple's notary endpoints are blocked). Stapling here
+# gives the app an offline-validatable ticket it carries everywhere. notarytool
+# won't accept a bare bundle, so submit it zipped, then staple the bundle —
+# the ticket lands inside Contents/, so it survives the copy into the DMG.
+echo "==> Notarising + stapling the app"
+APP_ZIP=build/$APP_NAME-notarize.zip
+rm -f "$APP_ZIP"
+ditto -c -k --keepParent "$APP" "$APP_ZIP"
+notarize "$APP_ZIP"
+rm -f "$APP_ZIP"
+xcrun stapler staple "$APP"
+xcrun stapler validate "$APP"
+
 echo "==> Building styled DMG"
 command -v dmgbuild >/dev/null 2>&1 || {
   echo "error: dmgbuild not found — install with 'pip install dmgbuild'" >&2; exit 1; }
@@ -78,22 +117,8 @@ dmgbuild -s dmg/settings.py \
   -D bg="$PWD/dmg/background.tiff" \
   "crterm" "$DMG"
 
-echo "==> Notarising"
-if [ -n "${NOTARY_PROFILE:-}" ]; then
-  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
-elif [ -n "${AC_API_KEY_ID:-}" ]; then
-  # Strip stray whitespace/newlines — pasted secrets often carry a trailing \n,
-  # which notarytool rejects ("Key ID contains invalid characters").
-  KEY_ID=$(printf '%s' "$AC_API_KEY_ID" | tr -d '[:space:]')
-  ISSUER_ID=$(printf '%s' "${AC_API_ISSUER_ID:?set AC_API_ISSUER_ID}" | tr -d '[:space:]')
-  xcrun notarytool submit "$DMG" \
-    --key "${AC_API_KEY_PATH:?set AC_API_KEY_PATH}" \
-    --key-id "$KEY_ID" \
-    --issuer "$ISSUER_ID" --wait
-else
-  echo "error: no notarisation credentials (set NOTARY_PROFILE or AC_API_KEY_ID/ISSUER/PATH)" >&2
-  exit 1
-fi
+echo "==> Notarising + stapling the DMG"
+notarize "$DMG"
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
 
@@ -119,6 +144,11 @@ else
   # Gatekeeper would accept it for execution — only passes once notarised.
   spctl --assess --type execute -vvv "$MOUNTED_APP" \
     || { echo "  ✗ Gatekeeper (spctl) rejects the app for execution" >&2; fail=1; }
+  # The app carries its own stapled notarisation ticket (issue #59), so first
+  # launch validates offline — proves the app-level staple above survived
+  # packaging. (spctl can pass without this via an online notary lookup.)
+  xcrun stapler validate "$MOUNTED_APP" \
+    || { echo "  ✗ app inside the DMG has no stapled notarisation ticket" >&2; fail=1; }
   # Signed with a Developer ID Application identity (not ad-hoc/development) and
   # with the hardened runtime — both are prerequisites notarisation can't add
   # after the fact, and a Sparkle host/update identity mismatch shows here.
