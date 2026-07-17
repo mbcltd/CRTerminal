@@ -37,10 +37,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// One renderer (and glyph atlas) per distinct face + scale. Panes
     /// with the same preset font and `fontSizeScale` share an atlas; a
     /// preset like the Commodore 1702 (1.5× in the C64 face) gets its own
-    /// alongside the default sessions in the same window.
+    /// alongside the default sessions in the same window. The display's
+    /// backing scale is part of the key: the atlas is rasterized in pixels,
+    /// so a window moving between a Retina and a 1× screen needs a renderer
+    /// built for each (reusing the old one draws glyphs at the wrong size).
     private struct FontKey: Hashable {
         let name: String
         let scale: Double
+        let backingScale: Double
     }
     private var sharedRenderers: [FontKey: TerminalRenderer] = [:]
     private let rootView = NSView()
@@ -199,11 +203,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Renderer (shared across the window's panes)
 
     private func rendererForPane(name: String, scale: Double) -> TerminalRenderer? {
-        let key = FontKey(name: name, scale: scale)
+        let backingScale = window?.backingScaleFactor ?? 2
+        let key = FontKey(name: name, scale: scale, backingScale: backingScale)
         if let existing = sharedRenderers[key] { return existing }
         let renderer = TerminalRenderer(
             font: settings.font(name: name, scale: scale),
-            scale: window?.backingScaleFactor ?? 2)
+            scale: backingScale)
         renderer?.setLigatures(settings.ligatures)
         sharedRenderers[key] = renderer
         return renderer

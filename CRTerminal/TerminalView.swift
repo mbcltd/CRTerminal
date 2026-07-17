@@ -328,6 +328,14 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        // Moving to a display with a different backing scale needs a
+        // renderer rasterized at that scale: the layer's drawableSize
+        // follows the new display, but the old renderer would keep drawing
+        // cells in the old display's pixel size (2× glyphs on a 1× screen).
+        if let renderer, let window,
+           window.backingScaleFactor != renderer.scale {
+            resetRenderer()
+        }
         updateLayerGeometry()
     }
 
