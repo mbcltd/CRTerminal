@@ -839,6 +839,24 @@ final class TerminalView: NSView, NSTextInputClient {
             }
         }
         if reportMouse(.press, button: .left, event: event) { return }
+        // Option-click moves the application's cursor to the clicked cell by
+        // synthesizing arrow keys (the Terminal.app gesture). Mouse-aware apps
+        // were already offered the click above, and while scrolled back the
+        // cursor isn't on screen, so the click falls through to selection.
+        if event.modifierFlags.contains(.option), scrollOffset == 0,
+           let state = session?.snapshot {
+            let cell = cellPosition(of: event)
+            var bytes: [UInt8] = []
+            for key in state.cursorMovementKeys(toX: cell.x, toY: cell.y) {
+                bytes += KeyEncoder.encode(
+                    key, applicationCursorKeys: state.modes.applicationCursorKeys,
+                    kittyFlags: state.modes.kittyKeyboardFlags)
+            }
+            if !bytes.isEmpty { sendKeyboard(bytes) }
+            // An option-drag must not grow a selection from a stale anchor.
+            selectionAnchor = nil
+            return
+        }
         let point = absolutePoint(of: event)
         switch event.clickCount {
         case 2:
