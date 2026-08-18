@@ -15,6 +15,9 @@
   window; drag it back to recombine.
 - **Vertical tab rail** Live titles, preview and bell attention badges.
 - **Move by keyboard.** ⌘⇧] / ⌘⇧[ to step through sessions, ⌘1–9 to leap to one.
+- **Option-click to move the cursor.** ⌥-click anywhere on the command line —
+  or in a full-screen editor — to jump the cursor there instead of holding
+  down the arrow keys.
 - **Rebind anything.** Every app shortcut above is customisable — open Settings
   and record a new combination for it under *Keyboard shortcuts*.
 
