@@ -152,3 +152,10 @@ jobs:
           files: |
             build/release/CRTerminal.dmg
             build/release/appcast.xml
+
+      # After the release exists (the cask's URL points at its tag), refresh
+      # the Homebrew cask in mbcltd/homebrew-tap to this version + sha256.
+      - name: Publish Homebrew cask
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: Scripts/publish-cask.sh "$VERSION-${{ github.run_number }}" build/release/CRTerminal.dmg

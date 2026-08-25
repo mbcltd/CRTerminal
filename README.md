@@ -43,7 +43,13 @@ kept fast enough to keep up with the noisiest output. Performance numbers live i
 
 Requires **MacOS 26 (Tahoe)** or later, Apple Silicon.
 
-Download the latest signed, notarised build:
+Install with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask mbcltd/tap/crterm
+```
+
+Or download the latest signed, notarised build:
 
 **[CRTerminal.dmg](https://github.com/mbcltd/CRTerminal/releases/latest/download/CRTerminal.dmg)**
 
