@@ -28,8 +28,11 @@ echo "==> Updating Homebrew cask to $VERSION ($SHA256)"
 git clone --quiet --depth 1 git@github.com:mbcltd/homebrew-tap.git "$TAP_DIR"
 
 # $VERSION/$SHA256 expand here; the #{version} interpolation is Ruby's, which
-# bash leaves alone. ">= :tahoe" (not brew style's bare :tahoe) so the cask
-# won't refuse newer macOS releases as they appear.
+# bash leaves alone. `depends_on macos: :tahoe` means ">= tahoe": Homebrew's
+# MacOSRequirement defaults the symbol form's comparator to >=, and the old
+# ">= :tahoe" string form is runtime-deprecated. The livecheck regex keeps the
+# full  marketing-build  version (v1.15.1-173), which github_latest would
+# otherwise truncate to the marketing version and report as forever-outdated.
 cat > "$TAP_DIR/Casks/crterm.rb" <<RUBY
 cask "crterm" do
   version "$VERSION"
@@ -42,11 +45,12 @@ cask "crterm" do
 
   livecheck do
     url :url
+    regex(/^v?(\d+(?:\.\d+)+-\d+)$/i)
     strategy :github_latest
   end
 
   auto_updates true
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
   depends_on arch: :arm64
 
   app "crterm.app"
