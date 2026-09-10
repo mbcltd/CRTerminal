@@ -534,7 +534,7 @@ final class TerminalView: NSView, NSTextInputClient {
             let kittyFlags = session?.snapshot.modes.kittyKeyboardFlags ?? []
             if let plain = event.charactersIgnoringModifiers?.unicodeScalars.first,
                let encoded = KeyEncoder.encodeCharacter(
-                plain, modifiers: keyModifiers(of: event), kittyFlags: kittyFlags) {
+                plain, modifiers: Self.keyModifiers(of: event), kittyFlags: kittyFlags) {
                 sendKeyboard(encoded)
                 return
             }
@@ -549,9 +549,18 @@ final class TerminalView: NSView, NSTextInputClient {
            event.keyCode == 36 /* Return */ || event.keyCode == 76 /* keypad Enter */ {
             let modes = session?.snapshot.modes
             sendKeyboard(KeyEncoder.encode(
-                .enter, modifiers: keyModifiers(of: event),
+                .enter, modifiers: Self.keyModifiers(of: event),
                 applicationCursorKeys: modes?.applicationCursorKeys ?? false,
                 kittyFlags: modes?.kittyKeyboardFlags ?? []))
+            return
+        }
+        // Navigation keys are encoded straight from the event so their
+        // modifiers survive (see `navigationBytes`). They take no part in
+        // composition, so the input context only sees them while an IME has
+        // marked text — its candidate list is arrow-driven.
+        if !hasMarkedText(),
+           let bytes = Self.navigationBytes(for: event, modes: session?.snapshot.modes) {
+            sendKeyboard(bytes)
             return
         }
         inputContext?.handleEvent(event)
@@ -578,7 +587,7 @@ final class TerminalView: NSView, NSTextInputClient {
         let modes = session?.snapshot.modes
         let kittyFlags = modes?.kittyKeyboardFlags ?? []
         guard kittyFlags.contains(.reportAllKeysAsEscapeCodes) else { return nil }
-        let modifiers = keyModifiers(of: event)
+        let modifiers = Self.keyModifiers(of: event)
         if let key = Self.terminalKey(for: event) {
             return KeyEncoder.encode(
                 key, modifiers: modifiers,
@@ -606,8 +615,33 @@ final class TerminalView: NSView, NSTextInputClient {
         case 48: return .tab
         case 51: return .backspace
         case 53: return .escape
-        default: break
+        default: return navigationKey(for: event)
         }
+    }
+
+    /// Bytes for a navigation key carrying the event's modifiers, or nil for
+    /// any other key (text, Return, Tab… and ⌘-arrows, which the text system
+    /// turns into Home/End). This is the legacy path's way around the input
+    /// context: routed through it, a modified arrow comes back as a text-system
+    /// selector — ⌥↑ is `moveToBeginningOfParagraph:`, ⌥⇧← is
+    /// `moveWordLeftAndModifySelection:` — and every selector `doCommand(by:)`
+    /// doesn't map back drops the key on the floor. Encoding from the event
+    /// keeps the whole modifier matrix (xterm `CSI 1;m X`), which apps like
+    /// Codex rely on (⌥↑ answers its queued questions).
+    static func navigationBytes(for event: NSEvent, modes: TerminalModes?) -> [UInt8]? {
+        guard !event.modifierFlags.contains(.command),
+              let key = navigationKey(for: event) else { return nil }
+        return KeyEncoder.encode(
+            key, modifiers: Self.keyModifiers(of: event),
+            applicationCursorKeys: modes?.applicationCursorKeys ?? false,
+            kittyFlags: modes?.kittyKeyboardFlags ?? [],
+            eventType: event.isARepeat ? .repeat : .press)
+    }
+
+    /// The navigation keys — arrows, Home/End, Page Up/Down, Forward Delete,
+    /// F1–F12 — identified by Apple's private-use function-key scalars, which
+    /// `charactersIgnoringModifiers` reports whatever modifiers are held.
+    static func navigationKey(for event: NSEvent) -> TerminalKey? {
         guard let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first else {
             return nil
         }
@@ -769,7 +803,7 @@ final class TerminalView: NSView, NSTextInputClient {
         return SelectionPoint(row: top + cell.y, column: cell.x)
     }
 
-    private func keyModifiers(of event: NSEvent) -> KeyModifiers {
+    static func keyModifiers(of event: NSEvent) -> KeyModifiers {
         var modifiers = KeyModifiers()
         if event.modifierFlags.contains(.shift) { modifiers.insert(.shift) }
         if event.modifierFlags.contains(.option) { modifiers.insert(.option) }
@@ -813,7 +847,7 @@ final class TerminalView: NSView, NSTextInputClient {
         send(MouseEncoder.encode(
             kind, button: button, x: cell.x, y: cell.y,
             pixelX: pixel.x, pixelY: pixel.y,
-            modifiers: keyModifiers(of: event),
+            modifiers: Self.keyModifiers(of: event),
             encoding: modes.mouseEncoding))
         return true
     }
@@ -1025,7 +1059,7 @@ final class TerminalView: NSView, NSTextInputClient {
                 send(MouseEncoder.encode(
                     .press, button: button, x: cell.x, y: cell.y,
                     pixelX: pixel.x, pixelY: pixel.y,
-                    modifiers: keyModifiers(of: event),
+                    modifiers: Self.keyModifiers(of: event),
                     encoding: state.modes.mouseEncoding))
             }
             return

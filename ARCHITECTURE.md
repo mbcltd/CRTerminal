@@ -172,6 +172,14 @@ the abstract event; the encoder handles application cursor keys, modifyOtherKeys
 kitty protocol levels, and paste bracketing. Pure functions make the entire
 key-encoding matrix unit-testable without a UI.
 
+Navigation keys (arrows, Home/End, paging, Forward Delete, F1–F12) are encoded
+straight from the `NSEvent` in `keyDown`, unless an IME has marked text. Everything
+else goes through `NSTextInputContext`, whose text-system selectors (`moveUp:`,
+`insertNewline:`…) map back to keys in `doCommand(by:)` — modified arrows can't
+take that route, because ⌥↑ arrives as `moveToBeginningOfParagraph:` and the
+modifier is gone. ⌥←/⌥→ keep the macOS convention of readline's `ESC b`/`ESC f`
+in legacy mode; any kitty level gets the protocol's own alt+arrow encoding.
+
 ---
 
 ## PTY and process management

@@ -20,6 +20,26 @@ struct KeyEncoderTests {
         #expect(KeyEncoder.encode(.up, modifiers: [.shift]) == Array("\u{1B}[1;2A".utf8))
     }
 
+    @Test func optionArrowsCarryTheAltModifier() {
+        #expect(KeyEncoder.encode(.up, modifiers: [.option]) == Array("\u{1B}[1;3A".utf8))
+        #expect(KeyEncoder.encode(.down, modifiers: [.option, .shift]) == Array("\u{1B}[1;4B".utf8))
+        #expect(KeyEncoder.encode(.left, modifiers: [.option, .shift]) == Array("\u{1B}[1;4D".utf8))
+        #expect(KeyEncoder.encode(.up, modifiers: [.option], applicationCursorKeys: true)
+            == Array("\u{1B}[1;3A".utf8))
+    }
+
+    @Test func optionLeftAndRightAreWordMotionsInLegacyModeOnly() {
+        // The macOS convention readline understands without configuration…
+        #expect(KeyEncoder.encode(.left, modifiers: [.option]) == Array("\u{1B}b".utf8))
+        #expect(KeyEncoder.encode(.right, modifiers: [.option]) == Array("\u{1B}f".utf8))
+        // …but any kitty enhancement level gets the protocol's own encoding.
+        #expect(KeyEncoder.encode(.left, modifiers: [.option], kittyFlags: [.disambiguate])
+            == Array("\u{1B}[1;3D".utf8))
+        #expect(KeyEncoder.encode(
+            .right, modifiers: [.option], kittyFlags: [.disambiguate, .reportEventTypes])
+            == Array("\u{1B}[1;3:1C".utf8))
+    }
+
     @Test func editingKeys() {
         #expect(KeyEncoder.encode(.enter) == [0x0D])
         #expect(KeyEncoder.encode(.backspace) == [0x7F])

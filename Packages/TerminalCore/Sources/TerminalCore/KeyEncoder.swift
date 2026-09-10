@@ -81,6 +81,18 @@ public enum KeyEncoder {
                 break
             }
         }
+        // macOS convention (Terminal.app, iTerm2, Ghostty): ⌥← / ⌥→ send
+        // readline's word motions, ESC b / ESC f, which bash and zsh honour
+        // out of the box where CSI 1;3D / 1;3C would need an inputrc or
+        // bindkey. Legacy mode only — the kitty protocol has an unambiguous
+        // alt+arrow encoding and may treat a bare ESC as a key of its own.
+        if modifiers == [.option], kittyFlags.isEmpty {
+            switch key {
+            case .left: return [0x1B, UInt8(ascii: "b")]
+            case .right: return [0x1B, UInt8(ascii: "f")]
+            default: break
+            }
+        }
         switch key {
         case .up: return cursorKey("A", modifiers, applicationCursorKeys, kittyFlags, eventType)
         case .down: return cursorKey("B", modifiers, applicationCursorKeys, kittyFlags, eventType)
