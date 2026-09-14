@@ -18,7 +18,7 @@ struct SearchSummary: Equatable {
 /// The terminal surface: hosts the CAMetalLayer, owns the renderer, and
 /// translates AppKit input into PTY bytes. Implements NSTextInputClient from
 /// day one so IME isn't a retrofit (ARCHITECTURE.md risks).
-final class TerminalView: NSView, NSTextInputClient {
+final class TerminalView: NSView, NSTextInputClient, NSMenuDelegate {
     private(set) var renderer: TerminalRenderer?
     private(set) var renderLoop: RenderLoop?
     /// Supplies the window's shared renderer (one atlas per window, panes
@@ -214,6 +214,9 @@ final class TerminalView: NSView, NSTextInputClient {
     private var hoveredLink: Selection?
     private var linkCursorShown = false
     private var linkTrackingArea: NSTrackingArea?
+    /// Cell span of the link a context menu was opened on; underlined for as
+    /// long as the menu is up so the user can see which link it refers to.
+    private var contextMenuLink: Selection?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -406,7 +409,7 @@ final class TerminalView: NSView, NSTextInputClient {
     private func pushViewStateToRenderLoop() {
         renderLoop?.setViewState(
             scrollOffset: scrollOffset, selection: selection,
-            markedText: markedText, hoveredLink: hoveredLink,
+            markedText: markedText, hoveredLink: hoveredLink ?? contextMenuLink,
             searchMatches: searchMatches, searchGeneration: searchGeneration,
             currentMatch: currentMatch)
         updateScrollbar()
@@ -752,9 +755,23 @@ final class TerminalView: NSView, NSTextInputClient {
         pasteboard.setString(text, forType: .string)
     }
 
+    /// Selects every line in scrollback plus the screen.
+    override func selectAll(_ sender: Any?) {
+        guard let state = session?.snapshot else { return }
+        let first = SelectionPoint(row: state.evictedLineCount, column: 0)
+        let last = SelectionPoint(
+            row: state.absoluteScreenTop + state.rows - 1,
+            column: max(0, state.columns - 1))
+        selection = Selection(anchor: first, head: last, granularity: .line)
+        pushViewStateToRenderLoop()
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(copy(_:)) {
             return selection != nil && !(selection?.isEmpty ?? true)
+        }
+        if menuItem.action == #selector(selectAll(_:)) {
+            return session != nil
         }
         return true
     }
@@ -873,6 +890,12 @@ final class TerminalView: NSView, NSTextInputClient {
             }
         }
         if reportMouse(.press, button: .left, event: event) { return }
+        // ⌃-click is the one-button-mouse spelling of right-click. AppKit would
+        // do this for us via `menu(for:)`, but only from the default mouseDown.
+        if event.modifierFlags.contains(.control) {
+            showContextMenu(for: event)
+            return
+        }
         // Option-click moves the application's cursor to the clicked cell by
         // synthesizing arrow keys (the Terminal.app gesture). Mouse-aware apps
         // were already offered the click above, and while scrolled back the
@@ -1022,7 +1045,9 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        _ = reportMouse(.press, button: .right, event: event)
+        // Mouse-aware apps get the button; otherwise it's the context menu.
+        if reportMouse(.press, button: .right, event: event) { return }
+        showContextMenu(for: event)
     }
 
     override func rightMouseUp(with event: NSEvent) {
@@ -1091,26 +1116,10 @@ final class TerminalView: NSView, NSTextInputClient {
             clearHoveredLink()
             return
         }
-        let cell = cellPosition(at: locationInWindow)
-        let row = state.absoluteScreenTop - scrollOffset + cell.y
-        guard let line = state.absoluteLine(row), cell.x < line.count else {
+        guard let span = linkSpan(in: state, at: absolutePoint(at: locationInWindow)) else {
             clearHoveredLink()
             return
         }
-        // Resolve the underline span, joining soft-wrapped rows so a URL that
-        // spills onto the next physical row underlines in full.
-        let ends: (start: SelectionPoint, end: SelectionPoint)?
-        if line[cell.x].link != 0 {
-            ends = URLDetection.osc8Span(in: state, atRow: row, column: cell.x)
-        } else {
-            ends = URLDetection.locate(in: state, atRow: row, column: cell.x)
-                .map { ($0.start, $0.end) }
-        }
-        guard let ends else {
-            clearHoveredLink()
-            return
-        }
-        let span = Selection(anchor: ends.start, head: ends.end)
         if span != hoveredLink {
             hoveredLink = span
             pushViewStateToRenderLoop()
@@ -1131,21 +1140,107 @@ final class TerminalView: NSView, NSTextInputClient {
         pushViewStateToRenderLoop()
     }
 
-    private func openLink(at event: NSEvent) {
-        guard let state = session?.snapshot else { return }
-        let point = absolutePoint(of: event)
-        guard let line = state.absoluteLine(point.row),
-              point.column < line.count else { return }
-        // OSC 8 hyperlink on the cell wins; otherwise scan the (wrap-joined) text.
+    /// Cell span of the link under `point`, joining soft-wrapped rows so a URL
+    /// that spills onto the next physical row underlines in full. OSC 8 runs
+    /// win over plain-text detection, matching `linkTarget`.
+    private func linkSpan(in state: TerminalState, at point: SelectionPoint) -> Selection? {
+        guard let line = state.absoluteLine(point.row), point.column < line.count
+        else { return nil }
+        let ends: (start: SelectionPoint, end: SelectionPoint)?
+        if line[point.column].link != 0 {
+            ends = URLDetection.osc8Span(in: state, atRow: point.row, column: point.column)
+        } else {
+            ends = URLDetection.locate(in: state, atRow: point.row, column: point.column)
+                .map { ($0.start, $0.end) }
+        }
+        return ends.map { Selection(anchor: $0.start, head: $0.end) }
+    }
+
+    /// The URL the cell at `point` links to: an OSC 8 hyperlink on the cell
+    /// wins; otherwise the (wrap-joined) text is scanned for a URL or path.
+    private func linkTarget(in state: TerminalState, at point: SelectionPoint) -> URL? {
+        guard let line = state.absoluteLine(point.row), point.column < line.count
+        else { return nil }
         if line[point.column].link != 0,
            let target = state.linkURL(line[point.column].link),
            let url = URLDetection.url(from: target) {
-            NSWorkspace.shared.open(url)
-            return
+            return url
         }
-        if let url = URLDetection.detect(in: state, atRow: point.row, column: point.column) {
-            NSWorkspace.shared.open(url)
+        return URLDetection.detect(in: state, atRow: point.row, column: point.column)
+    }
+
+    private func openLink(at event: NSEvent) {
+        guard let state = session?.snapshot,
+              let url = linkTarget(in: state, at: absolutePoint(of: event))
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    // MARK: Context menu
+
+    /// Pops the right-click menu: link rows for whatever is under the pointer
+    /// (underlined while the menu is up), then the Edit-menu staples.
+    private func showContextMenu(for event: NSEvent) {
+        let state = session?.snapshot
+        let point = absolutePoint(of: event)
+        let url = state.flatMap { linkTarget(in: $0, at: point) }
+        contextMenuLink = state.flatMap { linkSpan(in: $0, at: point) }
+        if contextMenuLink != nil { pushViewStateToRenderLoop() }
+
+        let menu = NSMenu()
+        menu.delegate = self
+        let linkItems = LinkContextMenu.items(for: url)
+        for spec in linkItems {
+            let selector: Selector
+            switch spec.action {
+            case .open: selector = #selector(openContextLink(_:))
+            case .revealInFinder: selector = #selector(revealContextLink(_:))
+            case .copy: selector = #selector(copyContextLink(_:))
+            }
+            let item = NSMenuItem(title: spec.title, action: selector, keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+            menu.addItem(item)
         }
+        if !linkItems.isEmpty { menu.addItem(.separator()) }
+        for (title, selector) in [
+            ("Copy", #selector(copy(_:))),
+            ("Paste", #selector(paste(_:))),
+            ("Select All", #selector(selectAll(_:))),
+        ] as [(String, Selector)] {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let clear = NSMenuItem(
+            title: "Clear", action: #selector(clearScreen(_:)), keyEquivalent: "")
+        clear.target = self
+        menu.addItem(clear)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard contextMenuLink != nil else { return }
+        contextMenuLink = nil
+        pushViewStateToRenderLoop()
+    }
+
+    @objc private func openContextLink(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func revealContextLink(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    @objc private func copyContextLink(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(LinkContextMenu.pasteboardText(for: url), forType: .string)
     }
 
     // MARK: Prompt jumping (OSC 133 shell integration)
