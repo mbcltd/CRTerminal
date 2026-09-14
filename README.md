@@ -18,6 +18,8 @@
 - **Option-click to move the cursor.** ⌥-click anywhere on the command line —
   or in a full-screen editor — to jump the cursor there instead of holding
   down the arrow keys.
+- **Links.** ⌘-click a URL or file path to open it, or right-click (⌃-click)
+  it for Open Link / Copy Link — plus Copy, Paste, Select All and Clear.
 - **Rebind anything.** Every app shortcut above is customisable — open Settings
   and record a new combination for it under *Keyboard shortcuts*.
 
