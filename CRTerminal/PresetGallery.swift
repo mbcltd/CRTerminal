@@ -29,7 +29,15 @@ final class PresetPreviewRenderer {
     }
 
     func image(for preset: CRTPreset, time: TimeInterval) -> CGImage? {
-        renderer?.renderImage(state, preset: preset, time: time)
+        guard let renderer else { return nil }
+        // Auto has no look of its own: show both standards, split diagonally.
+        if AutoTheme.isAuto(preset) {
+            guard let light = renderer.renderImage(state, preset: .lightStandard, time: time),
+                  let dark = renderer.renderImage(state, preset: .darkStandard, time: time)
+            else { return nil }
+            return AutoTheme.compositeThumbnail(light: light, dark: dark)
+        }
+        return renderer.renderImage(state, preset: preset, time: time)
     }
 }
 

@@ -32,6 +32,9 @@
 ## Looks
 
 - **Opinionated defaults**
+- **Auto theme.** Pick *Auto* and the terminal wears the light scheme by day
+  and the dark one at night, following the macOS appearance — whether you flip
+  it by hand or let the system's schedule do it.
 - **CRT mode** 
 - **Degauss**
 

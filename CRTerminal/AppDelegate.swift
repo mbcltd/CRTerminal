@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private(set) static var shared: AppDelegate?
 
     private var controllers: [TerminalWindowController] = []
+    /// Keeps the system light/dark observation alive (see Auto theme).
+    private var appearanceObservation: NSKeyValueObservation?
     private var settingsWindow: NSWindow?
     private var previewRenderer: PresetPreviewRenderer?
     private var probe: TypistProbe?
@@ -71,6 +73,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 controller.refreshSessionMetadata()
             }
             self.refreshDockBadge()
+        }
+        // Sessions on the Auto theme follow macOS light/dark. The app's
+        // effective appearance changes on a manual flip and on the system's
+        // sunset schedule alike; KVO delivers it on the main thread.
+        appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for controller in self.controllers {
+                    controller.systemAppearanceDidChange()
+                }
+            }
         }
 
         // Restore from our own on-disk layout + content files. This is the
@@ -931,7 +944,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var paletteTheme: SidebarTheme {
         SidebarTheme(
             preset: keyController?.activePreset
-                ?? SettingsStore.shared.settings.preset(in: PresetCatalog.all))
+                ?? AutoTheme.resolve(SettingsStore.shared.settings.preset(in: PresetCatalog.all)))
     }
 
     /// Lands on a session wherever it lives: activates the app, fronts

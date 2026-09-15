@@ -333,6 +333,10 @@ the design space:
 - **Amdek 310A** — amber classic
 - **Commodore 1702** — composite color, strong mask and bleed
 - **Dark / Light** — all effects disabled; the modern terminal, dark or light
+- **Auto** — not a monitor but a rule: Light while macOS is in light mode, Dark in
+  dark mode, switching live with the system appearance (`AutoTheme`, app layer).
+  The catalog lists it like any preset so settings and snapshots carry it by
+  name; nothing draws it directly
 - **Danger** — a crimson "you're in production" palette (custom `colors`) with a
   thick burgundy bottom warning stripe; effects off
 
@@ -370,7 +374,11 @@ the same pipeline at thumbnail size).
   sidebar rail) follows the active session. The titlebar/menu theme switchers
   re-theme only the active session and do not change the default. The global
   settings preset ("Default theme") is the one every new session and window
-  starts from, and is changed only in Settings.
+  starts from, and is changed only in Settings. A `SessionTab` keeps the
+  *chosen* preset (what the user picked, possibly Auto) apart from the preset it
+  draws; the AppDelegate observes `NSApp.effectiveAppearance` and has each window
+  re-resolve its Auto sessions when macOS flips light/dark, while sessions on an
+  explicit theme stay put. The titlebar chip and menu checkmarks show the choice.
 - **Titlebar controls** (same handoff): a trailing control cluster with a theme
   switcher — one chip showing a phosphor-colored dot plus the active preset name,
   opening a dropdown where each row is styled in its own preset's look with a
