@@ -24,9 +24,9 @@ final class TitlebarControlCluster: NSView {
     private static let controlHeight: CGFloat = 22
     private static let gap: CGFloat = 7
 
-    init(presets: [CRTPreset], currentPreset: CRTPreset) {
+    init(presets: [CRTPreset], currentPreset: CRTPreset, themeName: String? = nil) {
         self.presets = presets
-        self.currentPresetName = currentPreset.name
+        self.currentPresetName = themeName ?? currentPreset.name
         super.init(frame: NSRect(x: 0, y: 0, width: 10, height: Self.height))
 
         degaussButton.target = nil
@@ -36,7 +36,7 @@ final class TitlebarControlCluster: NSView {
         themeButton.onClick = { [weak self] in self?.showThemeMenu() }
         addSubview(themeButton)
 
-        update(preset: currentPreset)
+        update(preset: currentPreset, themeName: themeName)
     }
 
     @available(*, unavailable)
@@ -44,10 +44,14 @@ final class TitlebarControlCluster: NSView {
         fatalError("TitlebarControlCluster is created in code")
     }
 
-    func update(preset: CRTPreset) {
-        currentPresetName = preset.name
+    /// `preset` is what the session draws; `themeName` is what the user
+    /// picked when that differs (Auto, resolved to Dark or Light) — the chip
+    /// and the menu checkmark show the choice, the dot and degauss button
+    /// follow the look.
+    func update(preset: CRTPreset, themeName: String? = nil) {
+        currentPresetName = themeName ?? preset.name
         themeButton.configure(
-            name: preset.name, dotColor: NSColor(preset.phosphor.color))
+            name: currentPresetName, dotColor: NSColor(preset.phosphor.color))
         degaussButton.isHidden = !preset.effects || !preset.degaussButton
         relayout()
     }

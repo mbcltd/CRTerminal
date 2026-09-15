@@ -9,8 +9,12 @@ final class SessionTab {
     let container = NSView()
     var panes: [TerminalView] = []
     let createdAt = Date()
-    /// Each session wears its own theme; new sessions start from the
-    /// global settings default.
+    /// The theme the user picked for this session (from the catalog, so it
+    /// may be Auto); what settings and layout snapshots record.
+    var chosenPreset: CRTPreset
+    /// The preset the session actually draws: `chosenPreset`, or for Auto
+    /// the standard matching the current system appearance. Each session
+    /// wears its own; new sessions start from the global settings default.
     var preset: CRTPreset
     /// User-chosen name that overrides the inferred one (process/OSC title).
     /// `nil` (or empty) means fall back to the automatic name.
@@ -20,9 +24,13 @@ final class SessionTab {
     var unseenBells = 0
     var lastBellAt: Date?
 
-    init(preset: CRTPreset) {
+    init(chosenPreset: CRTPreset, preset: CRTPreset) {
+        self.chosenPreset = chosenPreset
         self.preset = preset
     }
+
+    /// Whether this session follows the system appearance.
+    var followsSystemAppearance: Bool { AutoTheme.isAuto(chosenPreset) }
 }
 
 /// One terminal window: a vertical session sidebar (GlassTerm design) on
@@ -96,7 +104,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         self.initialWorkingDirectory = initialWorkingDirectory
         self.sidebarCollapsed = initialSidebarCollapsed
         sidebar = SessionSidebarView(
-            theme: SidebarTheme(preset: settings.preset(in: PresetCatalog.all)))
+            theme: SidebarTheme(
+                preset: AutoTheme.resolve(settings.preset(in: PresetCatalog.all))))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 540),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -214,14 +223,30 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         return renderer
     }
 
-    /// The settings preset: the default new sessions start from.
-    private func currentPreset() -> CRTPreset {
+    /// The settings theme as chosen: the default new sessions start from
+    /// (possibly Auto).
+    private func defaultTheme() -> CRTPreset {
         settings.preset(in: PresetCatalog.all)
+    }
+
+    /// The settings theme resolved to something drawable.
+    private func currentPreset() -> CRTPreset {
+        AutoTheme.resolve(defaultTheme())
+    }
+
+    /// A session wearing `chosen`, resolved against the system appearance.
+    private func makeTab(wearing chosen: CRTPreset) -> SessionTab {
+        SessionTab(chosenPreset: chosen, preset: AutoTheme.resolve(chosen))
     }
 
     /// The active session's preset: what the window chrome reflects.
     var activePreset: CRTPreset {
         activeTab?.preset ?? currentPreset()
+    }
+
+    /// The active session's chosen theme name (Auto stays "Auto").
+    var activeThemeName: String {
+        activeTab?.chosenPreset.name ?? defaultTheme().name
     }
 
     // MARK: Sessions (sidebar tabs)
@@ -266,7 +291,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func addSession(restoringFrom snapshot: TerminalStateSnapshot? = nil,
                     launch: SessionLaunch? = nil) -> SessionTab? {
-        let tab = SessionTab(preset: currentPreset())
+        let tab = makeTab(wearing: defaultTheme())
         guard let pane = makePane(in: tab, restoringFrom: snapshot, launch: launch)
         else { return nil }
         tab.container.frame = contentHost.bounds
@@ -731,7 +756,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             guard let rootView = tab.container.subviews.first,
                   let root = Self.captureSplitNode(from: rootView) else { return nil }
             return TabNode(
-                uuid: tab.id, presetName: tab.preset.name, root: root,
+                uuid: tab.id, presetName: tab.chosenPreset.name, root: root,
                 customName: tab.customName)
         }
         return WindowNode(
@@ -787,9 +812,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         sidebarCollapsed = node.sidebarCollapsed
         var roots: [(SplitNode, NSView)] = []
         for tabNode in node.tabs {
-            let preset = PresetCatalog.all.first { $0.name == tabNode.presetName }
-                ?? currentPreset()
-            let tab = SessionTab(preset: preset)
+            let chosen = PresetCatalog.all.first { $0.name == tabNode.presetName }
+                ?? defaultTheme()
+            let tab = makeTab(wearing: chosen)
             tab.customName = tabNode.customName
             tab.container.frame = contentHost.bounds
             tab.container.autoresizingMask = [.width, .height]
@@ -1181,27 +1206,48 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         applyChrome(preset: activePreset)
     }
 
-    /// Themes the active session only; other sessions keep theirs.
-    func apply(preset: CRTPreset) {
+    /// Themes the active session only; other sessions keep theirs. `preset`
+    /// is the catalog choice — Auto is resolved here and re-resolved by
+    /// `systemAppearanceDidChange` as macOS flips.
+    func apply(preset chosen: CRTPreset) {
         guard let tab = activeTab else { return }
+        tab.chosenPreset = chosen
+        wear(AutoTheme.resolve(chosen), on: tab)
+    }
+
+    /// The system switched between light and dark: every session wearing
+    /// Auto re-resolves. Sessions on an explicit theme stay put.
+    func systemAppearanceDidChange() {
+        for tab in tabs where tab.followsSystemAppearance {
+            let resolved = AutoTheme.resolve(tab.chosenPreset)
+            guard resolved != tab.preset else { continue }
+            wear(resolved, on: tab)
+        }
+    }
+
+    private func wear(_ preset: CRTPreset, on tab: SessionTab) {
         tab.preset = preset
         for pane in tab.panes {
             pane.preset = preset
         }
-        applyChrome(preset: preset)
+        if tab === activeTab {
+            applyChrome(preset: preset)
+        }
         refreshSessionMetadata()
     }
 
     /// Window chrome (titlebar cluster, sidebar rail) wears the active
     /// session's theme.
     private func applyChrome(preset: CRTPreset) {
-        titlebarControls?.update(preset: preset)
+        titlebarControls?.update(preset: preset, themeName: activeThemeName)
         sidebar.apply(theme: SidebarTheme(preset: preset))
         hideHoverCard()
     }
 
+    /// The active session's theme as the menus should tick it (Auto, not
+    /// the standard it currently resolves to).
     var currentPresetName: String {
-        activePreset.name
+        activeThemeName
     }
 
     // MARK: Window plumbing
@@ -1210,7 +1256,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// button that only exists while the active preset is a CRT.
     private func addTitlebarControls(to window: NSWindow) {
         let cluster = TitlebarControlCluster(
-            presets: PresetCatalog.all, currentPreset: currentPreset())
+            presets: PresetCatalog.all, currentPreset: currentPreset(),
+            themeName: defaultTheme().name)
         cluster.onSelectPreset = { [weak self] preset in
             // Themes the active session only — it does not touch the default
             // theme, so new sessions and windows keep starting from the

@@ -11,6 +11,8 @@ enum PresetCatalog {
         .urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
         .appendingPathComponent("CRTerminal/Presets", isDirectory: true)
 
+    /// Bundled presets, then user presets (a user file can't shadow a bundled
+    /// name), plus the Auto theme slotted in after the standards it follows.
     static let all: [CRTPreset] = {
         var presets = CRTPresetLibrary.builtIn
         if let dir = userDirectory {
@@ -18,7 +20,7 @@ enum PresetCatalog {
                 .filter { user in !presets.contains { $0.name == user.name } }
             presets.append(contentsOf: user)
         }
-        return presets
+        return AutoTheme.inserting(into: presets)
     }()
 }
 

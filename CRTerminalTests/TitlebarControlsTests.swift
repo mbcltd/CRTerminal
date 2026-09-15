@@ -28,6 +28,22 @@ struct TitlebarControlsTests {
         #expect(degauss?.isHidden == true)
     }
 
+    @Test @MainActor func chipNamesTheChosenThemeNotTheResolvedOne() {
+        // An Auto session draws the Dark standard but the chip says "Auto",
+        // so the user can tell it will follow the system.
+        let cluster = TitlebarControlCluster(
+            presets: [AutoTheme.catalogEntry, .darkStandard, .lightStandard],
+            currentPreset: .darkStandard, themeName: AutoTheme.name)
+        let chip = cluster.subviews.compactMap { $0 as? ThemeSwitcherButton }.first
+        #expect(chip?.accessibilityTitle() == "Theme: Auto")
+
+        cluster.update(preset: .lightStandard, themeName: AutoTheme.name)
+        #expect(chip?.accessibilityTitle() == "Theme: Auto")
+
+        cluster.update(preset: .lightStandard)
+        #expect(chip?.accessibilityTitle() == "Theme: Light")
+    }
+
     @Test @MainActor func clusterShrinksWhenDegaussHides() {
         let crt = CRTPreset(name: "Tube", effects: true)
         let cluster = TitlebarControlCluster(
