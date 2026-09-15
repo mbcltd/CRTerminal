@@ -189,6 +189,22 @@ login shell (respecting `SHELL`, login-mode `argv[0]`, correct `TERM` and
 `COLORTERM=truecolor`), propagate resizes via `TIOCSWINSZ`, reap with a process
 lifetime monitor so exit status can be shown in-surface.
 
+**Command sessions.** A `PTYSession` can be given a command line, which the login
+shell runs instead of an interactive prompt (`shell -c …`, still with the login
+`argv[0]` so the profile's PATH applies). This is how files handed to the app by
+Launch Services run: the `CFBundleDocumentTypes` in `CRTerminal-Info.plist` claim
+shell scripts, Unix executables and folders (rank Alternate, so crterm appears in
+"Open With" without taking Terminal's defaults); `AppDelegate.application(_:open:)`
+routes each URL through `OpenedFile` — folder → shell there, executable → `exec` the
+escaped path in its own folder, non-executable → an alert with the `chmod` fix, as
+Terminal.app refuses too. A command session's `commandName` names the sidebar row
+(the process image is the interpreter, so libproc would say "bash"), counts as
+running for close confirmation, and on exit the pane is *held*: the window
+controller injects a "[Process completed: exit N]" banner through the parser and
+the next keypress closes the pane instead of reaching the dead PTY. Restoration
+needs no special case: a saved command session comes back as a plain shell in its
+directory with the output as static scrollback, never re-running the script.
+
 Reads use a `DispatchSourceRead` on a dedicated serial IO queue (userInteractive QoS).
 **Flow control:** reads are bounded (e.g. 1 MiB per wakeup) and the parser runs with a
 per-frame time budget; if a process firehoses output (`cat 100MB.txt`), we keep

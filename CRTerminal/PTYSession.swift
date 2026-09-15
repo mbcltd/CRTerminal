@@ -39,7 +39,11 @@ nonisolated final class PTYSession: @unchecked Sendable {
         case spawn(Int32)
     }
 
-    init(columns: Int, rows: Int, shell: String? = nil,
+    /// `command`, when set, is a shell command line the login shell runs
+    /// instead of an interactive prompt (`shell -c command`, still with the
+    /// login `argv[0]` so profile files set up PATH etc.) — how a script
+    /// opened from Finder / the Dock icon runs (see `OpenedFile`).
+    init(columns: Int, rows: Int, shell: String? = nil, command: String? = nil,
          workingDirectory: String? = nil, lightBackground: Bool = false) throws {
         // Master/slave pair via plain POSIX (no libutil dependency).
         let master = posix_openpt(O_RDWR | O_NOCTTY)
@@ -86,12 +90,15 @@ nonisolated final class PTYSession: @unchecked Sendable {
         // allocation — another thread may hold the malloc lock).
         let shellC = strdup(shellPath)
         defer { free(shellC) }
+        let arguments = [loginArg0] + (command.map { ["-c", $0] } ?? [])
         let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
-            .allocate(capacity: 2)
-        argv[0] = strdup(loginArg0)
-        argv[1] = nil
+            .allocate(capacity: arguments.count + 1)
+        for (index, argument) in arguments.enumerated() {
+            argv[index] = strdup(argument)
+        }
+        argv[arguments.count] = nil
         defer {
-            free(argv[0])
+            for index in 0..<arguments.count { free(argv[index]) }
             argv.deallocate()
         }
         let envp = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
@@ -208,6 +215,9 @@ nonisolated final class PTYSession: @unchecked Sendable {
     }
 
     func terminate() {
+        // The pid was reaped on exit and may already belong to another
+        // process; never signal it then.
+        guard !exited.withLock({ $0 }) else { return }
         kill(processID, SIGHUP)
     }
 
@@ -268,8 +278,12 @@ nonisolated final class PTYSession: @unchecked Sendable {
         // Last slave holder: closing flips the reader's poll to HUP/EOF so
         // it drains any final buffered output and exits.
         close(slaveFD)
+        // The exit event can fire a beat before the zombie is collectable,
+        // so a WNOHANG poll intermittently reported status 0 for a script
+        // that exited 3. The child has exited, so a blocking wait returns
+        // at once; only EINTR is worth retrying.
         var status: Int32 = 0
-        waitpid(processID, &status, WNOHANG)
+        while waitpid(processID, &status, 0) < 0 && errno == EINTR {}
         onExit?(status)
     }
 }

@@ -7,6 +7,41 @@
 <dict>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
+	<!-- Files Launch Services may hand the app (drop on the Dock icon,
+	     double-click, Finder "Open With"), handled by AppDelegate's
+	     application(_:open:) via OpenedFile — the same set Terminal.app
+	     claims: its .command/.tool scripts, plain shell scripts, extension-
+	     less executables, and folders. Rank Alternate so crterm is offered
+	     in "Open With" without stealing Terminal's defaults. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Shell script</string>
+			<key>CFBundleTypeRole</key>
+			<string>Shell</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.apple.terminal.shell-script</string>
+				<string>public.shell-script</string>
+				<string>public.unix-executable</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>CFBundleTypeRole</key>
+			<string>Shell</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+		</dict>
+	</array>
 	<key>SUFeedURL</key>
 	<string>https://github.com/mbcltd/CRTerminal/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>

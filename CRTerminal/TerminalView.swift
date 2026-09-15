@@ -28,6 +28,11 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuDelegate {
     var session: TerminalSession? {
         didSet { wireSession() }
     }
+    /// Set once a command session's process has exited and the
+    /// "[Process completed]" banner is up: the next keypress closes the
+    /// pane (via `onCloseRequested`) instead of going to the dead PTY.
+    var closesOnNextKey = false
+    var onCloseRequested: (() -> Void)?
     /// Stable identity for this pane's session, used to key its persisted
     /// terminal contents (`SessionStateStore`) and to name the leaf in a
     /// captured `LayoutSnapshot`. Assigned fresh on creation, or carried over
@@ -517,6 +522,10 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuDelegate {
     // MARK: Keyboard
 
     override func keyDown(with event: NSEvent) {
+        if closesOnNextKey {
+            onCloseRequested?()
+            return
+        }
         // Kitty "report all keys as escape codes" (flag 0b1000) reports every
         // key — including plain text — as a CSI u escape, so it must intercept
         // before the input context (which would otherwise insert text). Only

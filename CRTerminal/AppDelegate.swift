@@ -12,6 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var previewRenderer: PresetPreviewRenderer?
     private var probe: TypistProbe?
     private var restoreProbe: RestoreProbe?
+    /// Files Launch Services asked us to open before launch finished (a
+    /// script double-clicked while the app wasn't running arrives between
+    /// `willFinishLaunching` and `didFinishLaunching`); opened once the
+    /// first window exists so they land as sessions in it.
+    private var pendingOpenURLs: [URL] = []
+    private var finishedLaunching = false
 
     /// Sparkle auto-updater. Started at launch; checks the SUFeedURL appcast
     /// declared in Info.plist and backs the "Check for Updates…" menu item.
@@ -91,6 +97,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // quit, or a clean launch that restored nothing — so none leak.
         pruneOrphanContents()
         NSApp.activate()
+        finishedLaunching = true
+        let queued = pendingOpenURLs
+        pendingOpenURLs = []
+        open(queued)
 
         if ProcessInfo.processInfo.environment["CRT_TYPIST"] != nil,
            let pane = controller.panes.first, let session = pane.session {
@@ -762,6 +772,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var keyController: TerminalWindowController? {
         NSApp.keyWindow?.windowController as? TerminalWindowController
             ?? controllers.last
+    }
+
+    // MARK: Opening files (Dock icon drop, double-click, Finder "Open With")
+
+    /// The document types claimed in `CRTerminal-Info.plist` (shell scripts,
+    /// Unix executables, folders) route here. Mirrors Terminal.app: a folder
+    /// opens a shell in it, an executable script runs in its own session,
+    /// and a script without the executable bit is refused with an
+    /// explanation. Each item becomes a session in the key window (or a new
+    /// window when none is open).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard finishedLaunching else {
+            pendingOpenURLs += urls
+            return
+        }
+        open(urls)
+    }
+
+    private func open(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        var refused: [OpenedFile.Action] = []
+        for url in urls {
+            let action = OpenedFile.action(for: url)
+            switch action {
+            case .openShell, .run:
+                let controller = keyController ?? {
+                    let fresh = makeWindowController(spawnInitialSession: false)
+                    fresh.showWindow(nil)
+                    return fresh
+                }()
+                controller.addSession(opening: action)
+                controller.window?.makeKeyAndOrderFront(nil)
+            case .notExecutable, .missing:
+                refused.append(action)
+            }
+        }
+        NSApp.activate()
+        for action in refused { reportRefusedOpen(action) }
+    }
+
+    private func reportRefusedOpen(_ action: OpenedFile.Action) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch action {
+        case .notExecutable(let path):
+            let name = OpenedFile.displayName(for: path)
+            alert.messageText = "“\(name)” could not be run because it is not executable."
+            alert.informativeText = """
+                Only files with execute permission are run when opened. To allow it, \
+                run this in a terminal, then open the file again:
+
+                chmod +x \(FileDrop.shellEscape(path))
+                """
+        case .missing(let path):
+            alert.messageText = "“\(OpenedFile.displayName(for: path))” could not be found."
+            alert.informativeText = path
+        case .openShell, .run:
+            return
+        }
+        alert.runModal()
     }
 
     @objc private func newWindow(_ sender: Any?) {
