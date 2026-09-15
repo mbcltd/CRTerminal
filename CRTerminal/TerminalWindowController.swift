@@ -231,13 +231,44 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         addSession()
     }
 
+    /// How a new session's process starts when it isn't the default shell
+    /// in the inherited directory: an explicit cwd, and optionally a command
+    /// line the login shell runs instead of an interactive prompt (a script
+    /// opened from Finder — see `OpenedFile`).
+    struct SessionLaunch {
+        var workingDirectory: String?
+        var command: String?
+        var commandName: String?
+    }
+
+    /// Opens a session for a file Launch Services handed the app: a folder
+    /// gets a shell there; an executable runs in its own folder, and its
+    /// pane is held open with a completion banner when it exits. Refused
+    /// actions (`notExecutable`, `missing`) are the caller's to report.
+    @discardableResult
+    func addSession(opening action: OpenedFile.Action) -> SessionTab? {
+        switch action {
+        case .openShell(let directory):
+            return addSession(launch: SessionLaunch(workingDirectory: directory))
+        case .run(let path):
+            return addSession(launch: SessionLaunch(
+                workingDirectory: (path as NSString).deletingLastPathComponent,
+                command: OpenedFile.command(running: path),
+                commandName: OpenedFile.displayName(for: path)))
+        case .notExecutable, .missing:
+            return nil
+        }
+    }
+
     /// Spawns a session, optionally seeding it from a restored snapshot
     /// (session restoration R1): the saved grid/scrollback repaint as static
     /// text and a fresh shell runs below them, in the snapshot's cwd.
     @discardableResult
-    func addSession(restoringFrom snapshot: TerminalStateSnapshot? = nil) -> SessionTab? {
+    func addSession(restoringFrom snapshot: TerminalStateSnapshot? = nil,
+                    launch: SessionLaunch? = nil) -> SessionTab? {
         let tab = SessionTab(preset: currentPreset())
-        guard let pane = makePane(in: tab, restoringFrom: snapshot) else { return nil }
+        guard let pane = makePane(in: tab, restoringFrom: snapshot, launch: launch)
+        else { return nil }
         tab.container.frame = contentHost.bounds
         tab.container.autoresizingMask = [.width, .height]
         contentHost.addSubview(tab.container)
@@ -360,18 +391,20 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     private func makePane(
         in tab: SessionTab, restoringFrom snapshot: TerminalStateSnapshot? = nil,
-        sessionID: UUID? = nil
+        sessionID: UUID? = nil, launch: SessionLaunch? = nil
     ) -> TerminalView? {
         let session: TerminalSession
         do {
             session = try TerminalSession(
                 columns: 80, rows: 24,
                 shell: settings.shellPath,
-                // Restore in the saved directory; otherwise inherit the
-                // focused pane's cwd (new tab/split opens where you are), or
-                // the seed cwd handed to a fresh ⌘N window; fall back to the
-                // setting.
-                workingDirectory: snapshot?.workingDirectoryHint
+                command: launch?.command, commandName: launch?.commandName,
+                // An opened file names its directory; restore in the saved
+                // one; otherwise inherit the focused pane's cwd (new
+                // tab/split opens where you are), or the seed cwd handed to
+                // a fresh ⌘N window; fall back to the setting.
+                workingDirectory: launch?.workingDirectory
+                    ?? snapshot?.workingDirectoryHint
                     ?? focusedWorkingDirectory
                     ?? consumeInitialWorkingDirectory()
                     ?? settings.resolvedWorkingDirectory,
@@ -417,7 +450,23 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 scale: preset?.fontSizeScale ?? 1)
         }
         guard let session = pane.session else { return }
-        session.onExit = { [weak self, weak pane] _ in
+        session.onExit = { [weak self, weak pane] status in
+            guard let self, let pane else { return }
+            guard let session = pane.session, session.commandName != nil else {
+                close(pane: pane)
+                return
+            }
+            // A command session holds its output: print the outcome and
+            // wait for a keypress, as Terminal.app's "[Process completed]".
+            let state = session.snapshot
+            let banner = OpenedFile.completionBanner(
+                status: status, resetAlternateScreen: state.isAlternateScreen,
+                atLineStart: state.cursor.x == 0)
+            session.inject(Array(banner.utf8))
+            pane.closesOnNextKey = true
+            refreshSessionMetadata()
+        }
+        pane.onCloseRequested = { [weak self, weak pane] in
             guard let pane else { return }
             self?.close(pane: pane)
         }
@@ -884,9 +933,22 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     func displayTitle(for tab: SessionTab) -> String {
         if let custom = tab.customName, !custom.isEmpty { return custom }
         let session = tab.panes.first?.session
-        let shellName = session.flatMap { SessionInfo.processName(of: $0.shellProcessID) }
-            ?? (settings.shellPath as NSString?)?.lastPathComponent ?? "shell"
+        let shellName = session.map(rootProcessName) ?? configuredShellName
         return session?.snapshot.title ?? shellName
+    }
+
+    private var configuredShellName: String {
+        (settings.shellPath as NSString?)?.lastPathComponent ?? "shell"
+    }
+
+    /// Name of the process at the root of a session's PTY: the script a
+    /// command session was opened to run (its process image is the
+    /// interpreter, so libproc would say "bash"), else the live shell's
+    /// name, else the configured shell.
+    private func rootProcessName(of session: TerminalSession) -> String {
+        session.commandName
+            ?? SessionInfo.processName(of: session.shellProcessID)
+            ?? configuredShellName
     }
 
     /// Apply a user-chosen name to a session (empty/whitespace reverts to the
@@ -911,8 +973,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             let shellPID = session.shellProcessID
             let foreground = session.foregroundProcessGroup
             let isRunning = foreground > 0 && foreground != shellPID
-            let shellName = SessionInfo.processName(of: shellPID)
-                ?? (settings.shellPath as NSString?)?.lastPathComponent ?? "shell"
+            let shellName = rootProcessName(of: session)
             let automaticName = session.snapshot.title ?? shellName
             let title = displayTitle(for: tab)
             let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
@@ -924,6 +985,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 // foreground command with its directory's name instead.
                 let name = SessionInfo.processName(of: foreground) ?? "…"
                 metaLine = cwdName.map { "\(name) · \($0)" } ?? name
+            } else if let status = session.exitStatus {
+                // A held command session: its outcome, until a key closes it.
+                metaLine = TerminalSession.exitDescription(status: status)
             } else {
                 metaLine = cwdName ?? shellName
             }
@@ -976,7 +1040,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         let shellPID = session.shellProcessID
         let foreground = session.foregroundProcessGroup
         let isRunning = foreground > 0 && foreground != shellPID
-        let shellName = SessionInfo.processName(of: shellPID) ?? "shell"
+        let shellName = rootProcessName(of: session)
         let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
             ?? SessionInfo.workingDirectory(of: shellPID)
         let uptime = Self.format(uptime: Date().timeIntervalSince(tab.createdAt))

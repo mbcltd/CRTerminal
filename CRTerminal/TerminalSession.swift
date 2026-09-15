@@ -22,8 +22,19 @@ nonisolated final class TerminalSession: @unchecked Sendable {
 
     /// Called on the main queue, coalesced across PTY chunks.
     var onUpdate: (@MainActor () -> Void)?
-    /// Called on the main queue when the shell exits.
+    /// Called on the main queue when the shell exits, with the raw
+    /// `waitpid` status (see `exitDescription`).
     var onExit: (@MainActor (Int32) -> Void)?
+    /// Display name of the command this session was opened to run (a script
+    /// dropped on the Dock icon), or nil for a plain interactive shell. A
+    /// command session is *held* when its process exits — "[Process
+    /// completed]" is printed and the pane waits for a keypress — rather
+    /// than closed like a shell that was exited.
+    let commandName: String?
+    private let exitState = OSAllocatedUnfairLock<Int32?>(initialState: nil)
+    /// Raw `waitpid` status once the process has exited; nil while alive.
+    var exitStatus: Int32? { exitState.withLock { $0 } }
+    var hasExited: Bool { exitStatus != nil }
     /// Called on the main queue with a decoded OSC 52 clipboard payload.
     var onClipboard: (@MainActor (String) -> Void)?
     /// Called on the main queue with OSC 9/777 desktop notifications.
@@ -35,9 +46,11 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// "session restoration"). The PTY is sized to the restored grid so the
     /// shell's winsize matches what the user sees until the view reflows.
     init(columns: Int, rows: Int, shell: String? = nil,
+         command: String? = nil, commandName: String? = nil,
          workingDirectory: String? = nil, scrollbackLines: Int = 10_000,
          lightBackground: Bool = false,
          restoringFrom snapshot: TerminalStateSnapshot? = nil) throws {
+        self.commandName = command == nil ? nil : (commandName ?? command)
         var seeded = snapshot.map(Terminal.init(restoring:))
             ?? Terminal(columns: columns, rows: rows)
         seeded.scrollbackLimit = max(0, scrollbackLines)
@@ -45,16 +58,32 @@ nonisolated final class TerminalSession: @unchecked Sendable {
         let ptyRows = seeded.state.rows
         terminal = OSAllocatedUnfairLock(initialState: seeded)
         pty = try PTYSession(
-            columns: ptyColumns, rows: ptyRows, shell: shell,
+            columns: ptyColumns, rows: ptyRows, shell: shell, command: command,
             workingDirectory: workingDirectory, lightBackground: lightBackground)
         pty.onData = { [weak self] data in
             self?.ingest(data)
         }
         pty.onExit = { [weak self] status in
+            self?.exitState.withLock { $0 = status }
             DispatchQueue.main.async {
                 self?.onExit?(status)
             }
         }
+    }
+
+    /// Feeds bytes through the parser as if the PTY had produced them — for
+    /// the app's own in-surface messages (the "[Process completed]" banner).
+    func inject(_ bytes: [UInt8]) {
+        ingest(bytes)
+    }
+
+    /// Human-readable outcome of a raw `waitpid` status: "exit 0",
+    /// "exit 3", or "terminated by SIGTERM"-style for a signal death.
+    nonisolated static func exitDescription(status: Int32) -> String {
+        let signal = status & 0x7F
+        if signal == 0 { return "exit \((status >> 8) & 0xFF)" }
+        let name = String(cString: strsignal(signal)).lowercased()
+        return "killed by signal \(signal) (\(name))"
     }
 
     var snapshot: TerminalState {
@@ -82,6 +111,9 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// foreground group is the shell itself) or only an ignored multiplexer is
     /// running. Used to gate the close/quit confirmation.
     var runningProcessName: String? {
+        // A command session's process *is* the root of the PTY, so the
+        // foreground check below can't see it; it's running until it exits.
+        if let commandName { return hasExited ? nil : commandName }
         let foreground = foregroundProcessGroup
         guard foreground > 0, foreground != shellProcessID else { return nil }
         let name = SessionInfo.processName(of: foreground)

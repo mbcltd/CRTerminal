@@ -20,6 +20,10 @@
   down the arrow keys.
 - **Links.** ⌘-click a URL or file path to open it, or right-click (⌃-click)
   it for Open Link / Copy Link — plus Copy, Paste, Select All and Clear.
+- **Open from Finder.** Drop a folder on the Dock icon to open a shell there,
+  or drop a script (`.command`, `.sh`, any executable) to run it in its own
+  session, which stays open with the exit status until you press a key.
+  crterm is also offered under "Open With" for those files.
 - **Rebind anything.** Every app shortcut above is customisable — open Settings
   and record a new combination for it under *Keyboard shortcuts*.
 
