@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import QuartzCore
 import os
 
 /// Swift marks fork() unavailable ("use posix_spawn"), but posix_spawn cannot
@@ -28,6 +29,21 @@ nonisolated final class PTYSession: @unchecked Sendable {
     private var readerThread: Thread?
     private let exitSource: DispatchSourceProcess
     private let exited = OSAllocatedUnfairLock(initialState: false)
+
+    /// Traffic counters for the freeze watchdog.
+    struct IOStats {
+        var bytesRead: UInt64 = 0
+        var lastReadAt: CFTimeInterval?
+        /// Input accepted by `send` but not yet fully written to the master.
+        var queuedWriteBytes = 0
+        /// Since when the master has refused input (EAGAIN) with no
+        /// progress: the program isn't reading its tty, and everything
+        /// queued behind — ^C included — waits.
+        var writeBlockedSince: CFTimeInterval?
+        var readerThread: thread_t = 0
+    }
+    private let ioStats = OSAllocatedUnfairLock(initialState: IOStats())
+    var stats: IOStats { ioStats.withLock { $0 } }
 
     /// Called on the reader thread with each batch read from the PTY.
     var onData: (([UInt8]) -> Void)?
@@ -186,15 +202,33 @@ nonisolated final class PTYSession: @unchecked Sendable {
 
     func send(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
-        ioQueue.async { [masterFD] in
+        ioStats.withLock { $0.queuedWriteBytes += bytes.count }
+        ioQueue.async { [masterFD, ioStats] in
             var remaining = bytes[...]
+            var blocked = false
+            defer {
+                let wasBlocked = blocked
+                ioStats.withLock { stats in
+                    stats.queuedWriteBytes -= bytes.count
+                    if wasBlocked { stats.writeBlockedSince = nil }
+                }
+            }
             while !remaining.isEmpty {
                 let written = remaining.withUnsafeBytes {
                     write(masterFD, $0.baseAddress, $0.count)
                 }
                 if written > 0 {
                     remaining = remaining.dropFirst(written)
+                    if blocked {
+                        blocked = false
+                        ioStats.withLock { $0.writeBlockedSince = nil }
+                    }
                 } else if errno == EAGAIN {
+                    if !blocked {
+                        blocked = true
+                        let now = CACurrentMediaTime()
+                        ioStats.withLock { $0.writeBlockedSince = now }
+                    }
                     usleep(1000)
                 } else {
                     return
@@ -233,6 +267,8 @@ nonisolated final class PTYSession: @unchecked Sendable {
     /// delivering ~256 KiB batches — syscall-bound, no queue wakeups, with
     /// the kernel TTY buffer applying backpressure to the writer.
     private func readLoop() {
+        let thread = pthread_mach_thread_np(pthread_self())
+        ioStats.withLock { $0.readerThread = thread }
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         var batch: [UInt8] = []
         let batchLimit = 256 * 1024
@@ -257,6 +293,12 @@ nonisolated final class PTYSession: @unchecked Sendable {
                 }
             }
             if !batch.isEmpty {
+                let now = CACurrentMediaTime()
+                let count = UInt64(batch.count)
+                ioStats.withLock { stats in
+                    stats.bytesRead += count
+                    stats.lastReadAt = now
+                }
                 onData?(batch)
             }
             if sawEOF || fds.revents & Int16(POLLHUP | POLLNVAL | POLLERR) != 0 {

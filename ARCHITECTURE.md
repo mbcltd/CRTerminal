@@ -236,6 +236,13 @@ tick it takes a snapshot if damage exists (or an effect is animating) and draws;
 otherwise it returns immediately and the display link is paused after a grace period.
 Idle terminal = zero CPU, zero GPU.
 
+Pausing races waking: the main thread unpauses the link when output arrives, while
+the render thread pauses it after deciding (on an older snapshot) that nothing
+changed. A wake landing between that decision and the pause used to be swallowed,
+leaving fresh output undrawn until the next keystroke — a pane that looked frozen.
+Every wake (poke, view state, preset, reveal) now bumps a counter, and the render
+thread pauses, re-reads the counter, and unpauses itself if a wake overtook it.
+
 Keystroke fast path: `NSEvent` → encode → write to PTY happens synchronously on the
 main thread (writes are non-blocking), so added input latency is bounded by parse +
 one frame. Target: keypress-to-photon within one display refresh of the theoretical
@@ -405,6 +412,43 @@ the same pipeline at thumbnail size).
 - **Shell integration** — optional shipped shell snippets emit prompt marks
   (OSC 133), enabling jump-to-previous-prompt, command status ticks in the scrollbar
   region, and smarter selection.
+
+## Freeze diagnostics
+
+A terminal can look frozen in several distinct ways, and a user report ("the tabs
+freeze") can't tell them apart. `FreezeWatchdog` checks for each of them once a
+second on its own utility queue, reading lock-guarded health snapshots that never
+wait on the terminal lock:
+
+| Condition | Signal | Evidence captured |
+|---|---|---|
+| Main thread unresponsive | a ping posted to the main queue unanswered for 2 s | main-thread backtrace |
+| Render thread stuck | a draw in progress for 2 s (encode lock, CoreText/fontd, GPU) | render-thread backtrace |
+| Output not drawn | on-screen pane whose display generation is ahead of the last drawn one, with no frame for 2 s | link paused/running, frame counts, generations |
+| Parser stuck | a PTY batch holding the terminal lock for 2 s | reader-thread backtrace |
+| Input not read | PTY master refusing writes (EAGAIN) with no progress for 5 s | bytes queued, foreground process |
+
+Backtraces come from in-process sampling (`ThreadBacktrace`: `thread_suspend`, walk
+the arm64 frame-pointer chain into a preallocated buffer — nothing may allocate or
+lock while the target is suspended — resume, then `dladdr` + Swift demangling).
+Frames carry image load address + offset so stripped release frames can be
+symbolicated with `atos` against the archived dSYM; the report header records the
+executable's LC_UUID to match it. Sampling our own task needs no debugger
+entitlement, unlike `sample`, which a hardened-runtime build refuses.
+
+Incidents go to the unified log (subsystem `mbcltd.crterminal`, category `freeze`)
+at error level so they persist, with a notice when they clear; parser batches that
+hold the lock ≥ 250 ms, main-thread pings ≥ 250 ms and git probes ≥ 2 s are logged
+too. On an incident the watchdog also writes a full report (every pane's
+render/PTY/parser health plus the recent events) to `~/Library/Logs/crterm`, at
+most one every five minutes, keeping the newest 20. **Help ▸ Save Diagnostic
+Report** writes one on demand — adding the window/session layout only the main
+thread knows — and reveals it in Finder. Tests and probes (`CRT_CLEAN_LAUNCH`,
+XCTest) write to a scratch directory instead.
+
+To collect evidence from a user: the report files, plus
+`log show --last 1d --predicate 'subsystem == "mbcltd.crterminal"'`. The cost is one
+1 Hz timer on a utility queue and one main-queue ping per second.
 
 ## Testing strategy
 

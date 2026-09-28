@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             updater.automaticallyChecksForUpdates = false
             updater.automaticallyDownloadsUpdates = false
         }
+        FreezeWatchdog.shared.start()
         NSApp.mainMenu = makeMainMenu()
         NotificationPoster.shared.activate()
         SettingsStore.shared.onChange = { [weak self] in
@@ -1299,6 +1300,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         mainMenu.addItem(windowMenuItem)
         NSApp.windowsMenu = windowMenu
 
+        let helpMenu = NSMenu(title: "Help")
+        let diagnostics = helpMenu.addItem(
+            withTitle: "Save Diagnostic Report",
+            action: #selector(saveDiagnosticReport(_:)), keyEquivalent: "")
+        diagnostics.target = self
+        let helpMenuItem = NSMenuItem()
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
+        NSApp.helpMenu = helpMenu
+
         return mainMenu
+    }
+
+    /// Help ▸ Save Diagnostic Report: the freeze watchdog's pane health and
+    /// recent events, plus the window/session layout only the main thread
+    /// knows, written beside any automatic freeze reports and revealed in
+    /// Finder so it can be attached to a bug report.
+    @objc private func saveDiagnosticReport(_ sender: Any?) {
+        var sections = ["", "Windows (\(controllers.count)):"]
+        for (windowIndex, controller) in controllers.enumerated() {
+            sections.append("  Window \(windowIndex + 1)")
+            for (index, tab) in controller.tabs.enumerated() {
+                let pids = tab.panes.compactMap { $0.session?.shellProcessID }
+                    .map(String.init).joined(separator: ", ")
+                let active = index == controller.activeTabIndex ? " (active)" : ""
+                sections.append("    Session \(index + 1)\(active): "
+                    + "\"\(controller.displayTitle(for: tab))\", shell pid \(pids)")
+            }
+        }
+        guard let url = FreezeWatchdog.shared.writeReport(
+            prefix: "report", extraSections: sections) else {
+            NSSound.beep()
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }

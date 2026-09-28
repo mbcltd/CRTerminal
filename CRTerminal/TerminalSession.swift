@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 import TerminalCore
 import os
 
@@ -19,6 +20,21 @@ nonisolated final class TerminalSession: @unchecked Sendable {
     /// Matches the ~150 ms cap xterm/contour use, so a buggy program can't
     /// freeze the display indefinitely.
     private static let synchronizedOutputTimeout: TimeInterval = 0.15
+
+    /// Parser timing for the freeze watchdog: when the batch being parsed
+    /// took the terminal lock (nil when idle — a stale value means the
+    /// parser is stuck and every snapshot reader is waiting on it), the
+    /// slowest batch so far, and how often the ?2026 safety timeout had to
+    /// force a frame out.
+    private struct ParseStats {
+        var feedStartedAt: CFTimeInterval?
+        var slowestFeed: CFTimeInterval = 0
+        var synchronizedOutputExpiries = 0
+    }
+    private let parseStats = OSAllocatedUnfairLock(initialState: ParseStats())
+    /// A batch that holds the terminal lock this long stalls the main
+    /// thread's snapshot reads visibly; worth a log line.
+    private static let slowFeedThreshold: CFTimeInterval = 0.25
 
     /// Called on the main queue, coalesced across PTY chunks.
     var onUpdate: (@MainActor () -> Void)?
@@ -202,12 +218,23 @@ nonisolated final class TerminalSession: @unchecked Sendable {
             handle.write(Data(data))
             try? handle.close()
         }
+        let feedStart = CACurrentMediaTime()
+        parseStats.withLock { $0.feedStartedAt = feedStart }
         let (responses, clipboard, notifications, syncActive) = terminal.withLock { terminal in
             data.withUnsafeBufferPointer { raw in
                 terminal.feed(raw)
             }
             return (terminal.drainResponses(), terminal.drainClipboard(),
                     terminal.drainNotifications(), terminal.isSynchronizedOutputActive)
+        }
+        let feedTime = CACurrentMediaTime() - feedStart
+        parseStats.withLock { stats in
+            stats.feedStartedAt = nil
+            stats.slowestFeed = max(stats.slowestFeed, feedTime)
+        }
+        if feedTime >= Self.slowFeedThreshold {
+            FreezeWatchdog.log.error(
+                "slow parse: \(data.count) bytes held the terminal lock for \(Int(feedTime * 1000)) ms (shell pid \(self.shellProcessID))")
         }
         updateSynchronizedOutputTimeout(active: syncActive)
         if !responses.isEmpty {
@@ -258,7 +285,55 @@ nonisolated final class TerminalSession: @unchecked Sendable {
             terminal.expireSynchronizedOutput()
             return true
         }
-        if flushed { scheduleUpdate() }
+        if flushed {
+            parseStats.withLock { $0.synchronizedOutputExpiries += 1 }
+            scheduleUpdate()
+        }
+    }
+
+    /// A point-in-time view of this session for the freeze watchdog. Safe
+    /// from any thread, and never waits on the terminal lock: a parser stuck
+    /// holding it must not wedge the watchdog too (`terminal` is nil then).
+    struct Health {
+        struct Screen {
+            /// The generation the renderer should be showing (the frozen
+            /// frame's while ?2026 is buffering).
+            var displayGeneration: UInt64
+            var columns: Int
+            var rows: Int
+            var alternateScreen: Bool
+            var synchronizedOutput: Bool
+            var scrollbackLines: Int
+        }
+        var shellProcessID: pid_t
+        var foregroundProcessGroup: pid_t
+        var commandName: String?
+        var exitStatus: Int32?
+        var io: PTYSession.IOStats
+        var feedStartedAt: CFTimeInterval?
+        var slowestFeed: CFTimeInterval
+        var synchronizedOutputExpiries: Int
+        var terminal: Screen?
+    }
+
+    var health: Health {
+        let stats = parseStats.withLock { $0 }
+        let screen = terminal.withLockIfAvailable { terminal in
+            let state = terminal.state
+            return Health.Screen(
+                displayGeneration: state.displaySnapshot.generation,
+                columns: state.columns, rows: state.rows,
+                alternateScreen: state.isAlternateScreen,
+                synchronizedOutput: terminal.isSynchronizedOutputActive,
+                scrollbackLines: state.scrollback.count)
+        }
+        return Health(
+            shellProcessID: shellProcessID,
+            foregroundProcessGroup: foregroundProcessGroup,
+            commandName: commandName, exitStatus: exitStatus, io: pty.stats,
+            feedStartedAt: stats.feedStartedAt, slowestFeed: stats.slowestFeed,
+            synchronizedOutputExpiries: stats.synchronizedOutputExpiries,
+            terminal: screen)
     }
 
     private func scheduleUpdate() {

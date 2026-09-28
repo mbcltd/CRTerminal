@@ -47,12 +47,25 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         /// This pane's CRT preset (sessions theme independently); nil
         /// falls back to the shared renderer's preset.
         var preset: CRTPreset?
+        /// Bumped by every request for frames (poke, view state, preset,
+        /// reveal); lets the render thread pause without losing a wake that
+        /// raced its idle decision (see `pauseUnlessWoken`).
+        var wakeRequests: UInt64 = 0
+        /// Whether the window is on screen (not minimized, hidden or fully
+        /// covered); the freeze watchdog expects no frames otherwise.
+        var windowVisible = true
+        // Freeze-watchdog bookkeeping (see `Health`).
+        var lastDrawAt: CFTimeInterval?
+        var lastDrawnGeneration: UInt64?
+        var drawStartedAt: CFTimeInterval?
+        var renderThread: thread_t = 0
     }
 
     private let link: CAMetalDisplayLink
     private let thread: Thread
     private let renderer: TerminalRenderer
     private weak var session: TerminalSession?
+    private let createdAt = CACurrentMediaTime()
     private let shared = OSAllocatedUnfairLock(initialState: Shared())
     /// Per-pane effect surfaces + phosphor clocks (renderer is shared
     /// across the window's panes); render-thread only.
@@ -78,7 +91,9 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
             minimum: 60, maximum: 120, preferred: 120)
 
         let link = link
+        let shared = shared
         thread = Thread {
+            shared.withLock { $0.renderThread = pthread_mach_thread_np(pthread_self()) }
             link.add(to: RunLoop.current, forMode: .default)
             while !Thread.current.isCancelled {
                 RunLoop.current.run(mode: .default, before: .distantFuture)
@@ -89,6 +104,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         super.init()
         link.delegate = self
         thread.start()
+        FreezeWatchdog.shared.register(self)
     }
 
     var drawCount: Int {
@@ -101,12 +117,9 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     /// Something may have changed; make sure frames are being produced.
     func poke(force: Bool = false) {
-        let blocked = shared.withLock { shared in
+        wake { shared in
             if force { shared.poked = true }
-            return shared.invalidated || shared.occluded
         }
-        guard !blocked else { return }
-        link.isPaused = false
     }
 
     func setViewState(
@@ -114,43 +127,105 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         hoveredLink: Selection? = nil, searchMatches: [Selection] = [],
         searchGeneration: Int = 0, currentMatch: Selection? = nil
     ) {
-        let blocked = shared.withLock { shared in
+        wake { shared in
             shared.viewState = ViewState(
                 scrollOffset: scrollOffset, selection: selection,
                 markedText: markedText, hoveredLink: hoveredLink,
                 searchMatches: searchMatches, searchGeneration: searchGeneration,
                 currentMatch: currentMatch)
-            return shared.invalidated || shared.occluded
         }
-        guard !blocked else { return }
-        link.isPaused = false
     }
 
     /// The pane's preset changed (theme switch on its session).
     func setPreset(_ preset: CRTPreset) {
-        let blocked = shared.withLock { shared in
+        wake { shared in
             shared.preset = preset
             shared.poked = true
-            return shared.invalidated || shared.occluded
         }
-        guard !blocked else { return }
-        link.isPaused = false
     }
 
     /// Tab switching: an occluded pane's link pauses immediately and stays
     /// paused through pokes; revealing forces a redraw of whatever arrived.
     func setOccluded(_ occluded: Bool) {
-        let wake = shared.withLock { shared in
-            shared.occluded = occluded
-            if !occluded { shared.poked = true }
-            return !occluded && !shared.invalidated
-        }
         if occluded {
+            shared.withLock { $0.occluded = true }
             link.isPaused = true
-        } else if wake {
-            link.isPaused = false
+        } else {
+            wake { shared in
+                shared.occluded = false
+                shared.poked = true
+            }
         }
     }
+
+    /// Window occlusion (minimized, hidden, covered): informational, for
+    /// the freeze watchdog — the display link throttles itself.
+    func setWindowVisible(_ visible: Bool) {
+        shared.withLock { $0.windowVisible = visible }
+    }
+
+    /// Applies `update` and unpauses the link unless the pane is hidden or
+    /// torn down. Every wake is counted, so a pause decided on older state
+    /// can tell it was overtaken.
+    private func wake(_ update: (inout Shared) -> Void) {
+        let blocked = shared.withLock { shared in
+            update(&shared)
+            shared.wakeRequests &+= 1
+            return shared.invalidated || shared.occluded
+        }
+        guard !blocked else { return }
+        link.isPaused = false
+    }
+
+    /// Pauses the link unless a wake arrived after `wakeRequests` was read
+    /// at the top of this callback. Without the re-check a poke landing
+    /// between the callback's snapshot and `isPaused = true` was lost: its
+    /// unpause hit a running link, then our pause overrode it, and output
+    /// that had just arrived stayed undrawn until the next keystroke or
+    /// output — a pane that looked frozen. Any later wake either shows up
+    /// here or unpauses after this pause.
+    private func pauseUnlessWoken(since wakeRequests: UInt64) {
+        link.isPaused = true
+        let woken = shared.withLock { shared in
+            shared.wakeRequests != wakeRequests
+                && !shared.invalidated && !shared.occluded
+        }
+        if woken { link.isPaused = false }
+    }
+
+    /// A point-in-time view of this pane's rendering for the freeze
+    /// watchdog. Safe from any thread.
+    struct Health {
+        var occluded: Bool
+        var invalidated: Bool
+        var windowVisible: Bool
+        var linkPaused: Bool
+        var drawCount: Int
+        var createdAt: CFTimeInterval
+        var lastDrawAt: CFTimeInterval?
+        var lastDrawnGeneration: UInt64?
+        /// Set while a draw is in progress; a stale value means the render
+        /// thread is stuck inside the renderer.
+        var drawStartedAt: CFTimeInterval?
+        var renderThread: thread_t
+    }
+
+    var health: Health {
+        let linkPaused = link.isPaused
+        return shared.withLock { shared in
+            Health(
+                occluded: shared.occluded, invalidated: shared.invalidated,
+                windowVisible: shared.windowVisible, linkPaused: linkPaused,
+                drawCount: shared.drawCount, createdAt: createdAt,
+                lastDrawAt: shared.lastDrawAt,
+                lastDrawnGeneration: shared.lastDrawnGeneration,
+                drawStartedAt: shared.drawStartedAt,
+                renderThread: shared.renderThread)
+        }
+    }
+
+    /// The session this pane draws (weak; nil once it's gone).
+    var terminalSession: TerminalSession? { session }
 
     /// Tear down on the link's own thread: invalidating from another
     /// thread races an in-flight callback against the layer's dealloc
@@ -174,12 +249,17 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
         guard let session else { return }
-        let (viewState, poked, preset, blocked) = shared.withLock { shared in
+        let (viewState, poked, preset, blocked, wakeRequests) = shared.withLock { shared in
             defer { shared.poked = false }
             return (shared.viewState, shared.poked, shared.preset,
-                    shared.invalidated || shared.occluded)
+                    shared.invalidated || shared.occluded, shared.wakeRequests)
         }
-        guard !blocked else { return }
+        // A hidden pane's link can still be running (paused only after an
+        // in-flight wake); stop it rather than spin through empty frames.
+        guard !blocked else {
+            pauseUnlessWoken(since: wakeRequests)
+            return
+        }
         let state = session.snapshot
         let now = CACurrentMediaTime()
         let contentChanged = poked
@@ -193,7 +273,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         if !contentChanged && !animating {
             idleFrames += 1
             if idleFrames >= Self.pauseAfterIdleFrames {
-                link.isPaused = true
+                pauseUnlessWoken(since: wakeRequests)
             }
             return
         }
@@ -201,6 +281,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         lastGeneration = state.generation
         lastViewState = viewState
         updateThrottle(animatingOnly: animating && !contentChanged, now: now)
+        shared.withLock { $0.drawStartedAt = now }
         renderer.draw(
             state,
             scrollOffset: viewState.scrollOffset,
@@ -214,7 +295,13 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
             preset: preset,
             context: context,
             into: update.drawable)
-        shared.withLock { $0.drawCount += 1 }
+        let generation = state.generation
+        shared.withLock { shared in
+            shared.drawCount += 1
+            shared.drawStartedAt = nil
+            shared.lastDrawAt = now
+            shared.lastDrawnGeneration = generation
+        }
     }
 
     /// Effects must not show up in Activity Monitor: when frames are being
