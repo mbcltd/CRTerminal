@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// Sidebar/hover-card metadata probes. The cheap ones (cwd, process name)
 /// are kernel calls safe to poll at 1 Hz; the git probe spawns a process
@@ -105,7 +106,11 @@ enum SessionInfo {
     }
 
     /// Git branch + dirty count for a directory, async off the main thread.
-    /// Results are cached briefly so hover jitter doesn't fork git storms.
+    /// Results are cached briefly so hover jitter doesn't fork git storms,
+    /// and at most one git runs per directory: on a big repo or a slow disk
+    /// `git status` outlasts the 1 Hz sidebar tick, and each tick for each
+    /// tab there used to fork another, piling up processes and blocked
+    /// threads until the machine crawled.
     @MainActor
     static func gitStatus(
         in directory: String, completion: @escaping @MainActor (GitStatus?) -> Void
@@ -115,16 +120,23 @@ enum SessionInfo {
             completion(status)
             return
         }
+        guard gitRequests.join(directory, completion) else { return }
         DispatchQueue.global(qos: .userInitiated).async {
+            let started = Date()
             let status = runGitStatus(in: directory)
+            let elapsed = Date().timeIntervalSince(started)
+            if elapsed >= 2 {
+                FreezeWatchdog.log.notice("git status took \(Int(elapsed * 1000)) ms")
+            }
             DispatchQueue.main.async {
                 gitCache[directory] = (Date(), status)
-                completion(status)
+                gitRequests.finish(directory, with: status)
             }
         }
     }
 
     @MainActor private static var gitCache: [String: (Date, GitStatus?)] = [:]
+    @MainActor private static let gitRequests = InFlightRequests<String, GitStatus?>()
 
     nonisolated private static func runGitStatus(in directory: String) -> GitStatus? {
         let process = Process()
@@ -154,5 +166,26 @@ enum SessionInfo {
             branch = String(branch[..<space])
         }
         return GitStatus(branch: branch, dirtyCount: lines.count)
+    }
+}
+
+/// Coalesces requests for the same key onto one in-flight job: the first
+/// caller starts the work, later callers just wait for its result.
+final class InFlightRequests<Key: Hashable, Value> {
+    private var waiters: [Key: [(Value) -> Void]] = [:]
+
+    /// Queues `completion`; true when the caller should start the job
+    /// (nothing was in flight for `key`).
+    func join(_ key: Key, _ completion: @escaping (Value) -> Void) -> Bool {
+        let first = waiters[key] == nil
+        waiters[key, default: []].append(completion)
+        return first
+    }
+
+    /// Delivers `value` to everyone waiting on `key`.
+    func finish(_ key: Key, with value: Value) {
+        for completion in waiters.removeValue(forKey: key) ?? [] {
+            completion(value)
+        }
     }
 }

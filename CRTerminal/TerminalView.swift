@@ -372,6 +372,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuDelegate {
         updateLayerGeometry()
         renderLoop = RenderLoop(layer: metalLayer, renderer: renderer, session: session)
         renderLoop?.setPreset(preset)
+        reportWindowVisibility()
     }
 
     /// Standalone views (no controller) still render.
@@ -491,6 +492,18 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.sendFocusReport(focused: false) }
         })
+        keyWindowObservers.append(center.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reportWindowVisibility() }
+        })
+        reportWindowVisibility()
+    }
+
+    /// Tells the render loop whether the window is on screen, so the freeze
+    /// watchdog doesn't expect frames from a minimized or covered window.
+    private func reportWindowVisibility() {
+        renderLoop?.setWindowVisible(window?.occlusionState.contains(.visible) ?? false)
     }
 
     private func sendFocusReport(focused: Bool) {
