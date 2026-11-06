@@ -157,6 +157,16 @@ else
     || { echo "  ✗ not signed with a Developer ID Application identity" >&2; fail=1; }
   grep -Eq 'flags=.*runtime' <<<"$desc" \
     || { echo "  ✗ hardened runtime flag missing" >&2; fail=1; }
+  # Microphone access for programs running in a session (Claude Code's /voice).
+  # macOS attributes their mic use to crterm, and without both of these they
+  # silently record nothing. Notarisation accepts the app either way.
+  mic=$(codesign --display --entitlements - --xml "$MOUNTED_APP" 2>/dev/null \
+    | plutil -extract 'com\.apple\.security\.device\.audio-input' raw -o - - 2>/dev/null || true)
+  [ "$mic" = true ] \
+    || { echo "  ✗ microphone entitlement (audio-input) missing" >&2; fail=1; }
+  /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' \
+    "$MOUNTED_APP/Contents/Info.plist" >/dev/null 2>&1 \
+    || { echo "  ✗ NSMicrophoneUsageDescription missing from Info.plist" >&2; fail=1; }
 fi
 hdiutil detach "$MOUNT" >/dev/null 2>&1 || true
 rmdir "$MOUNT" 2>/dev/null || true
