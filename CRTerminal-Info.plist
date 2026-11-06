@@ -42,6 +42,13 @@
 			</array>
 		</dict>
 	</array>
+	<!-- crterm records nothing itself, but macOS attributes the microphone use of
+	     anything running in a session (Claude Code's /voice) to crterm. Without
+	     this string and the audio-input entitlement (the build setting
+	     ENABLE_RESOURCE_ACCESS_AUDIO_INPUT) those programs capture silence, with
+	     no prompt to allow. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>A program running in crterm would like to access the microphone.</string>
 	<key>SUFeedURL</key>
 	<string>https://github.com/mbcltd/CRTerminal/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>

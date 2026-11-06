@@ -24,6 +24,11 @@
   or drop a script (`.command`, `.sh`, any executable) to run it in its own
   session, which stays open with the exit status until you press a key.
   crterm is also offered under "Open With" for those files.
+- **Voice dictation.** Claude Code's `/voice` works here. macOS asks for
+  microphone access the first time a program in crterm needs it, and allowing
+  it covers every program you run in crterm; crterm itself records nothing. If
+  you denied it, run `tccutil reset Microphone mbcltd.CRTerminal` and restart
+  crterm to be asked again.
 - **Rebind anything.** Every app shortcut above is customisable — open Settings
   and record a new combination for it under *Keyboard shortcuts*.
 
