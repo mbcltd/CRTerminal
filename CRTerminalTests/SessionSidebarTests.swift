@@ -146,6 +146,33 @@ struct SidebarThemeTests {
         }
         #expect(cwd == "/private/tmp")
     }
+
+    /// The sidebar's one-pass probe (run off the main thread) of an idle
+    /// shell: nothing in the foreground but the shell, its name and cwd.
+    @Test func processProbeDescribesAnIdleShell() throws {
+        let session = try TerminalSession(
+            columns: 80, rows: 24, workingDirectory: "/private/tmp")
+        defer { session.terminate() }
+        var facts = SessionInfo.processes(of: session)
+        for _ in 0..<500 where facts.cwd != "/private/tmp" {
+            usleep(10_000)
+            facts = SessionInfo.processes(of: session)
+        }
+        #expect(facts.shell == session.shellProcessID)
+        #expect(facts.foreground == session.shellProcessID)
+        #expect(!facts.isRunning)
+        #expect(facts.foregroundName == nil)
+        #expect(facts.shellName?.isEmpty == false)
+        #expect(facts.cwd == "/private/tmp")
+    }
+
+    @Test func aForegroundGroupOtherThanTheShellIsRunning() {
+        let idle = SessionInfo.Processes(shell: 100, foreground: 100)
+        #expect(!idle.isRunning)
+        #expect(SessionInfo.Processes(shell: 100, foreground: 250).isRunning)
+        // tcgetpgrp fails (-1) once the PTY has gone.
+        #expect(!SessionInfo.Processes(shell: 100, foreground: -1).isRunning)
+    }
 }
 
 struct SessionSidebarViewTests {

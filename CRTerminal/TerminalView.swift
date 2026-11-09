@@ -372,6 +372,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuDelegate {
         updateLayerGeometry()
         renderLoop = RenderLoop(layer: metalLayer, renderer: renderer, session: session)
         renderLoop?.setPreset(preset)
+        if isOccluded { renderLoop?.setOccluded(true) }
         reportWindowVisibility()
     }
 
@@ -383,14 +384,32 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuDelegate {
     }
 
     /// Hidden tabs must not produce frames; revealing redraws whatever
-    /// arrived while occluded.
+    /// arrived while occluded. Remembered so a render loop built later
+    /// starts out hidden too.
     func setOccluded(_ occluded: Bool) {
+        isOccluded = occluded
         renderLoop?.setOccluded(occluded)
     }
 
-    /// Settings font changed: drop the renderer and pick up the new shared
-    /// one from the provider.
+    private var isOccluded = false
+
+    /// The font, face or backing scale changed, or the pane joined another
+    /// window: pick up the renderer the provider now hands out. A live render
+    /// loop keeps its display link and swaps renderers in place — rebuilding
+    /// it left the layer with two links at once (see `RenderLoop.setRenderer`)
+    /// and the new loop running in a hidden tab.
     func resetRenderer() {
+        if let renderLoop, window != nil, let metalLayer,
+           let renderer = rendererProvider?() ?? Self.makeFallbackRenderer(for: window) {
+            self.renderer = renderer
+            metalLayer.device = renderer.device
+            renderLoop.setRenderer(renderer)
+            updateGridSize()
+            updateLayerGeometry()
+            return
+        }
+        // Nothing to keep (or nowhere to draw yet): build from scratch, as
+        // the first move into a window does.
         renderLoop?.invalidate()
         renderLoop = nil
         renderer = nil

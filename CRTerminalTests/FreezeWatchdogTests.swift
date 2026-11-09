@@ -53,7 +53,8 @@ struct UndrawnOutputTests {
     ) -> RenderLoop.Health {
         RenderLoop.Health(
             occluded: occluded, invalidated: false, windowVisible: windowVisible,
-            linkPaused: true, drawCount: 1, createdAt: 50, lastDrawAt: lastDrawAt,
+            linkPaused: true, drawCount: 1, createdAt: 50, lastCallbackAt: lastDrawAt,
+            lastDrawAt: lastDrawAt,
             lastDrawnGeneration: lastDrawnGeneration, drawStartedAt: nil, renderThread: 0)
     }
 

@@ -55,6 +55,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         /// covered); the freeze watchdog expects no frames otherwise.
         var windowVisible = true
         // Freeze-watchdog bookkeeping (see `Health`).
+        var lastCallbackAt: CFTimeInterval?
         var lastDrawAt: CFTimeInterval?
         var lastDrawnGeneration: UInt64?
         var drawStartedAt: CFTimeInterval?
@@ -63,15 +64,18 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     private let link: CAMetalDisplayLink
     private let thread: Thread
-    private let renderer: TerminalRenderer
     private weak var session: TerminalSession?
     private let createdAt = CACurrentMediaTime()
     private let shared = OSAllocatedUnfairLock(initialState: Shared())
-    /// Per-pane effect surfaces + phosphor clocks (renderer is shared
-    /// across the window's panes); render-thread only.
-    private let context = SurfaceContext()
+    /// A replacement renderer handed over by `setRenderer`, picked up by the
+    /// next callback (renderers aren't Sendable, so it stays out of `Shared`).
+    private let pendingRenderer = OSAllocatedUnfairLock<TerminalRenderer?>(uncheckedState: nil)
 
     // Render-thread-only state.
+    private var renderer: TerminalRenderer
+    /// Per-pane effect surfaces + phosphor clocks (renderer is shared
+    /// across the window's panes).
+    private var context = SurfaceContext()
     private var lastGeneration: UInt64?
     private var lastViewState = ViewState()
     private var idleFrames = 0
@@ -134,6 +138,19 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
                 searchMatches: searchMatches, searchGeneration: searchGeneration,
                 currentMatch: currentMatch)
         }
+    }
+
+    /// Draws with `renderer` from the next frame on (font, face or backing
+    /// scale changed, or the pane moved windows), keeping this display link.
+    /// Rebuilding the loop instead put a second CAMetalDisplayLink on the
+    /// layer while the old one was still being torn down on its thread, which
+    /// leaves the layer's callbacks degraded for good (half rate on a healthy
+    /// display; every pane a freeze report caught silent — link running, no
+    /// frame for hours — had been rebuilt this way, mid display change), and
+    /// the new loop forgot its tab was hidden.
+    func setRenderer(_ renderer: TerminalRenderer) {
+        pendingRenderer.withLockUnchecked { $0 = renderer }
+        wake { $0.poked = true }
     }
 
     /// The pane's preset changed (theme switch on its session).
@@ -202,6 +219,9 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
         var linkPaused: Bool
         var drawCount: Int
         var createdAt: CFTimeInterval
+        /// The link's last callback, drawn or not: tells a link that has
+        /// gone silent from one that fires but finds nothing to draw.
+        var lastCallbackAt: CFTimeInterval?
         var lastDrawAt: CFTimeInterval?
         var lastDrawnGeneration: UInt64?
         /// Set while a draw is in progress; a stale value means the render
@@ -217,6 +237,7 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
                 occluded: shared.occluded, invalidated: shared.invalidated,
                 windowVisible: shared.windowVisible, linkPaused: linkPaused,
                 drawCount: shared.drawCount, createdAt: createdAt,
+                lastCallbackAt: shared.lastCallbackAt,
                 lastDrawAt: shared.lastDrawAt,
                 lastDrawnGeneration: shared.lastDrawnGeneration,
                 drawStartedAt: shared.drawStartedAt,
@@ -249,8 +270,10 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
 
     func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
         guard let session else { return }
+        let now = CACurrentMediaTime()
         let (viewState, poked, preset, blocked, wakeRequests) = shared.withLock { shared in
             defer { shared.poked = false }
+            shared.lastCallbackAt = now
             return (shared.viewState, shared.poked, shared.preset,
                     shared.invalidated || shared.occluded, shared.wakeRequests)
         }
@@ -260,8 +283,16 @@ nonisolated final class RenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unche
             pauseUnlessWoken(since: wakeRequests)
             return
         }
+        if let replacement = pendingRenderer.withLockUnchecked({ pending in
+            defer { pending = nil }
+            return pending
+        }) {
+            // Effect surfaces and phosphor history belong to the old cell
+            // geometry; start them over, as a fresh pane would.
+            renderer = replacement
+            context = SurfaceContext()
+        }
         let state = session.snapshot
-        let now = CACurrentMediaTime()
         let contentChanged = poked
             || state.generation != lastGeneration
             || viewState != lastViewState

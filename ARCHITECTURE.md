@@ -243,6 +243,17 @@ leaving fresh output undrawn until the next keystroke — a pane that looked fro
 Every wake (poke, view state, preset, reveal) now bumps a counter, and the render
 thread pauses, re-reads the counter, and unpauses itself if a wake overtook it.
 
+A pane keeps one `CAMetalDisplayLink` for its whole life. When its renderer changes
+(font, face or backing scale, or the pane moving windows) the render loop swaps the
+renderer in place (`RenderLoop.setRenderer`; the render thread picks it up on its
+next callback and starts a fresh `SurfaceContext`). Rebuilding the loop instead put
+a second link on the layer while the first was still being torn down on its
+thread. Measured on a single display, that leaves the layer's callbacks at half
+rate for good. In a field report, every pane silent for hours (link running, no
+frame, output piling up) had been rebuilt that way during a display change. The
+rebuilt loop also started unoccluded in a hidden tab. A link follows its layer
+across windows on its own (measured), so nothing needs a new one.
+
 Keystroke fast path: `NSEvent` → encode → write to PTY happens synchronously on the
 main thread (writes are non-blocking), so added input latency is bounded by parse +
 one frame. Target: keypress-to-photon within one display refresh of the theoretical
@@ -348,7 +359,9 @@ the design space:
   thick burgundy bottom warning stripe; effects off
 
 The settings UI renders presets as a gallery with live previews (each preview is just
-the same pipeline at thumbnail size).
+the same pipeline at thumbnail size). Previews render synchronously on the main
+thread, so only presets that change over time (shaking text, noise/hum bar/jitter)
+re-render on the gallery's 5 Hz timeline. The rest are rendered once and cached.
 
 ---
 
@@ -368,8 +381,11 @@ the same pipeline at thumbnail size).
   running pulse (foreground pgid ≠ shell pid via `tcgetpgrp`), cwd/process meta
   line, git dirty badge — plus a hover detail card per row (path, branch + dirty
   count, status/uptime, last exit code from OSC 133 marks, process · pid, and
-  focus/⌘N-jump hints). Metadata comes from cheap 1 Hz kernel probes (libproc);
-  git runs async behind a short cache. Hidden sessions are occluded: their render
+  focus/⌘N-jump hints). Metadata comes from 1 Hz kernel probes (`tcgetpgrp`,
+  libproc, `KERN_PROCARGS2`) made on a utility queue, one probe at a time. They read
+  other processes and are usually microseconds, but under memory pressure a freeze
+  report caught them holding the main thread for seconds. Rows and the hover card
+  read the last probe's results; git runs async behind a short cache. Hidden sessions are occluded: their render
   loops pause and ignore pokes until revealed. ⌘1-9 jump to sessions (presets
   moved to ⌃⌘1-9); ⌘⇧[ / ⌘⇧] cycle. The design's top-tabs toggle and ⌘K palette
   were not adopted.
@@ -424,7 +440,7 @@ wait on the terminal lock:
 |---|---|---|
 | Main thread unresponsive | a ping posted to the main queue unanswered for 2 s | main-thread backtrace |
 | Render thread stuck | a draw in progress for 2 s (encode lock, CoreText/fontd, GPU) | render-thread backtrace |
-| Output not drawn | on-screen pane whose display generation is ahead of the last drawn one, with no frame for 2 s | link paused/running, frame counts, generations |
+| Output not drawn | on-screen pane whose display generation is ahead of the last drawn one, with no frame for 2 s | link paused/running, when the link last fired (silent vs. firing but not drawing), frame counts, generations |
 | Parser stuck | a PTY batch holding the terminal lock for 2 s | reader-thread backtrace |
 | Input not read | PTY master refusing writes (EAGAIN) with no progress for 5 s | bytes queued, foreground process |
 
