@@ -1,6 +1,7 @@
 import AppKit
 import CRTRendering
 import TerminalCore
+import os
 
 /// One terminal session in a window: its own shell(s) in a tree of split
 /// panes, hosted in a container the sidebar shows/hides on selection.
@@ -74,6 +75,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private var refreshTimer: Timer?
     /// Latest git dirty counts by tab, filled asynchronously.
     private var dirtyCounts: [UUID: Int] = [:]
+    /// Latest process facts by tab (foreground command, names, cwd), probed
+    /// off the main thread by `probeProcesses`.
+    private var processFacts: [UUID: SessionInfo.Processes] = [:]
+    private var processProbeInFlight = false
+    private static let processProbeQueue = DispatchQueue(
+        label: "crterminal.process-probe", qos: .utility)
 
     /// Set by the AppDelegate so closed windows are released.
     var onClose: ((TerminalWindowController) -> Void)?
@@ -175,7 +182,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
             [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshSessionMetadata() }
+            MainActor.assumeIsolated {
+                self?.refreshSessionMetadata()
+                self?.probeProcesses()
+            }
         }
     }
 
@@ -957,9 +967,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// window title.
     func displayTitle(for tab: SessionTab) -> String {
         if let custom = tab.customName, !custom.isEmpty { return custom }
-        let session = tab.panes.first?.session
-        let shellName = session.map(rootProcessName) ?? configuredShellName
-        return session?.snapshot.title ?? shellName
+        guard let session = tab.panes.first?.session else { return configuredShellName }
+        return session.snapshot.title ?? rootProcessName(of: session, in: tab)
     }
 
     private var configuredShellName: String {
@@ -969,11 +978,52 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// Name of the process at the root of a session's PTY: the script a
     /// command session was opened to run (its process image is the
     /// interpreter, so libproc would say "bash"), else the live shell's
-    /// name, else the configured shell.
-    private func rootProcessName(of session: TerminalSession) -> String {
+    /// name as last probed, else the configured shell.
+    private func rootProcessName(of session: TerminalSession, in tab: SessionTab) -> String {
         session.commandName
-            ?? SessionInfo.processName(of: session.shellProcessID)
+            ?? facts(for: session, in: tab)?.shellName
             ?? configuredShellName
+    }
+
+    /// The tab's last process probe, if it was of this session (a tab's
+    /// first pane changes when that split closes).
+    private func facts(for session: TerminalSession, in tab: SessionTab) -> SessionInfo.Processes? {
+        guard let facts = processFacts[tab.id], facts.shell == session.shellProcessID
+        else { return nil }
+        return facts
+    }
+
+    /// Probes every session's processes on a utility queue, then redraws the
+    /// sidebar if anything changed. These are kernel calls into other
+    /// processes, and a freeze report caught them holding the main thread for
+    /// seconds at a time under memory pressure. One probe at a time: while
+    /// one is still out, ticks skip rather than queue up behind it.
+    private func probeProcesses() {
+        guard !processProbeInFlight else { return }
+        let sessions = tabs.compactMap { tab in tab.panes.first?.session.map { (tab.id, $0) } }
+        processProbeInFlight = true
+        Self.processProbeQueue.async { [weak self] in
+            let started = CACurrentMediaTime()
+            var results: [UUID: SessionInfo.Processes] = [:]
+            for (id, session) in sessions {
+                results[id] = SessionInfo.processes(of: session)
+            }
+            let elapsed = CACurrentMediaTime() - started
+            if elapsed >= 1 {
+                FreezeWatchdog.log.notice("process probe took \(Int(elapsed * 1000)) ms")
+            }
+            let probed = results
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.applyProcessProbe(probed) }
+            }
+        }
+    }
+
+    private func applyProcessProbe(_ probed: [UUID: SessionInfo.Processes]) {
+        processProbeInFlight = false
+        guard probed != processFacts else { return }
+        processFacts = probed
+        refreshSessionMetadata()
     }
 
     /// Apply a user-chosen name to a session (empty/whitespace reverts to the
@@ -986,29 +1036,31 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         noteSignificantChange()
     }
 
-    /// Cheap kernel probes each tick; git runs async behind a short cache.
-    /// Internal so alert-settings changes can re-apply without waiting a tick.
+    /// Rebuilds the sidebar rows from the last process probe — no kernel
+    /// calls here (`probeProcesses` makes them off the main thread); git runs
+    /// async behind a short cache. Internal so alert-settings changes can
+    /// re-apply without waiting a tick.
     func refreshSessionMetadata() {
         var rows: [SessionRowModel] = []
+        var unprobed = false
         // Every row shares the active session's surface (light/dark), so the
         // rail reads as one coherent surface; each row's accent is its own.
         let surfacePreset = activePreset
         for (index, tab) in tabs.enumerated() {
             guard let session = tab.panes.first?.session else { continue }
-            let shellPID = session.shellProcessID
-            let foreground = session.foregroundProcessGroup
-            let isRunning = foreground > 0 && foreground != shellPID
-            let shellName = rootProcessName(of: session)
+            let facts = facts(for: session, in: tab)
+            if facts == nil { unprobed = true }
+            let isRunning = facts?.isRunning ?? false
+            let shellName = rootProcessName(of: session, in: tab)
             let automaticName = session.snapshot.title ?? shellName
             let title = displayTitle(for: tab)
-            let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
-                ?? SessionInfo.workingDirectory(of: shellPID)
+            let cwd = facts?.cwd
             var metaLine: String
             let cwdName = cwd.map(SessionInfo.displayName(path:))
             if isRunning {
                 // The pulsing green dot already signals "live", so pair the
                 // foreground command with its directory's name instead.
-                let name = SessionInfo.processName(of: foreground) ?? "…"
+                let name = facts?.foregroundName ?? "…"
                 metaLine = cwdName.map { "\(name) · \($0)" } ?? name
             } else if let status = session.exitStatus {
                 // A held command session: its outcome, until a key closes it.
@@ -1048,6 +1100,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             window?.title = active.title
         }
         AppDelegate.shared?.refreshDockBadge()
+        // A new tab (or a tab whose first pane changed) has no facts yet:
+        // fetch them now rather than show defaults until the next tick.
+        if unprobed { probeProcesses() }
     }
 
     // MARK: Hover card
@@ -1062,12 +1117,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         guard let session = tab.panes.first?.session else { return }
 
         let theme = SidebarTheme(preset: tab.preset)
+        // From the last probe, like the row being hovered (≤ 1 s old).
+        let facts = facts(for: session, in: tab)
         let shellPID = session.shellProcessID
-        let foreground = session.foregroundProcessGroup
-        let isRunning = foreground > 0 && foreground != shellPID
-        let shellName = rootProcessName(of: session)
-        let cwd = SessionInfo.workingDirectory(of: isRunning ? foreground : shellPID)
-            ?? SessionInfo.workingDirectory(of: shellPID)
+        let foreground = facts?.foreground ?? shellPID
+        let isRunning = facts?.isRunning ?? false
+        let shellName = rootProcessName(of: session, in: tab)
+        let cwd = facts?.cwd
         let uptime = Self.format(uptime: Date().timeIntervalSince(tab.createdAt))
         let lastExit = session.snapshot.promptMarks.last(where: { $0.exitCode != nil })?
             .exitCode
@@ -1081,7 +1137,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             branchIsDirty: false,
             statusLine: (isRunning ? "● running · up " : "idle · up ") + uptime,
             processLine: isRunning
-                ? "\(SessionInfo.processName(of: foreground) ?? "…") · pid \(foreground)"
+                ? "\(facts?.foregroundName ?? "…") · pid \(foreground)"
                 : "\(shellName) · pid \(shellPID)",
             exitLine: lastExit.map { $0 == 0 ? "✓ 0" : "✗ \($0)" },
             bellLine: tab.unseenBells > 0 ? tab.lastBellAt.map {

@@ -28,7 +28,31 @@ final class PresetPreviewRenderer {
         state = terminal.state
     }
 
+    /// Renders of presets whose look doesn't change over time, by name. Each
+    /// render is a synchronous GPU round trip on the main thread, and the
+    /// gallery asks for every preset five times a second: a busy GPU turned
+    /// that into multi-second app-wide stalls while Settings was open.
+    private var stillImages: [String: (preset: CRTPreset, image: CGImage)] = [:]
+
     func image(for preset: CRTPreset, time: TimeInterval) -> CGImage? {
+        if Self.isStill(preset) {
+            if let still = stillImages[preset.name], still.preset == preset { return still.image }
+            guard let image = render(preset, time: time) else { return nil }
+            stillImages[preset.name] = (preset, image)
+            return image
+        }
+        return render(preset, time: time)
+    }
+
+    /// Mirrors the renderer's own idle test (`wantsContinuousFrames`): only
+    /// shaking text and animated artifacts change a single offscreen frame
+    /// over time (each render starts without phosphor history).
+    private static func isStill(_ preset: CRTPreset) -> Bool {
+        if AutoTheme.isAuto(preset) { return isStill(.lightStandard) && isStill(.darkStandard) }
+        return !preset.text.shakes && !(preset.effects && preset.artifacts.isAnimated)
+    }
+
+    private func render(_ preset: CRTPreset, time: TimeInterval) -> CGImage? {
         guard let renderer else { return nil }
         // Auto has no look of its own: show both standards, split diagonally.
         if AutoTheme.isAuto(preset) {

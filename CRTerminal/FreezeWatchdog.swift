@@ -320,6 +320,8 @@ nonisolated final class FreezeWatchdog: @unchecked Sendable {
         var frames = "\(render.drawCount) frames"
         if let last = render.lastDrawAt { frames += ", last \(seconds(now - last)) ago" }
         parts.append(frames)
+        parts.append(render.lastCallbackAt.map { "link fired \(seconds(now - $0)) ago" }
+            ?? "link never fired")
         if let started = render.drawStartedAt {
             parts.append("drawing for \(seconds(now - started))")
         }

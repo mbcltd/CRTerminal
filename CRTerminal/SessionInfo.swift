@@ -2,10 +2,42 @@ import Darwin
 import Foundation
 import os
 
-/// Sidebar/hover-card metadata probes. The cheap ones (cwd, process name)
-/// are kernel calls safe to poll at 1 Hz; the git probe spawns a process
-/// and runs async with a per-directory cache.
+/// Sidebar/hover-card metadata probes. The process ones (cwd, process name,
+/// foreground group) are kernel calls into other processes: usually
+/// microseconds, but under memory pressure they block for seconds, so the
+/// 1 Hz sidebar refresh runs them off the main thread (`processes(of:)`).
+/// The git probe spawns a process and runs async with a per-directory cache.
 enum SessionInfo {
+    /// What the sidebar shows about a session's processes, probed in one pass.
+    struct Processes: Equatable, Sendable {
+        var shell: pid_t
+        /// Foreground process group; the shell's pid at an idle prompt.
+        var foreground: pid_t
+        /// The shell's invoked name; nil for command sessions (their
+        /// `commandName` is the name) or when it can't be read.
+        var shellName: String?
+        var foregroundName: String?
+        /// The foreground command's directory while one runs, else the shell's.
+        var cwd: String?
+
+        var isRunning: Bool { foreground > 0 && foreground != shell }
+    }
+
+    /// Probes `session`'s processes. Blocking kernel calls: never call it
+    /// on the main thread.
+    nonisolated static func processes(of session: TerminalSession) -> Processes {
+        let shell = session.shellProcessID
+        let foreground = session.foregroundProcessGroup
+        let running = foreground > 0 && foreground != shell
+        return Processes(
+            shell: shell, foreground: foreground,
+            shellName: session.commandName == nil ? processName(of: shell) : nil,
+            foregroundName: running ? processName(of: foreground) : nil,
+            cwd: running
+                ? workingDirectory(of: foreground) ?? workingDirectory(of: shell)
+                : workingDirectory(of: shell))
+    }
+
     /// Working directory of a process via proc_pidinfo. Nil for zombies
     /// or pids we can't inspect.
     nonisolated static func workingDirectory(of pid: pid_t) -> String? {
